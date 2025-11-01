@@ -1,225 +1,249 @@
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  ScrollView,
-  Dimensions,
-} from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { LogoBlack, KakaoLogo, NaverLogo, GoogleLogo, AppleLogo } from '../components/svg';
 
-const { width } = Dimensions.get('window');
+interface LoginScreenProps {
+  onLogin: () => void;
+}
 
-const LoginScreen = () => {
+export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [emailFocused, setEmailFocused] = useState(false);
+  const [passwordFocused, setPasswordFocused] = useState(false);
 
-  const handleEmailLogin = () => {
-    console.log('Email login:', email, password);
+  const handleSignup = () => {
+    console.log('Sign up pressed');
+    onLogin();
   };
 
   const handleKakaoLogin = () => {
-    console.log('Kakao login');
+    console.log('Kakao login pressed');
   };
 
   const handleNaverLogin = () => {
-    console.log('Naver login');
+    console.log('Naver login pressed');
   };
 
   const handleGoogleLogin = () => {
-    console.log('Google login');
+    console.log('Google login pressed');
   };
 
   const handleAppleLogin = () => {
-    console.log('Apple login');
+    console.log('Apple login pressed');
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <View style={styles.logoContainer}>
-        <Image
-          source={require('../../assets/logo/logo-black.svg')}
-          style={styles.logo}
-          resizeMode="contain"
-        />
-      </View>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.logoContainer}>
+          <LogoBlack width={60} height={76} />
+        </View>
 
-      <View style={styles.formContainer}>
-        <Text style={styles.inputLabel}>이메일</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="sample@gmail.com"
-          placeholderTextColor="#999"
-          value={email}
-          onChangeText={setEmail}
-          keyboardType="email-address"
-          autoCapitalize="none"
-        />
-
-        <Text style={styles.inputLabel}>비밀번호</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="영문, 숫자, 특수문자 포함 8자 이상"
-          placeholderTextColor="#999"
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-        />
-
-        <TouchableOpacity style={styles.signupButton} onPress={handleEmailLogin}>
-          <Text style={styles.signupButtonText}>회원가입</Text>
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.dividerContainer}>
-        <Text style={styles.dividerText}>or</Text>
-      </View>
-
-      <View style={styles.socialLoginContainer}>
-        <TouchableOpacity style={[styles.socialButton, styles.kakaoButton]} onPress={handleKakaoLogin}>
-          <Image
-            source={require('../../assets/logo/kakao-logo.svg')}
-            style={styles.socialIcon}
-            resizeMode="contain"
+        <View style={styles.formContainer}>
+          <Text style={styles.label}>이메일</Text>
+          <TextInput
+            style={[styles.input, emailFocused && styles.inputFocused]}
+            placeholder="sample@gmail.com"
+            placeholderTextColor="#C7C7C7"
+            value={email}
+            onChangeText={setEmail}
+            onFocus={() => setEmailFocused(true)}
+            onBlur={() => setEmailFocused(false)}
+            keyboardType={Platform.OS === 'android' ? 'default' : 'email-address'}
+            autoCapitalize="none"
+            autoComplete="email"
           />
-          <Text style={styles.kakaoButtonText}>카카오 로그인</Text>
-        </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.socialButton, styles.naverButton]} onPress={handleNaverLogin}>
-          <Image
-            source={require('../../assets/logo/naver-logo.svg')}
-            style={styles.socialIcon}
-            resizeMode="contain"
+          <Text style={styles.label}>비밀번호</Text>
+          <TextInput
+            style={[styles.input, passwordFocused && styles.inputFocused]}
+            placeholder="영문, 숫자, 특수문자 포함 8자 이상"
+            placeholderTextColor="#C7C7C7"
+            value={password}
+            onChangeText={setPassword}
+            onFocus={() => setPasswordFocused(true)}
+            onBlur={() => setPasswordFocused(false)}
+            secureTextEntry
           />
-          <Text style={styles.naverButtonText}>네이버 로그인</Text>
-        </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.socialButton, styles.googleButton]} onPress={handleGoogleLogin}>
-          <Image
-            source={require('../../assets/logo/google-logo.svg')}
-            style={styles.socialIcon}
-            resizeMode="contain"
-          />
-          <Text style={styles.googleButtonText}>구글 로그인</Text>
-        </TouchableOpacity>
+          <TouchableOpacity style={styles.signupButton} onPress={handleSignup}>
+            <Text style={styles.signupButtonText}>로그인</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.socialButton, styles.appleButton]} onPress={handleAppleLogin}>
-          <Image
-            source={require('../../assets/logo/apple-logo.svg')}
-            style={styles.socialIcon}
-            resizeMode="contain"
-          />
-          <Text style={styles.appleButtonText}>애플 로그인</Text>
-        </TouchableOpacity>
-      </View>
-    </ScrollView>
+          <Text style={styles.dividerText}>or</Text>
+
+          <TouchableOpacity style={styles.kakaoButton} onPress={handleKakaoLogin}>
+            <View style={styles.buttonContent}>
+              <View style={styles.logoWrapper}>
+                <KakaoLogo width={18} height={18} />
+              </View>
+              <Text style={styles.kakaoButtonText}>카카오 로그인</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.naverButton} onPress={handleNaverLogin}>
+            <View style={styles.buttonContent}>
+              <View style={styles.logoWrapper}>
+                <NaverLogo width={15} height={15} />
+              </View>
+              <Text style={styles.naverButtonText}>네이버 로그인</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.googleButton} onPress={handleGoogleLogin}>
+            <View style={styles.buttonContent}>
+              <View style={styles.logoWrapper}>
+                <GoogleLogo width={19} height={19} />
+              </View>
+              <Text style={styles.googleButtonText}>구글 로그인</Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.appleButton} onPress={handleAppleLogin}>
+            <View style={styles.buttonContent}>
+              <View style={styles.logoWrapper}>
+                <AppleLogo width={22} height={22} />
+              </View>
+              <Text style={styles.appleButtonText}>애플 로그인</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
-    flexGrow: 1,
+    flex: 1,
     backgroundColor: '#FFFFFF',
+  },
+  scrollContent: {
+    flexGrow: 1,
     paddingHorizontal: 24,
-    paddingTop: 60,
+    paddingTop: 80,
+    paddingBottom: 40,
   },
   logoContainer: {
     alignItems: 'center',
-    marginBottom: 40,
-  },
-  logo: {
-    width: 100,
-    height: 100,
+    marginBottom: 48,
   },
   formContainer: {
-    marginBottom: 24,
+    width: '100%',
   },
-  inputLabel: {
+  label: {
     fontSize: 14,
-    color: '#666',
+    color: '#999999',
     marginBottom: 8,
-    marginTop: 16,
+    marginLeft: 4,
   },
   input: {
-    backgroundColor: '#F5F5F5',
+    width: '100%',
+    height: 56,
+    backgroundColor: '#F8F8F8',
     borderRadius: 12,
-    padding: 16,
+    paddingHorizontal: 20,
     fontSize: 16,
-    color: '#212121',
+    color: '#393A39',
+    marginBottom: 20,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  inputFocused: {
+    borderColor: '#393A39',
+    backgroundColor: '#FFFFFF',
   },
   signupButton: {
+    width: '100%',
+    height: 56,
     backgroundColor: '#393A39',
     borderRadius: 12,
-    padding: 16,
     alignItems: 'center',
-    marginTop: 24,
+    justifyContent: 'center',
+    marginTop: 8,
+    marginBottom: 24,
   },
   signupButtonText: {
-    color: '#FFFFFF',
     fontSize: 18,
     fontWeight: '600',
-  },
-  dividerContainer: {
-    alignItems: 'center',
-    marginVertical: 24,
+    color: '#FFFFFF',
   },
   dividerText: {
     fontSize: 14,
-    color: '#999',
+    color: '#999999',
+    textAlign: 'center',
+    marginBottom: 24,
   },
-  socialLoginContainer: {
-    gap: 12,
+  kakaoButton: {
+    width: '100%',
+    height: 56,
+    backgroundColor: '#FEE500',
+    borderRadius: 12,
+    marginBottom: 12,
   },
-  socialButton: {
+  naverButton: {
+    width: '100%',
+    height: 56,
+    backgroundColor: '#03C75A',
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  googleButton: {
+    width: '100%',
+    height: 56,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    marginBottom: 12,
+  },
+  appleButton: {
+    width: '100%',
+    height: 56,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  buttonContent: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 12,
-    padding: 16,
-    gap: 12,
+    position: 'relative',
   },
-  socialIcon: {
-    width: 24,
-    height: 24,
-  },
-  kakaoButton: {
-    backgroundColor: '#FEE500',
+  logoWrapper: {
+    position: 'absolute',
+    left: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   kakaoButtonText: {
-    color: '#000000',
     fontSize: 16,
-    fontWeight: '600',
-  },
-  naverButton: {
-    backgroundColor: '#03C75A',
+    fontWeight: '700',
+    color: '#000000',
   },
   naverButtonText: {
-    color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '600',
-  },
-  googleButton: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#DDDDDD',
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   googleButtonText: {
-    color: '#212121',
     fontSize: 16,
-    fontWeight: '600',
-  },
-  appleButton: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#DDDDDD',
+    fontWeight: '700',
+    color: '#393A39',
   },
   appleButtonText: {
-    color: '#212121',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
+    color: '#393A39',
   },
 });
-
-export default LoginScreen;

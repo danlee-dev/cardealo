@@ -1,27 +1,23 @@
 import React, { useEffect } from 'react';
-import { View, Image, StyleSheet, Dimensions } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { View, Text, StyleSheet } from 'react-native';
+import { LogoWithTextBlack } from '../components/svg';
 
-const { width, height } = Dimensions.get('window');
+interface SplashScreenProps {
+  onFinish: () => void;
+}
 
-const SplashScreen = () => {
-  const navigation = useNavigation();
-
+export const SplashScreen: React.FC<SplashScreenProps> = ({ onFinish }) => {
   useEffect(() => {
     const timer = setTimeout(() => {
-      navigation.navigate('Login' as never);
+      onFinish();
     }, 2000);
 
     return () => clearTimeout(timer);
-  }, [navigation]);
+  }, [onFinish]);
 
   return (
     <View style={styles.container}>
-      <Image
-        source={require('../../assets/logo/logo-with-text-black.svg')}
-        style={styles.logo}
-        resizeMode="contain"
-      />
+      <LogoWithTextBlack width={200} height={178} />
     </View>
   );
 };
@@ -29,14 +25,8 @@ const SplashScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
     backgroundColor: '#FFFFFF',
-  },
-  logo: {
-    width: width * 0.6,
-    height: height * 0.3,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
-
-export default SplashScreen;

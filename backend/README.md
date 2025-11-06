@@ -144,6 +144,7 @@ Content-Type: application/json
 
 {
     "user_id":"test",
+    "user_email":"asdf@asdf.com",
     "user_pw":"test",
     "user_age":23,
     "isBusiness":false,
@@ -173,7 +174,7 @@ POST /api/login
 Content-Type: application/json
 
 {
-    "user_id":"test",
+    "user_email":"asdf@asdf.com",
     "user_pw":"test",
 }
 ```
@@ -211,7 +212,8 @@ Response:
         ],
         "isBusiness": false,
         "user_age": 1,
-        "user_id": "test"
+        "user_id": "test",
+        "user_email":"asdf@asdf.com",
     }
 }
 ```

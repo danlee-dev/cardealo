@@ -30,6 +30,7 @@ class User(Base):
     __tablename__ = 'user'
 
     user_id = Column(String, primary_key=True)
+    user_email = Column(String, unique=True)
     user_pw = Column(PasswordType(schemes=['pbkdf2_sha512', 'md5_crypt'], deprecated=['md5_crypt']))
     user_age = Column(Integer)
     isBusiness = Column(Boolean, default=False)

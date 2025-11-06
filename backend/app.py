@@ -1,11 +1,16 @@
 import os
 from flask import Flask, jsonify, request
+from functools import wraps
+import jwt
 from flask_cors import CORS
 from dotenv import load_dotenv
-
+from sqlalchemy import select
 from services.geocoding_service import GeocodingService
 from services.benefit_lookup_service import BenefitLookupService
 from services.location_service import LocationService
+from services.database import init_db, get_db
+from services.database import User, Card, MyCard
+from services.jwt_service import JwtService
 
 load_dotenv()
 
@@ -15,6 +20,26 @@ CORS(app)
 geocoding_service = GeocodingService()
 benefit_service = BenefitLookupService()
 location_service = LocationService()
+jwt_service = JwtService()
+# 데이터베이스 초기화
+init_db()
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'Authorization' not in request.headers:
+            return jsonify({
+                'error': 'Authorization header is required'
+            }), 401
+        token = request.headers['Authorization'].split(' ')[1]
+        try:
+            result = jwt_service.verify_token(token)
+            if not result:
+                return jsonify({'error': 'Invalid token'}), 401
+            return f(*args, **kwargs)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    return decorated_function
 
 
 @app.route('/health', methods=['GET'])
@@ -24,6 +49,214 @@ def health_check():
         'service': 'cardealo-backend'
     }), 200
 
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    user_id = data.get('user_id')
+    user_pw = data.get('user_pw')
+    user_age = data.get('user_age')
+    isBusiness = data.get('isBusiness')
+    card_name = data.get('card_name')
+    print(f"user_id: {user_id}, user_pw: {user_pw}, user_age: {user_age}, isBusiness: {isBusiness}, card_name: {card_name}")
+    
+    if not user_id or not user_pw or not user_age or isBusiness is None or not card_name:
+        return jsonify({'success':False, 'error': 'user_id, user_pw, user_age, isBusiness, card_name are required'}), 400
+    
+    if isinstance(isBusiness, str):
+        if not isBusiness or isBusiness.strip() == '':
+            isBusiness = False
+        else:
+            isBusiness = isBusiness.lower() in ('true', '1', 'yes')
+    elif isinstance(isBusiness, bool):
+        pass
+    else:
+        isBusiness = bool(isBusiness) if isBusiness else False
+    
+    try:
+        user_age = int(user_age)
+    except (ValueError, TypeError):
+        return jsonify({'success':False, 'error': 'user_age must be a valid integer'}), 400
+
+    try:
+        db = get_db()
+        existing_user = db.scalars(select(User).where(User.user_id == user_id)).first()
+        if existing_user:
+            return jsonify({
+                'error': 'User already exists'
+            }), 400
+        check_card = db.scalars(select(Card).where(Card.card_name == card_name)).first()
+        if not check_card:
+            return jsonify({'success':False, 'error': 'Card not found'}), 404
+        user = User(user_id=user_id, user_pw=user_pw, user_age=user_age, isBusiness=isBusiness)
+        mycard = MyCard(user_id=user_id, mycard_name=card_name, mycard_detail=check_card.card_benefit, mycard_pre_month_money=check_card.card_pre_month_money)
+        db.add(mycard)
+        db.add(user)
+        db.commit()
+        return jsonify({'success':True, 'msg': 'registered'}), 200
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success':False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    user_id = data.get('user_id')
+    user_pw = data.get('user_pw')
+    
+    try:
+        db = get_db()
+        user = db.scalars(select(User).where(User.user_id == user_id)).first()
+        if not user:
+            return jsonify({'success':False, 'error': 'User not found'}), 404
+        if not user.user_pw == user_pw:
+            return jsonify({'success':False, 'error': 'Invalid password'}), 401
+        return jsonify({'success':True, 'msg': 'logged in', 'token': jwt_service.generate_token(user_id)}), 200
+    except Exception as e:
+        return jsonify({'success':False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+@app.route('/api/mypage', methods=['GET'])
+@login_required
+def mypage():
+    user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+    try:
+        db = get_db()
+        user = db.scalars(select(User).where(User.user_id == user_id)).first()
+        if not user:
+            return jsonify({'success':False, 'error': 'User not found'}), 404
+        user_data = {
+            'user_id': user.user_id,
+            'user_age': user.user_age,
+            'isBusiness': user.isBusiness,
+            'cards': []
+        }
+        cards = db.scalars(select(MyCard).where(MyCard.user_id == user_id)).all()
+        for card in cards:
+            user_data['cards'].append({
+                'card_name': card.mycard_name,
+                'card_benefit': card.mycard_detail,
+                'card_pre_month_money': card.mycard_pre_month_money
+            })
+        return jsonify({'success':True, 'msg': 'mypage', 'user':user_data}), 200
+    except Exception as e:
+        return jsonify({'success':False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+@app.route('/api/card/list', methods=['GET'])
+def card_list():
+    keyword = request.args.get('keyword')
+    page = request.args.get('page')
+    if not page:
+        page = 1
+    else:
+        page = int(page)
+    cards_data = []
+    if not keyword:
+        try:
+            db = get_db()
+            cards = db.scalars(select(Card).limit(25).offset((page-1)*25)).all()
+            for card in cards:
+                cards_data.append({
+                    'card_name': card.card_name,
+                    'card_benefit': card.card_benefit,
+                    'card_pre_month_money': card.card_pre_month_money
+                })
+            return jsonify({'success':True, 'msg': 'card list', 'cards': cards_data}), 200
+        except Exception as e:
+            return jsonify({'success':False, 'error': str(e)}), 500
+        finally:
+            db.close()
+    else:
+        try:
+            db = get_db()
+            cards = db.scalars(select(Card).where(Card.card_name.like(f'%{keyword}%')).limit(25).offset((page-1)*25)).all()
+            cards_data = []
+            for card in cards:
+                cards_data.append({
+                    'card_name': card.card_name,
+                    'card_benefit': card.card_benefit,
+                    'card_pre_month_money': card.card_pre_month_money
+                })
+            return jsonify({'success':True, 'msg': 'card list', 'cards': cards_data}), 200
+        except Exception as e:
+            return jsonify({'success':False, 'error': str(e)}), 500
+        finally:
+            db.close()
+
+@app.route('/api/card/add', methods=['POST'])
+@login_required
+def card_add():
+    user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+    data = request.get_json()
+    card_name = data.get('card_name')
+    if not card_name:
+        return jsonify({'success':False, 'error': 'card_name is required'}), 400
+    try:
+        db = get_db()
+        check_card = db.scalars(select(Card).where(Card.card_name == card_name)).first()
+        if not check_card:
+            return jsonify({'success':False, 'error': 'Card not found'}), 404
+        mycard = MyCard(user_id=user_id, mycard_name=card_name, mycard_detail=check_card.card_benefit, mycard_pre_month_money=check_card.card_pre_month_money)
+        db.add(mycard)
+        db.commit()
+        return jsonify({'success':True, 'msg': 'card added'}), 200
+    except Exception as e:
+        return jsonify({'success':False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+@app.route('/api/card/edit', methods=['POST'])
+@login_required
+def card_edit():
+    user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+    data = request.get_json()
+    old_card_name = data.get('old_card_name')
+    new_card_name = data.get('new_card_name')
+    if not old_card_name:
+        return jsonify({'success':False, 'error': 'old_card_name is required'}), 400
+    if not new_card_name:
+        return jsonify({'success':False, 'error': 'new_card_name is required'}), 400
+    try:
+        db = get_db()
+        mycard = db.scalars(select(MyCard).where(MyCard.user_id == user_id, MyCard.mycard_name == old_card_name)).first()
+        if not mycard:
+            return jsonify({'success':False, 'error': 'MyCard not found'}), 404
+        check_card = db.scalars(select(Card).where(Card.card_name == new_card_name)).first()
+        if not check_card:
+            return jsonify({'success':False, 'error': 'Card not found'}), 404
+        mycard.mycard_name = new_card_name
+        mycard.mycard_detail = check_card.card_benefit
+        mycard.mycard_pre_month_money = check_card.card_pre_month_money
+        db.commit()
+        return jsonify({'success':True, 'msg': 'card edited', 'card': {'card_name': new_card_name, 'card_benefit': check_card.card_benefit}}), 200
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success':False, 'error': str(e)}), 500
+
+@app.route('/api/card/del', methods=['POST'])
+@login_required
+def card_delete():
+    user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+    data = request.get_json()
+    card_name = data.get('card_name')
+    if not card_name:
+        return jsonify({'success':False, 'error': 'card_name is required'}), 400
+    try:
+        db = get_db()
+        card = db.scalars(select(MyCard).where(MyCard.user_id == user_id, MyCard.mycard_name == card_name)).first()
+        if not card:
+            return jsonify({'success':False, 'error': 'Card not found'}), 404
+        db.delete(card)
+        db.commit()
+        return jsonify({'success':True, 'msg': 'card deleted'}), 200
+    except Exception as e:
+        return jsonify({'success':False, 'error': str(e)}), 500
+    finally:
+        db.close()
 
 @app.route('/api/geocode', methods=['GET'])
 def geocode():

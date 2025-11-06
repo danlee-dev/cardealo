@@ -232,7 +232,7 @@ def card_edit():
         mycard.mycard_detail = check_card.card_benefit
         mycard.mycard_pre_month_money = check_card.card_pre_month_money
         db.commit()
-        return jsonify({'success':True, 'msg': 'card edited', 'card': {'card_name': new_card_name, 'card_benefit': check_card.card_benefit}}), 200
+        return jsonify({'success':True, 'msg': 'card edited'}), 200
     except Exception as e:
         db.rollback()
         return jsonify({'success':False, 'error': str(e)}), 500

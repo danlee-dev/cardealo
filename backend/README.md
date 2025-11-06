@@ -153,7 +153,7 @@ Content-Type: application/json
 
 Response:
 
-```
+```json
 {
     "msg": "registered",
     "success": true
@@ -180,7 +180,7 @@ Content-Type: application/json
 
 Response:
 
-```
+```json
 {
   "msg": "logged in",
   "success": true,
@@ -197,7 +197,7 @@ Authorization: bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidGVzd
 
 Response:
 
-```
+```json
 {
     "msg": "mypage",
     "success": true,
@@ -226,7 +226,7 @@ GET /api/mypage?keyword=&page=
 
 Response:
 
-```
+```json
 {
   "cards": [
     {
@@ -254,7 +254,7 @@ Content-Type: application/json
 
 Response:
 
-```
+```json
 {
     "msg": "card added",
     "success": true
@@ -282,7 +282,7 @@ Content-Type: application/json
 
 Response:
 
-```
+```json
 {
     "msg": "card edited",
     "success": true
@@ -303,7 +303,7 @@ Content-Type: application/json
 
 Response:
 
-```
+```json
 {
     "msg": "card deleted",
     "success": true

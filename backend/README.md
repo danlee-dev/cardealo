@@ -136,6 +136,182 @@ Response:
 }
 ```
 
+### Register
+
+```
+POST /api/register
+Content-Type: application/json
+
+{
+    "user_id":"test",
+    "user_pw":"test",
+    "user_age":23,
+    "isBusiness":false,
+    "card_name":"신한카드 The CLASSIC-Y"
+}
+```
+
+Response:
+
+```
+{
+    "msg": "registered",
+    "success": true
+}
+
+If the card_name value is not in the database
+{
+    "msg": "Card not found",
+    "success": false
+}
+```
+
+### Login
+
+```
+POST /api/login
+Content-Type: application/json
+
+{
+    "user_id":"test",
+    "user_pw":"test",
+}
+```
+
+Response:
+
+```
+{
+  "msg": "logged in",
+  "success": true,
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidGVzdCJ9.ovXxDNossgChX4TpIcRy1SvCuIntuAJ54l0fMAUk0TQ"
+}
+```
+
+### Mypage
+
+```
+GET /api/mypage
+Authorization: bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidGVzdCJ9.ovXxDNossgChX4TpIcRy1SvCuIntuAJ54l0fMAUk0TQ
+```
+
+Response:
+
+```
+{
+    "msg": "mypage",
+    "success": true,
+    "user": {
+        "cards": [
+            {
+                "card_benefit": "Gift Option 서비스는 매년 1회 아래 품목 중 한 가지를 선택하여 이용하실 수 있습니다.- 포인트 : 마이신한포인트 적립(7만점) / 1년1회- 문화 : 문화상품권(8만원) / 1년1회- 요식 : 패밀리 레스토랑 11만원 이용권 / 1년1회- 호텔 : 호텔 애프터눈 티 SET 이용권 / ... (생략)",
+                "card_name": "신한카드 The CLASSIC-Y",
+                "card_pre_month_money": 0
+            },
+        ],
+        "isBusiness": false,
+        "user_age": 1,
+        "user_id": "test"
+    }
+}
+```
+
+### Get card list
+
+1page = 25item
+
+```
+GET /api/mypage?keyword=&page=
+```
+
+Response:
+
+```
+{
+  "cards": [
+    {
+      "card_benefit": "[기본 혜택] 전월 이용 금액... (생략)",
+      "card_name": "네이버 현대카드 Edition2",
+      "card_pre_month_money": 500000
+    }
+  ],
+  "msg": "card list",
+  "success": true
+}
+```
+
+### Add card
+
+```
+POST /api/card/add
+Authorization: bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidGVzdCJ9.ovXxDNossgChX4TpIcRy1SvCuIntuAJ54l0fMAUk0TQ
+Content-Type: application/json
+
+{
+    "card_name":"네이버 현대카드 Edition2"
+}
+```
+
+Response:
+
+```
+{
+    "msg": "card added",
+    "success": true
+}
+
+If the card_name value is not in the database
+{
+    "msg": "Card not found",
+    "success": false
+}
+```
+
+### Edit card
+
+```
+POST /api/card/edit
+Authorization: bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidGVzdCJ9.ovXxDNossgChX4TpIcRy1SvCuIntuAJ54l0fMAUk0TQ
+Content-Type: application/json
+
+{
+    "old_card_name":"네이버 현대카드 Edition2",
+    "new_card_name":"신한카드 The CLASSIC-Y"
+}
+```
+
+Response:
+
+```
+{
+    "msg": "card edited",
+    "success": true
+}
+```
+
+### Delete card
+
+```
+POST /api/card/del
+Authorization: bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidGVzdCJ9.ovXxDNossgChX4TpIcRy1SvCuIntuAJ54l0fMAUk0TQ
+Content-Type: application/json
+
+{
+    "card_name":"네이버 현대카드 Edition2"
+}
+```
+
+Response:
+
+```
+{
+    "msg": "card deleted",
+    "success": true
+}
+```
+
+
+
 ## Development
 
 ### Project Structure

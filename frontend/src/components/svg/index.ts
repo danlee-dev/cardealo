@@ -23,3 +23,4 @@ export { BarcodeDisplay } from './BarcodeDisplay';
 export { QRCodeDisplay } from './QRCodeDisplay';
 export { RefreshIcon } from './RefreshIcon';
 export { MyLocationIcon } from './MyLocationIcon';
+export { SearchPinIcon } from './SearchPinIcon';

@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ScrollView, Platform, Alert, TextInput, Keyboard, TouchableWithoutFeedback, Image, StatusBar, FlatList, Animated } from 'react-native';
 import { NaverMapView, NaverMapMarkerOverlay } from '@mj-studio/react-native-naver-map';
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
-import { SearchIcon, StarsIcon, CafeIcon, CoffeeIcon, FoodIcon, CartIcon, CardsIcon, LocationMarkerIcon, StorePinIcon, StarIcon, MyLocationIcon } from '../components/svg';
+import { SearchIcon, StarsIcon, CafeIcon, CoffeeIcon, FoodIcon, CartIcon, CardsIcon, LocationMarkerIcon, StorePinIcon, StarIcon, MyLocationIcon, SearchPinIcon, RefreshIcon } from '../components/svg';
 import { FONTS, COLORS } from '../constants/theme';
 import * as Location from 'expo-location';
 import axios from 'axios';
@@ -11,13 +11,14 @@ import { getMerchantLogo } from '../constants/merchantImages';
 import { LinearGradient } from 'expo-linear-gradient';
 import { ProfileScreen } from './ProfileScreen';
 import { OnePayScreen } from './OnePayScreen';
+import { LocationDebugModal } from '../components/LocationDebugModal';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 interface CategoryButton {
   id: string;
   label: string;
-  icon: React.ReactNode;
+  icon: React.ReactNode | null;
 }
 
 interface StoreCard {
@@ -67,13 +68,23 @@ export const HomeScreen: React.FC = () => {
   const [filterSort, setFilterSort] = useState<'benefit' | 'distance' | 'recommend'>('recommend');
   const [filterOrder, setFilterOrder] = useState<'asc' | 'desc'>('desc');
   const [filterOpenOnly, setFilterOpenOnly] = useState(false);
+  const [searchResultLocation, setSearchResultLocation] = useState<{ latitude: number; longitude: number; name: string } | null>(null);
+  const [debugLocation, setDebugLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [showDebugModal, setShowDebugModal] = useState(false);
+  const [realUserLocation, setRealUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
+  const [stayingDuration, setStayingDuration] = useState<number>(0);
+  const [lastLocation, setLastLocation] = useState<{ latitude: number; longitude: number; timestamp: number } | null>(null);
+  const [currentMapCenter, setCurrentMapCenter] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [showSearchButton, setShowSearchButton] = useState(false);
+  const [lastSearchCenter, setLastSearchCenter] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [forceIndoorMode, setForceIndoorMode] = useState(false);
 
   const bottomSheetRef = useRef<BottomSheet>(null);
   const mapRef = useRef<any>(null);
-  const cameraChangeTimeout = useRef<NodeJS.Timeout | null>(null);
   const cardScrollRef = useRef<FlatList>(null);
   const isScrollingToCard = useRef(false);
-  const snapPoints = useMemo(() => ['25%', '50%', '85%'], []);
+  const snapPoints = useMemo(() => ['25%', '45%', '70%', '85%'], []);
 
   // 카드 애니메이션 값 배열
   const cardScaleAnims = useRef(
@@ -88,19 +99,23 @@ export const HomeScreen: React.FC = () => {
   const loadingDot2 = useRef(new Animated.Value(0)).current;
   const loadingDot3 = useRef(new Animated.Value(0)).current;
 
-  // 혜택 레벨 계산 (상위 20%, 중위, 하위 20%)
+  // 혜택 레벨 계산 (상위 33%, 중위 33%, 하위 33%)
   const getBenefitLevel = (score: number, allScores: number[]): 'high' | 'medium' | 'low' => {
     if (allScores.length === 0) return 'medium';
+    if (allScores.length === 1) return score > 0 ? 'high' : 'low';
 
     const sortedScores = [...allScores].sort((a, b) => b - a);
-    const topIndex = Math.floor(sortedScores.length * 0.2);
-    const bottomIndex = Math.floor(sortedScores.length * 0.8);
+
+    // 상위 33%, 하위 33% 기준
+    const topIndex = Math.floor(sortedScores.length / 3);
+    const bottomIndex = Math.floor(sortedScores.length * 2 / 3);
 
     const topThreshold = sortedScores[topIndex];
     const bottomThreshold = sortedScores[bottomIndex];
 
-    if (score >= topThreshold) return 'high';
-    if (score <= bottomThreshold) return 'low';
+    // 점수가 같을 때 중복 방지
+    if (score > topThreshold) return 'high';
+    if (score < bottomThreshold) return 'low';
     return 'medium';
   };
 
@@ -125,13 +140,67 @@ export const HomeScreen: React.FC = () => {
     };
   };
 
+  // Category keyword mapping for search
+  const categoryKeywords: { [key: string]: string[] } = {
+    'cafe': ['카페', 'cafe', '커피', 'coffee', '스타벅스', '이디야', '투썸', '커피숍'],
+    'restaurant': ['음식점', 'restaurant', '식당', '레스토랑', '맛집', '한식', '중식', '일식', '양식'],
+    'mart': ['마트', 'mart', '슈퍼', 'supermarket', '홈플러스', '이마트', '롯데마트'],
+    'convenience': ['편의점', 'convenience', 'cvs', 'cu', 'gs25', '세븐일레븐', '이마트24'],
+    'gas_station': ['주유소', 'gas', 'station', 'sk', 'gs', 's-oil', '현대오일뱅크'],
+    'bakery': ['베이커리', 'bakery', '빵집', '제과점'],
+    'beauty': ['뷰티', 'beauty', '화장품', '올리브영', '다이소'],
+    'movie': ['영화', 'movie', '영화관', 'cgv', '롯데시네마', '메가박스'],
+    'pharmacy': ['약국', 'pharmacy'],
+    'transit': ['지하철', 'subway', '버스', 'bus', '역'],
+    'taxi': ['택시', 'taxi'],
+  };
+
+  const getCategoryIcon = (categoryId: string, isActive: boolean) => {
+    const color = isActive ? '#FFFFFF' : '#666666';
+    const iconProps = { width: 16, height: 16, color };
+
+    switch (categoryId) {
+      case 'favorites':
+        return <StarsIcon {...iconProps} />;
+      case 'cafe':
+        return <CoffeeIcon {...iconProps} />;
+      case 'restaurant':
+        return <FoodIcon {...iconProps} />;
+      case 'mart':
+        return <CartIcon {...iconProps} />;
+      case 'convenience':
+        return <CafeIcon {...iconProps} />;
+      default:
+        return null;
+    }
+  };
+
   const categories: CategoryButton[] = [
-    { id: 'favorites', label: '즐겨찾기', icon: <StarsIcon width={16} height={16} color="#333333" /> },
-    { id: 'cafe', label: '카페', icon: <CoffeeIcon width={16} height={16} color="#333333" /> },
-    { id: 'restaurant', label: '음식점', icon: <FoodIcon width={16} height={16} color="#333333" /> },
-    { id: 'mart', label: '마트', icon: <CartIcon width={16} height={16} color="#333333" /> },
-    { id: 'convenience', label: '편의점', icon: <CafeIcon width={16} height={16} color="#333333" /> },
+    { id: 'favorites', label: '즐겨찾기', icon: null },
+    { id: 'cafe', label: '카페', icon: null },
+    { id: 'restaurant', label: '음식점', icon: null },
+    { id: 'mart', label: '마트', icon: null },
+    { id: 'convenience', label: '편의점', icon: null },
   ];
+
+  // Detect category from search query
+  const detectCategory = (query: string): string | null => {
+    const lowerQuery = query.toLowerCase().trim();
+
+    // Exclude place names ending with "역" (station names like "안암역", "강남역")
+    // These should be treated as place searches, not category searches
+    if (lowerQuery.endsWith('역') && lowerQuery.length > 1) {
+      return null;
+    }
+
+    for (const [category, keywords] of Object.entries(categoryKeywords)) {
+      if (keywords.some(keyword => lowerQuery.includes(keyword.toLowerCase()))) {
+        return category;
+      }
+    }
+
+    return null;
+  };
 
   useEffect(() => {
     requestLocationPermission();
@@ -218,6 +287,7 @@ export const HomeScreen: React.FC = () => {
       if (status !== 'granted') {
         Alert.alert('권한 필요', '위치 권한이 필요합니다.');
         const defaultCoords = { latitude: 37.5856, longitude: 127.0292 };
+        setRealUserLocation(defaultCoords);
         setUserLocation(defaultCoords);
         fetchNearbyStores(defaultCoords.latitude, defaultCoords.longitude);
         return;
@@ -230,14 +300,20 @@ export const HomeScreen: React.FC = () => {
           latitude: lastKnown.coords.latitude,
           longitude: lastKnown.coords.longitude,
         };
+        const accuracy = lastKnown.coords.accuracy || null;
+
+        console.log(`[Location] Last known position - accuracy: ${accuracy}m`);
+        setGpsAccuracy(accuracy);
 
         // Check if location is in USA (emulator default), use Korea instead
         if (coords.latitude > 36 && coords.latitude < 38 && coords.longitude > -123 && coords.longitude < -121) {
           console.log('[Location] 에뮬레이터 기본 위치 감지 (미국), 안암역으로 변경');
           const koreaCoords = { latitude: 37.5856, longitude: 127.0292 };
+          setRealUserLocation(koreaCoords);
           setUserLocation(koreaCoords);
           fetchNearbyStores(koreaCoords.latitude, koreaCoords.longitude);
         } else {
+          setRealUserLocation(coords);
           setUserLocation(coords);
           fetchNearbyStores(coords.latitude, coords.longitude);
         }
@@ -252,40 +328,112 @@ export const HomeScreen: React.FC = () => {
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
       };
+      const accuracy = location.coords.accuracy || null;
+
+      console.log(`[Location] Current position - accuracy: ${accuracy}m`);
+      setGpsAccuracy(accuracy);
 
       // Check if location is in USA (emulator default), use Korea instead
       if (coords.latitude > 36 && coords.latitude < 38 && coords.longitude > -123 && coords.longitude < -121) {
         console.log('[Location] 에뮬레이터 기본 위치 감지 (미국), 안암역으로 변경');
         const koreaCoords = { latitude: 37.5856, longitude: 127.0292 };
+        setRealUserLocation(koreaCoords);
         setUserLocation(koreaCoords);
         fetchNearbyStores(koreaCoords.latitude, koreaCoords.longitude);
       } else {
+        setRealUserLocation(coords);
         setUserLocation(coords);
         fetchNearbyStores(coords.latitude, coords.longitude);
       }
     } catch (error) {
       console.error('위치 가져오기 실패:', error);
       const defaultCoords = { latitude: 37.5856, longitude: 127.0292 };
+      setRealUserLocation(defaultCoords);
       setUserLocation(defaultCoords);
       fetchNearbyStores(defaultCoords.latitude, defaultCoords.longitude);
       console.log('안암역을 기본 위치로 사용합니다.');
     }
   };
 
-  const fetchNearbyStores = async (lat: number, lng: number, radius: number = 500) => {
+  // Calculate distance between two points using Haversine formula
+  const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
+    const R = 6371000; // Earth radius in meters
+    const lat1Rad = lat1 * Math.PI / 180;
+    const lat2Rad = lat2 * Math.PI / 180;
+    const dlat = (lat2 - lat1) * Math.PI / 180;
+    const dlng = (lng2 - lng1) * Math.PI / 180;
+
+    const a = Math.sin(dlat / 2) ** 2 +
+              Math.cos(lat1Rad) * Math.cos(lat2Rad) *
+              Math.sin(dlng / 2) ** 2;
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c;
+  };
+
+  const fetchNearbyStores = async (lat: number, lng: number, radius: number = 600) => {
     try {
+      // Update staying duration
+      const now = Date.now();
+      const STAYING_THRESHOLD = 10; // meters - if moved less than 10m, consider staying
+
+      if (lastLocation) {
+        const distance = calculateDistance(
+          lastLocation.latitude,
+          lastLocation.longitude,
+          lat,
+          lng
+        );
+
+        if (distance < STAYING_THRESHOLD) {
+          // Still in the same place - accumulate duration
+          const newDuration = Math.floor((now - lastLocation.timestamp) / 1000) + stayingDuration;
+          setStayingDuration(newDuration);
+          console.log(`[Staying] 체류 중: ${newDuration}초 (이동 거리: ${distance.toFixed(1)}m)`);
+        } else {
+          // Moved to a new location - reset duration
+          setStayingDuration(0);
+          setLastLocation({ latitude: lat, longitude: lng, timestamp: now });
+          console.log(`[Staying] 새 위치로 이동 (이동 거리: ${distance.toFixed(1)}m) - 체류 시간 리셋`);
+        }
+      } else {
+        // First location update
+        setLastLocation({ latitude: lat, longitude: lng, timestamp: now });
+      }
+
       console.log(`[fetchNearbyStores] 요청 위치: ${lat}, ${lng}, radius: ${radius}m`);
       console.log(`[fetchNearbyStores] 사용자 위치: ${userLocation?.latitude}, ${userLocation?.longitude}`);
+      console.log(`[fetchNearbyStores] GPS 정확도: ${gpsAccuracy}m`);
+      console.log(`[fetchNearbyStores] 체류 시간: ${stayingDuration}초`);
+
+      const params: any = {
+        lat,
+        lng,
+        user_lat: userLocation?.latitude || lat,
+        user_lng: userLocation?.longitude || lng,
+        radius,
+        cards: USER_CARDS.join(','),
+      };
+
+      // Force indoor mode for demo (발표용)
+      if (forceIndoorMode) {
+        params.gps_accuracy = 50;  // High inaccuracy (>15m) to avoid outdoor detection
+        params.staying_duration = 300;  // >180s to trigger indoor detection
+        console.log('[fetchNearbyStores] 건물 내부 강제 모드: GPS 50m, 체류 300초');
+      } else {
+        // Add GPS accuracy if available
+        if (gpsAccuracy !== null) {
+          params.gps_accuracy = gpsAccuracy;
+        }
+
+        // Add staying duration
+        if (stayingDuration > 0) {
+          params.staying_duration = stayingDuration;
+        }
+      }
 
       const response = await axios.get(`${API_URL}/api/nearby-recommendations`, {
-        params: {
-          lat,
-          lng,
-          user_lat: userLocation?.latitude || lat,
-          user_lng: userLocation?.longitude || lng,
-          radius,
-          cards: USER_CARDS.join(','),
-        },
+        params,
       });
 
       console.log(`[fetchNearbyStores] 응답 받음: ${response.data.stores.length}개 가맹점`);
@@ -296,10 +444,16 @@ export const HomeScreen: React.FC = () => {
       setIsInsideBuilding(isIndoor);
 
       if (isIndoor) {
-        console.log(`[Building Detection] 건물 내부 감지됨`);
+        console.log(`[Building Detection] 건물 내부 감지됨: ${response.data.building_name}`);
       }
 
-      setStores(response.data.stores);
+      // Limit to 50 stores max (performance)
+      const limitedStores = response.data.stores.slice(0, 50);
+      setStores(limitedStores);
+
+      // Update last search center
+      setLastSearchCenter({ latitude: lat, longitude: lng });
+      setShowSearchButton(false);
     } catch (error) {
       console.error('API 호출 실패:', error);
     } finally {
@@ -307,27 +461,32 @@ export const HomeScreen: React.FC = () => {
     }
   };
 
+  const handleSearchCurrentArea = () => {
+    if (currentMapCenter) {
+      setLoading(true);
+      fetchNearbyStores(currentMapCenter.latitude, currentMapCenter.longitude, 600);
+    }
+  };
+
   const handleCameraChange = (event: any) => {
     const { latitude, longitude, zoom } = event;
     setCurrentZoom(zoom);
+    setCurrentMapCenter({ latitude, longitude });
 
-    // Debounce: 지도 이동이 끝난 후 1초 뒤에 검색
-    if (cameraChangeTimeout.current) {
-      clearTimeout(cameraChangeTimeout.current);
-    }
+    // Check if map moved from last search
+    if (lastSearchCenter) {
+      const distance = calculateDistance(
+        lastSearchCenter.latitude,
+        lastSearchCenter.longitude,
+        latitude,
+        longitude
+      );
 
-    cameraChangeTimeout.current = setTimeout(() => {
-      // Zoom level에 따라 검색 반경 조정
-      let radius = 500;
-      if (zoom < 14) {
-        radius = 2000; // 줌 아웃 시 넓은 범위
-      } else if (zoom < 15) {
-        radius = 1000;
+      // Show search button if moved more than 50m (very sensitive)
+      if (distance > 50) {
+        setShowSearchButton(true);
       }
-
-      console.log(`[Camera] 지도 이동 완료: ${latitude}, ${longitude}, zoom=${zoom}`);
-      fetchNearbyStores(latitude, longitude, radius);
-    }, 1000);
+    }
   };
 
   const handleSearch = async () => {
@@ -337,15 +496,40 @@ export const HomeScreen: React.FC = () => {
     Keyboard.dismiss();
 
     try {
-      const response = await axios.get(`${API_URL}/api/search-place`, {
-        params: {
-          query: searchQuery,
-        },
-      });
+      // Detect category from search query
+      const detectedCategory = detectCategory(searchQuery);
+
+      // If category detected, just filter current stores without moving map
+      if (detectedCategory) {
+        console.log(`[Search] 카테고리 검색: ${detectedCategory}`);
+        setSelectedCategory(detectedCategory);
+        setSearchResultLocation(null);
+        setIsSearching(false);
+        return;
+      }
+
+      // Otherwise, search for specific place
+      const params: any = {
+        query: searchQuery,
+      };
+
+      // Add user location for location-based search
+      if (userLocation) {
+        params.latitude = userLocation.latitude;
+        params.longitude = userLocation.longitude;
+      }
+
+      const response = await axios.get(`${API_URL}/api/search-place`, { params });
 
       if (response.data.location) {
         const { latitude, longitude, name } = response.data.location;
-        console.log(`[Search] 검색 결과: ${name} at ${latitude}, ${longitude}`);
+        console.log(`[Search] 장소 검색 결과: ${name} at ${latitude}, ${longitude}`);
+
+        // Clear category filter for place search
+        setSelectedCategory(null);
+
+        // Save search result location
+        setSearchResultLocation({ latitude, longitude, name });
 
         // Move map to search result
         if (mapRef.current) {
@@ -361,6 +545,7 @@ export const HomeScreen: React.FC = () => {
         fetchNearbyStores(latitude, longitude, 500);
       } else {
         Alert.alert('검색 결과 없음', '검색 결과를 찾을 수 없습니다.');
+        setSearchResultLocation(null);
       }
     } catch (error) {
       console.error('[Search] 검색 실패:', error);
@@ -434,6 +619,44 @@ export const HomeScreen: React.FC = () => {
         zoom: 16,
         duration: 500,
       });
+    }
+  };
+
+  const handleDebugLocationSet = (latitude: number, longitude: number) => {
+    console.log(`[Debug] 위치 설정: ${latitude}, ${longitude}`);
+    setDebugLocation({ latitude, longitude });
+    setUserLocation({ latitude, longitude });
+    fetchNearbyStores(latitude, longitude);
+
+    if (mapRef.current) {
+      mapRef.current.animateCameraTo({
+        latitude,
+        longitude,
+        zoom: 16,
+        duration: 500,
+      });
+    }
+  };
+
+  const handleResetLocation = () => {
+    console.log('[Debug] 위치 초기화');
+    setDebugLocation(null);
+    setForceIndoorMode(false);
+
+    if (realUserLocation) {
+      setUserLocation(realUserLocation);
+      fetchNearbyStores(realUserLocation.latitude, realUserLocation.longitude);
+
+      if (mapRef.current) {
+        mapRef.current.animateCameraTo({
+          latitude: realUserLocation.latitude,
+          longitude: realUserLocation.longitude,
+          zoom: 16,
+          duration: 500,
+        });
+      }
+    } else {
+      requestLocationPermission();
     }
   };
 
@@ -566,7 +789,37 @@ export const HomeScreen: React.FC = () => {
             </View>
           </NaverMapMarkerOverlay>
         )}
+        {searchResultLocation && (
+          <NaverMapMarkerOverlay
+            latitude={searchResultLocation.latitude}
+            longitude={searchResultLocation.longitude}
+            anchor={{ x: 0.5, y: 1 }}
+            width={39}
+            height={39}
+            caption={{
+              text: searchResultLocation.name,
+              textSize: 14,
+              color: '#000000',
+              haloColor: '#FFFFFF',
+            }}
+          >
+            <View style={{ width: 39, height: 39 }}>
+              <SearchPinIcon width={39} height={39} />
+            </View>
+          </NaverMapMarkerOverlay>
+        )}
       </NaverMapView>
+
+      {process.env.EXPO_PUBLIC_ENABLE_LOCATION_DEBUG === 'true' && (
+        <TouchableOpacity
+          style={styles.debugButton}
+          onPress={() => setShowDebugModal(true)}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.debugButtonText}>DEBUG</Text>
+          {debugLocation && <View style={styles.debugIndicator} />}
+        </TouchableOpacity>
+      )}
 
       <View style={styles.searchContainer}>
         <View style={styles.searchBar}>
@@ -582,7 +835,10 @@ export const HomeScreen: React.FC = () => {
             editable={!isSearching}
           />
           {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
+            <TouchableOpacity onPress={() => {
+              setSearchQuery('');
+              setSearchResultLocation(null);
+            }}>
               <Text style={styles.clearButton}>✕</Text>
             </TouchableOpacity>
           )}
@@ -596,35 +852,51 @@ export const HomeScreen: React.FC = () => {
         </TouchableOpacity>
       </View>
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.categoryOverlay}
-        contentContainerStyle={styles.categoryContainer}
-        onScrollBeginDrag={() => Keyboard.dismiss()}
-      >
-        {categories.map((category) => (
+      <View style={styles.categoryWrapper}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.categoryScrollView}
+          contentContainerStyle={styles.categoryContainer}
+          onScrollBeginDrag={() => Keyboard.dismiss()}
+        >
+          {categories.map((category) => {
+            const isActive = selectedCategory === category.id;
+            return (
+              <TouchableOpacity
+                key={category.id}
+                style={[
+                  styles.categoryButton,
+                  isActive && styles.categoryButtonActive,
+                ]}
+                onPress={() => {
+                  Keyboard.dismiss();
+                  setSelectedCategory(selectedCategory === category.id ? null : category.id);
+                }}
+              >
+                {getCategoryIcon(category.id, isActive)}
+                <Text style={[
+                  styles.categoryText,
+                  isActive && styles.categoryTextActive,
+                ]}>
+                  {category.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        {showSearchButton && (
           <TouchableOpacity
-            key={category.id}
-            style={[
-              styles.categoryButton,
-              selectedCategory === category.id && styles.categoryButtonActive,
-            ]}
-            onPress={() => {
-              Keyboard.dismiss();
-              setSelectedCategory(selectedCategory === category.id ? null : category.id);
-            }}
+            style={styles.searchAreaButton}
+            onPress={handleSearchCurrentArea}
+            activeOpacity={0.8}
           >
-            {category.icon}
-            <Text style={[
-              styles.categoryText,
-              selectedCategory === category.id && styles.categoryTextActive,
-            ]}>
-              {category.label}
-            </Text>
+            <RefreshIcon width={18} height={18} color="#FFFFFF" />
+            <Text style={styles.searchAreaButtonText}>현 지도에서 검색</Text>
           </TouchableOpacity>
-        ))}
-      </ScrollView>
+        )}
+      </View>
 
       <TouchableOpacity
         style={styles.myLocationButton}
@@ -733,7 +1005,7 @@ export const HomeScreen: React.FC = () => {
               ) : (
                 <View style={styles.filterContainer}>
                   <TouchableOpacity
-                    style={styles.filterButton}
+                    style={[styles.filterButton, filterOpenOnly && styles.filterButtonActive]}
                     onPress={() => setFilterOpenOnly(!filterOpenOnly)}
                     activeOpacity={0.7}
                   >
@@ -743,7 +1015,7 @@ export const HomeScreen: React.FC = () => {
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={styles.filterButton}
+                    style={[styles.filterButton, filterSort === 'benefit' && styles.filterButtonActive]}
                     onPress={() => {
                       if (filterSort === 'benefit') {
                         setFilterOrder(filterOrder === 'desc' ? 'asc' : 'desc');
@@ -760,7 +1032,7 @@ export const HomeScreen: React.FC = () => {
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={styles.filterButton}
+                    style={[styles.filterButton, filterSort === 'distance' && styles.filterButtonActive]}
                     onPress={() => {
                       if (filterSort === 'distance') {
                         setFilterOrder(filterOrder === 'desc' ? 'asc' : 'desc');
@@ -777,7 +1049,7 @@ export const HomeScreen: React.FC = () => {
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={styles.filterButton}
+                    style={[styles.filterButton, filterSort === 'recommend' && styles.filterButtonActive]}
                     onPress={() => {
                       if (filterSort === 'recommend') {
                         setFilterOrder(filterOrder === 'desc' ? 'asc' : 'desc');
@@ -1070,6 +1342,14 @@ export const HomeScreen: React.FC = () => {
           <OnePayScreen onBack={() => setShowOnePay(false)} />
         </View>
       )}
+      <LocationDebugModal
+        visible={showDebugModal}
+        onClose={() => setShowDebugModal(false)}
+        onLocationSet={handleDebugLocationSet}
+        onReset={handleResetLocation}
+        onForceIndoor={() => setForceIndoorMode(!forceIndoorMode)}
+        isForceIndoor={forceIndoorMode}
+      />
     </View>
   );
 };
@@ -1125,11 +1405,14 @@ const styles = StyleSheet.create({
     color: '#999999',
     marginRight: 8,
   },
-  categoryOverlay: {
+  categoryWrapper: {
     position: 'absolute',
     top: 120,
     left: 0,
     right: 0,
+  },
+  categoryScrollView: {
+    flexGrow: 0,
   },
   categoryContainer: {
     paddingHorizontal: 20,
@@ -1147,16 +1430,17 @@ const styles = StyleSheet.create({
     borderColor: '#E0E0E0',
   },
   categoryButtonActive: {
-    backgroundColor: '#FFF0B3',
-    borderColor: '#FFF0B3',
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
   },
   categoryText: {
     fontSize: 13,
     fontFamily: FONTS.medium,
-    color: '#333333',
+    color: '#666666',
   },
   categoryTextActive: {
-    color: '#333333',
+    color: '#FFFFFF',
+    fontFamily: FONTS.semiBold,
   },
   bottomSheetContainer: {
     flex: 1,
@@ -1599,13 +1883,81 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#E0E0E0',
   },
+  filterButtonActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
   filterButtonText: {
     fontSize: 13,
     fontFamily: FONTS.medium,
     color: '#666666',
   },
   filterButtonTextActive: {
-    color: '#000000',
+    color: '#FFFFFF',
     fontFamily: FONTS.semiBold,
+  },
+  debugButton: {
+    position: 'absolute',
+    top: 160,
+    left: 20,
+    backgroundColor: '#FF6B6B',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    zIndex: 1000,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.2,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 4,
+      },
+    }),
+  },
+  debugButtonText: {
+    fontSize: 12,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
+  },
+  debugIndicator: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#4ADE80',
+    borderWidth: 1,
+    borderColor: '#FFFFFF',
+  },
+  searchAreaButton: {
+    alignSelf: 'center',
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.25,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 6,
+      },
+    }),
+  },
+  searchAreaButtonText: {
+    fontSize: 14,
+    fontFamily: FONTS.semiBold,
+    color: '#FFFFFF',
   },
 });

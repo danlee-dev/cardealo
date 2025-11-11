@@ -315,26 +315,38 @@ def nearby_recommendations():
         user_lng = float(request.args.get('user_lng', lng))
         radius = int(request.args.get('radius', 500))
         cards = request.args.get('cards', '').split(',')
+        gps_accuracy = request.args.get('gps_accuracy', type=float)
+        staying_duration = request.args.get('staying_duration', type=int)
         print(f"\n[API] nearby-recommendations 요청")
         print(f"[API] 검색 위치: {lat}, {lng}, radius={radius}m")
         print(f"[API] 사용자 위치: {user_lat}, {user_lng}")
+        print(f"[API] GPS 정확도: {gps_accuracy}m")
+        print(f"[API] 체류 시간: {staying_duration}초")
         print(f"[API] 카드: {cards}")
     except (TypeError, ValueError):
         return jsonify({'error': 'Invalid parameters'}), 400
 
     # Detect indoor/outdoor
-    location_info = location_service.detect_indoor(lat, lng)
+    location_info = location_service.detect_indoor(lat, lng, gps_accuracy, staying_duration)
     print(f"[API] 위치 정보: indoor={location_info['indoor']}, building={location_info['building_name']}")
 
     # Search nearby stores
     if location_info['indoor'] and location_info['building_name']:
         print(f"[API] 건물 내부 검색: {location_info['building_name']}")
-        stores = location_service.search_building_stores(location_info['building_name'])
+        stores = location_service.search_building_stores(
+            location_info['building_name'],
+            user_lat,
+            user_lng
+        )
 
         # Fallback to nearby search if no stores found
         if len(stores) == 0:
             print(f"[API] 건물 검색 실패, 주변 검색으로 전환...")
             stores = location_service.search_nearby_stores(lat, lng, radius)
+        else:
+            # Limit to 6 stores when inside building
+            stores = stores[:6]
+            print(f"[API] 건물 내부 - 최대 6개 가맹점으로 제한")
     else:
         print(f"[API] 주변 가맹점 검색 시작...")
         stores = location_service.search_nearby_stores(lat, lng, radius)
@@ -425,26 +437,50 @@ def merchant_recommendations():
 @app.route('/api/search-place', methods=['GET'])
 def search_place():
     """
-    Search for a place using Google Places Text Search
+    Search for a place using Google Places API
+    - If user location provided: Use Nearby Search (location-based)
+    - Otherwise: Use Text Search (global search)
     """
     query = request.args.get('query')
+    latitude = request.args.get('latitude', type=float)
+    longitude = request.args.get('longitude', type=float)
 
     if not query:
         return jsonify({'error': 'Query parameter is required'}), 400
 
     try:
         import requests as req
-        response = req.get('https://maps.googleapis.com/maps/api/place/textsearch/json', params={
-            'query': query,
-            'key': os.getenv('GOOGLE_MAPS_API_KEY'),
-            'language': 'ko',
-        })
-        response.raise_for_status()
 
+        # Use Nearby Search if location is provided (강제 위치 기반)
+        if latitude is not None and longitude is not None:
+            print(f"[Search] Nearby Search: '{query}' at {latitude}, {longitude}")
+
+            params = {
+                'location': f'{latitude},{longitude}',
+                'radius': 5000,  # 5km radius (강제 필터)
+                'keyword': query,  # 'query' 대신 'keyword' 사용
+                'key': os.getenv('GOOGLE_MAPS_API_KEY'),
+                'language': 'ko',
+            }
+
+            response = req.get('https://maps.googleapis.com/maps/api/place/nearbysearch/json', params=params)
+        else:
+            # Use Text Search for global search (위치 정보 없을 때)
+            print(f"[Search] Text Search: '{query}'")
+
+            params = {
+                'query': query,
+                'key': os.getenv('GOOGLE_MAPS_API_KEY'),
+                'language': 'ko',
+            }
+
+            response = req.get('https://maps.googleapis.com/maps/api/place/textsearch/json', params=params)
+
+        response.raise_for_status()
         data = response.json()
         results = data.get('results', [])
 
-        print(f"[Search] 검색어: '{query}', 결과: {len(results)}개")
+        print(f"[Search] 검색 결과: {len(results)}개")
 
         if results:
             place = results[0]

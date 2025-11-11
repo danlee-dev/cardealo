@@ -45,9 +45,15 @@ class LocationService:
 
         return R * c
 
-    def detect_indoor(self, lat: float, lng: float) -> Dict:
+    def detect_indoor(self, lat: float, lng: float, gps_accuracy: Optional[float] = None, staying_duration: Optional[int] = None) -> Dict:
         """
-        Detect if user is inside a building
+        Detect if user is inside a building using strict criteria
+
+        Args:
+            lat: Latitude
+            lng: Longitude
+            gps_accuracy: GPS accuracy in meters (optional)
+            staying_duration: Time user stayed at location in seconds (optional)
 
         Returns:
             {
@@ -56,57 +62,105 @@ class LocationService:
                 'address': str
             }
         """
-        headers = {
-            "X-NCP-APIGW-API-KEY-ID": self.ncp_client_id,
-            "X-NCP-APIGW-API-KEY": self.ncp_client_secret
-        }
+        print(f"[Indoor Detection] 좌표: {lat}, {lng}")
+        print(f"[Indoor Detection] GPS 정확도: {gps_accuracy}m, 체류 시간: {staying_duration}초")
 
+        # Step 1: GPS accuracy check
+        # If GPS is very accurate (< 15m), likely outdoor
+        if gps_accuracy is not None and gps_accuracy < 15:
+            print(f"[Indoor Detection] GPS 정확도 매우 양호 ({gps_accuracy}m) - 실외로 판단")
+            return {
+                'indoor': False,
+                'building_name': None,
+                'address': ''
+            }
+
+        # Step 2: Check staying duration
+        # If user stayed for 3+ minutes, likely indoor
+        staying_bonus = False
+        if staying_duration is not None and staying_duration >= 180:  # 3 minutes
+            staying_bonus = True
+            print(f"[Indoor Detection] 3분 이상 체류 ({staying_duration}초) - 건물 내부 가능성 높음")
+
+        # Step 3: Google Places Nearby Search
         params = {
-            "coords": f"{lng},{lat}",
-            "output": "json",
-            "orders": "roadaddr"
+            "location": f"{lat},{lng}",
+            "rankby": "distance",
+            "key": self.google_api_key,
+            "language": "ko"
         }
 
         try:
             response = requests.get(
-                self.BASE_URL_GEOCODE,
-                headers=headers,
+                self.BASE_URL_PLACES,
                 params=params,
                 timeout=10
             )
             response.raise_for_status()
 
             data = response.json()
+            results = data.get("results", [])
 
-            if data.get("status", {}).get("code") == 0:
-                results = data.get("results", [])
-                if results:
-                    result = results[0]
-                    land = result.get("land", {})
-                    road = result.get("road", {})
+            print(f"[Indoor Detection] Google Places 응답: {len(results)}개 장소 발견")
 
-                    # Check if building name exists
-                    building_name = land.get("name") or road.get("name")
-                    address = road.get("address") or land.get("address", "")
+            if results:
+                # Get the closest place
+                closest_place = results[0]
+                place_location = closest_place.get("geometry", {}).get("location", {})
+                place_lat = place_location.get("lat")
+                place_lng = place_location.get("lng")
 
-                    # Filter out road names (ending with 로, 길, 대로, etc.)
-                    is_road = False
-                    if building_name:
-                        road_suffixes = ['로', '길', '대로', '거리']
-                        is_road = any(building_name.endswith(suffix) for suffix in road_suffixes)
+                if place_lat and place_lng:
+                    # Calculate distance to closest place
+                    distance = self.calculate_distance(lat, lng, place_lat, place_lng)
+                    building_name = closest_place.get("name", "")
+                    address = closest_place.get("vicinity", "")
+                    place_types = closest_place.get("types", [])
 
-                    # Only consider as building if it's not a road name and different from address
-                    is_building = building_name and building_name != address and not is_road
+                    print(f"[Indoor Detection] 가장 가까운 장소: {building_name}")
+                    print(f"[Indoor Detection] 거리: {distance:.1f}m")
+                    print(f"[Indoor Detection] 주소: {address}")
+                    print(f"[Indoor Detection] 타입: {place_types}")
+
+                    # Filter out non-buildings (roads, routes, etc.)
+                    non_building_types = ['route', 'street_address', 'locality', 'political', 'premise']
+                    is_actual_building = not all(t in non_building_types for t in place_types)
+
+                    if not is_actual_building:
+                        print(f"[Indoor Detection] 도로/주소만 감지됨 - 실외로 판단")
+                        return {
+                            'indoor': False,
+                            'building_name': None,
+                            'address': address
+                        }
+
+                    # Strict distance threshold: 10m
+                    # OR user stayed for 3+ minutes and within 20m
+                    STRICT_THRESHOLD = 10  # meters
+                    RELAXED_THRESHOLD = 20  # meters (with staying bonus)
+
+                    if staying_bonus and distance <= RELAXED_THRESHOLD:
+                        is_indoor = True
+                        print(f"[Indoor Detection] 건물 내부 판정: True (3분 체류 + {distance:.1f}m)")
+                    elif distance <= STRICT_THRESHOLD:
+                        is_indoor = True
+                        print(f"[Indoor Detection] 건물 내부 판정: True (거리 {distance:.1f}m)")
+                    else:
+                        is_indoor = False
+                        print(f"[Indoor Detection] 건물 내부 판정: False (거리 {distance:.1f}m)")
 
                     return {
-                        'indoor': is_building,
-                        'building_name': building_name if is_building else None,
+                        'indoor': is_indoor,
+                        'building_name': building_name if is_indoor else None,
                         'address': address
                     }
 
         except Exception as e:
-            print(f"Reverse geocoding error: {e}")
+            print(f"[Indoor Detection] Google Places error: {e}")
+            import traceback
+            traceback.print_exc()
 
+        print(f"[Indoor Detection] 건물 감지 실패 - 기본값 반환")
         return {
             'indoor': False,
             'building_name': None,
@@ -208,19 +262,35 @@ class LocationService:
         # Sort by distance
         unique_stores.sort(key=lambda x: x['distance'])
 
-        return unique_stores
+        # Limit to 100 stores max (performance)
+        return unique_stores[:100]
 
-    def search_building_stores(self, building_name: str) -> List[Dict]:
-        """Search stores within a specific building using Google Places Text Search"""
+    def search_building_stores(self, building_name: str, user_lat: float, user_lng: float) -> List[Dict]:
+        """
+        Search stores within a specific building using Nearby Search with tight radius
+
+        Args:
+            building_name: Name of the building (for reference)
+            user_lat: User's current latitude
+            user_lng: User's current longitude
+
+        Returns:
+            List of stores within 50m radius (same building)
+        """
+        # Use Nearby Search with very tight radius (50m) to get stores in same building
         params = {
-            "query": building_name,
+            "location": f"{user_lat},{user_lng}",
+            "radius": 50,  # 50m radius - covers most building interiors
             "key": self.google_api_key,
             "language": "ko"
         }
 
+        print(f"[Building Stores] 건물 내 가맹점 검색: {building_name}")
+        print(f"[Building Stores] 위치: {user_lat}, {user_lng}, 반경: 50m")
+
         try:
             response = requests.get(
-                "https://maps.googleapis.com/maps/api/place/textsearch/json",
+                self.BASE_URL_PLACES,
                 params=params,
                 timeout=10
             )
@@ -228,6 +298,8 @@ class LocationService:
 
             data = response.json()
             results = data.get("results", [])
+
+            print(f"[Building Stores] 검색 결과: {len(results)}개 장소")
 
             stores = []
             for place in results:
@@ -238,24 +310,40 @@ class LocationService:
                 if not place_lat or not place_lng:
                     continue
 
+                # Calculate actual distance
+                distance = self.calculate_distance(user_lat, user_lng, place_lat, place_lng)
+
+                # Only include places within 50m
+                if distance > 50:
+                    continue
+
                 place_types = place.get("types", [])
                 category = self._google_type_to_category(place_types[0] if place_types else "store")
 
                 store = {
                     'name': place.get('name', ''),
                     'category': category,
-                    'address': place.get('formatted_address', ''),
+                    'address': place.get('vicinity', ''),
                     'latitude': place_lat,
                     'longitude': place_lng,
+                    'distance': int(distance),
                     'place_id': place.get('place_id', ''),
                     'building': building_name
                 }
                 stores.append(store)
+                print(f"[Building Stores] - {place.get('name')} ({distance:.1f}m)")
+
+            # Sort by distance
+            stores.sort(key=lambda x: x['distance'])
+
+            print(f"[Building Stores] 최종 결과: {len(stores)}개 가맹점")
 
             return stores
 
         except Exception as e:
-            print(f"Building search error: {e}")
+            print(f"[Building Stores] 검색 오류: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def _google_type_to_category(self, google_type: str) -> str:

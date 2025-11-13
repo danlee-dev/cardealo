@@ -8,6 +8,8 @@ from sqlalchemy import select
 from services.geocoding_service import GeocodingService
 from services.benefit_lookup_service import BenefitLookupService
 from services.location_service import LocationService
+from services.directions_service import DirectionsService
+from services.ocr_service import NaverOCRService
 from services.database import init_db, get_db
 from services.database import User, Card, MyCard
 from services.jwt_service import JwtService
@@ -20,6 +22,8 @@ CORS(app)
 geocoding_service = GeocodingService()
 benefit_service = BenefitLookupService()
 location_service = LocationService()
+directions_service = DirectionsService()
+ocr_service = NaverOCRService()
 jwt_service = JwtService()
 # 데이터베이스 초기화
 init_db()
@@ -147,6 +151,99 @@ def mypage():
         return jsonify({'success':False, 'error': str(e)}), 500
     finally:
         db.close()
+
+@app.route('/api/ocr/card', methods=['POST'])
+def ocr_card():
+    """
+    카드 이미지 OCR 처리 및 카드 검색
+
+    Request:
+    {
+        "image": "base64_encoded_image",
+        "image_format": "jpg"  // jpg, png, pdf, tiff
+    }
+
+    Response:
+    {
+        "success": true,
+        "ocr_result": {
+            "card_number": "1234567890123456",
+            "card_name": "신한",
+            "expiry_date": "12/25",
+            "raw_text": "..."
+        },
+        "matching_cards": [
+            {
+                "card_name": "신한 Deep Dream 체크카드",
+                "card_benefit": "...",
+                "card_pre_month_money": 300000
+            }
+        ]
+    }
+    """
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'success': False, 'error': 'Request body is required'}), 400
+
+    image_base64 = data.get('image')
+    image_format = data.get('image_format', 'jpg')
+
+    if not image_base64:
+        return jsonify({'success': False, 'error': 'image is required'}), 400
+
+    try:
+        # OCR 처리
+        ocr_result = ocr_service.extract_card_info(image_base64, image_format)
+
+        if not ocr_result.get('success'):
+            return jsonify({
+                'success': False,
+                'error': 'OCR processing failed',
+                'details': ocr_result.get('error')
+            }), 500
+
+        # 카드 검색 (OCR에서 추출된 카드사 이름으로)
+        matching_cards = []
+        card_name_from_ocr = ocr_result.get('card_name')
+
+        if card_name_from_ocr:
+            db = get_db()
+            cards = db.scalars(
+                select(Card)
+                .where(Card.card_name.like(f'%{card_name_from_ocr}%'))
+                .limit(10)
+            ).all()
+
+            for card in cards:
+                matching_cards.append({
+                    'card_name': card.card_name,
+                    'card_benefit': card.card_benefit,
+                    'card_pre_month_money': card.card_pre_month_money
+                })
+
+            db.close()
+
+        return jsonify({
+            'success': True,
+            'ocr_result': {
+                'card_number': ocr_result.get('card_number'),
+                'card_name': ocr_result.get('card_name'),
+                'expiry_date': ocr_result.get('expiry_date'),
+                'raw_text': ocr_result.get('raw_text')
+            },
+            'matching_cards': matching_cards
+        }), 200
+
+    except Exception as e:
+        print(f"[OCR API Error] {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': 'Internal server error',
+            'details': str(e)
+        }), 500
 
 @app.route('/api/card/list', methods=['GET'])
 def card_list():
@@ -306,6 +403,8 @@ def geocode_batch():
 def nearby_recommendations():
     """
     Get nearby stores with card recommendations
+    Query params:
+        - pagetoken: Optional pagination token from previous request
     """
     try:
         lat = float(request.args.get('lat'))
@@ -313,18 +412,24 @@ def nearby_recommendations():
         # 사용자의 실제 위치 (거리 계산용)
         user_lat = float(request.args.get('user_lat', lat))
         user_lng = float(request.args.get('user_lng', lng))
-        radius = int(request.args.get('radius', 500))
+        radius = int(request.args.get('radius'))  # Required: calculated from map viewport
         cards = request.args.get('cards', '').split(',')
         gps_accuracy = request.args.get('gps_accuracy', type=float)
         staying_duration = request.args.get('staying_duration', type=int)
+        category = request.args.get('category')
+        pagetoken = request.args.get('pagetoken')
         print(f"\n[API] nearby-recommendations 요청")
         print(f"[API] 검색 위치: {lat}, {lng}, radius={radius}m")
         print(f"[API] 사용자 위치: {user_lat}, {user_lng}")
         print(f"[API] GPS 정확도: {gps_accuracy}m")
         print(f"[API] 체류 시간: {staying_duration}초")
         print(f"[API] 카드: {cards}")
+        print(f"[API] 카테고리: {category}")
+        print(f"[API] 페이지 토큰: {pagetoken}")
     except (TypeError, ValueError):
         return jsonify({'error': 'Invalid parameters'}), 400
+
+    next_page_token = None
 
     # Detect indoor/outdoor
     location_info = location_service.detect_indoor(lat, lng, gps_accuracy, staying_duration)
@@ -342,14 +447,34 @@ def nearby_recommendations():
         # Fallback to nearby search if no stores found
         if len(stores) == 0:
             print(f"[API] 건물 검색 실패, 주변 검색으로 전환...")
-            stores = location_service.search_nearby_stores(lat, lng, radius)
+            result = location_service.search_nearby_stores(lat, lng, radius, category, pagetoken)
+
+            # Check for errors
+            if 'error' in result:
+                return jsonify({
+                    'error': result['error'],
+                    'message': result['message']
+                }), 500
+
+            stores = result['stores']
+            next_page_token = result['next_page_token']
         else:
             # Limit to 6 stores when inside building
             stores = stores[:6]
             print(f"[API] 건물 내부 - 최대 6개 가맹점으로 제한")
     else:
         print(f"[API] 주변 가맹점 검색 시작...")
-        stores = location_service.search_nearby_stores(lat, lng, radius)
+        result = location_service.search_nearby_stores(lat, lng, radius, category, pagetoken)
+
+        # Check for errors
+        if 'error' in result:
+            return jsonify({
+                'error': result['error'],
+                'message': result['message']
+            }), 500
+
+        stores = result['stores']
+        next_page_token = result['next_page_token']
 
     print(f"[API] 검색 완료: {len(stores)}개 가맹점 발견")
 
@@ -381,12 +506,18 @@ def nearby_recommendations():
         else:
             store['top_card'] = None
 
-    return jsonify({
+    response_data = {
         'indoor': location_info['indoor'],
         'building_name': location_info['building_name'],
         'address': location_info['address'],
         'stores': stores
-    }), 200
+    }
+
+    # Add next_page_token if available
+    if next_page_token:
+        response_data['next_page_token'] = next_page_token
+
+    return jsonify(response_data), 200
 
 
 @app.route('/api/merchant-recommendations', methods=['POST'])
@@ -557,8 +688,304 @@ def format_benefit(benefit: dict) -> str:
     return ' • '.join(parts) if parts else '혜택 없음'
 
 
+@app.route('/api/ai/course-recommend', methods=['POST'])
+def ai_course_recommend():
+    """
+    AI 기반 혜택 극대화 코스 추천 API
+
+    Request:
+    {
+        "user_input": "주말 단풍 데이트",
+        "user_location": {"latitude": 37.xxx, "longitude": 127.xxx},
+        "user_cards": ["현대 M카드", "신한 Love카드"],
+        "max_distance": 5000
+    }
+
+    Response:
+    {
+        "intent": {...},
+        "course": {
+            "title": "혜택까지 알뜰한 잠실 산책 코스",
+            "benefit_summary": "최대 50% 할인 혜택",
+            "reasoning": "...",
+            "stops": [...],
+            "routes": [...],
+            "total_distance": 1234,
+            "total_duration": 45,
+            "total_benefit_score": 250
+        }
+    }
+    """
+    try:
+        # AI 서비스 모듈 동적 import
+        import sys
+        import os
+        ai_path = os.path.join(os.path.dirname(__file__), '..', 'ai')
+        if ai_path not in sys.path:
+            sys.path.insert(0, ai_path)
+
+        from gemini_course_recommender import GeminiCourseRecommender
+
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'Request body is required'}), 400
+
+        user_input = data.get('user_input')
+        user_location = data.get('user_location')
+        user_cards = data.get('user_cards', [])
+        max_distance = data.get('max_distance', 5000)
+
+        if not user_input or not user_location:
+            return jsonify({
+                'error': 'user_input and user_location are required'
+            }), 400
+
+        # Gemini 기반 코스 추천
+        recommender = GeminiCourseRecommender()
+        result = recommender.recommend_course_with_benefits(
+            user_input=user_input,
+            user_location=user_location,
+            user_cards=user_cards,
+            max_distance=max_distance
+        )
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        print(f"[Error] AI 코스 추천 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': 'AI course recommendation failed',
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/directions', methods=['POST'])
+def get_directions():
+    """
+    경로 안내 정보 조회 API (Google Directions API)
+
+    Request:
+    {
+        "origin": {"latitude": 37.xxx, "longitude": 127.xxx},
+        "destination": {"latitude": 37.xxx, "longitude": 127.xxx},
+        "waypoints": [
+            {"latitude": 37.xxx, "longitude": 127.xxx}
+        ],
+        "mode": "walking",  // "driving", "walking", "transit", "bicycling"
+        "alternatives": false,
+        "avoid": ["tolls", "highways"]
+    }
+
+    Response:
+    {
+        "status": "OK",
+        "routes": [...],
+        "total_distance": 1234,
+        "total_duration": 900,
+        "total_distance_text": "1.2 km",
+        "total_duration_text": "15분",
+        "fare": {"currency": "KRW", "value": 1400},  // 대중교통만
+        "fare_text": "1,400원",  // 대중교통만
+        "fare_source": "google_api" // 또는 "estimated_seoul"
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'Request body is required'}), 400
+
+        origin = data.get('origin')
+        destination = data.get('destination')
+        waypoints = data.get('waypoints', [])
+        mode = data.get('mode', 'walking')
+        alternatives = data.get('alternatives', False)
+        avoid = data.get('avoid', [])
+
+        if not origin or not destination:
+            return jsonify({
+                'error': 'origin and destination are required'
+            }), 400
+
+        result = directions_service.get_directions(
+            origin=origin,
+            destination=destination,
+            waypoints=waypoints if waypoints else None,
+            mode=mode,
+            alternatives=alternatives,
+            avoid=avoid if avoid else None
+        )
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        print(f"[Error] Directions API 호출 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': 'Failed to get directions',
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/course-directions', methods=['POST'])
+def get_course_directions():
+    """
+    AI 코스 추천 결과를 위한 경로 정보 조회 API
+
+    Request:
+    {
+        "course_stops": [
+            {"name": "스타벅스", "latitude": 37.xxx, "longitude": 127.xxx},
+            {"name": "레스토랑", "latitude": 37.xxx, "longitude": 127.xxx}
+        ],
+        "start_location": {"latitude": 37.xxx, "longitude": 127.xxx},
+        "mode": "walking"
+    }
+
+    Response:
+    {
+        "status": "OK",
+        "routes": [...],
+        "legs_summary": [
+            {
+                "from": "현재 위치",
+                "to": "스타벅스",
+                "distance": 500,
+                "duration": 360,
+                "distance_text": "500 m",
+                "duration_text": "6분"
+            }
+        ],
+        "total_distance": 1500,
+        "total_duration": 1200,
+        "total_distance_text": "1.5 km",
+        "total_duration_text": "20분",
+        "fare": {"currency": "KRW", "value": 1400},  // 대중교통만
+        "fare_text": "1,400원"  // 대중교통만
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'Request body is required'}), 400
+
+        course_stops = data.get('course_stops', [])
+        start_location = data.get('start_location')
+        mode = data.get('mode', 'walking')
+
+        if not course_stops:
+            return jsonify({
+                'error': 'course_stops is required'
+            }), 400
+
+        result = directions_service.get_course_directions(
+            course_stops=course_stops,
+            start_location=start_location,
+            mode=mode
+        )
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        print(f"[Error] Course Directions API 호출 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': 'Failed to get course directions',
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/course-directions-mixed', methods=['POST'])
+def get_course_directions_mixed():
+    """
+    구간별 교통수단 자동 선택 경로 정보 조회 API
+
+    Request:
+    {
+        "course_stops": [
+            {"name": "스타벅스", "latitude": 37.xxx, "longitude": 127.xxx},
+            {"name": "레스토랑", "latitude": 37.xxx, "longitude": 127.xxx}
+        ],
+        "start_location": {"latitude": 37.xxx, "longitude": 127.xxx},
+        "leg_modes": ["walking", "transit"]  // Optional: 각 구간의 교통수단 (없으면 자동 판단)
+    }
+
+    Response:
+    {
+        "status": "OK",
+        "legs_summary": [
+            {
+                "from": "현재 위치",
+                "to": "스타벅스",
+                "mode": "walking",
+                "distance": 500,
+                "duration": 360,
+                "fare": null,
+                "distance_text": "500 m",
+                "duration_text": "6분",
+                "fare_text": null
+            },
+            {
+                "from": "스타벅스",
+                "to": "레스토랑",
+                "mode": "transit",
+                "distance": 3000,
+                "duration": 720,
+                "fare": 1400,
+                "distance_text": "3.0 km",
+                "duration_text": "12분",
+                "fare_text": "1,400원"
+            }
+        ],
+        "total_distance": 3500,
+        "total_duration": 1080,
+        "total_fare": 1400,
+        "total_distance_text": "3.5 km",
+        "total_duration_text": "18분",
+        "total_fare_text": "1,400원"
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'Request body is required'}), 400
+
+        course_stops = data.get('course_stops', [])
+        start_location = data.get('start_location')
+        leg_modes = data.get('leg_modes')
+
+        if not course_stops:
+            return jsonify({
+                'error': 'course_stops is required'
+            }), 400
+
+        result = directions_service.get_course_directions_mixed_mode(
+            course_stops=course_stops,
+            start_location=start_location,
+            leg_modes=leg_modes
+        )
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        print(f"[Error] Mixed Mode Course Directions API 호출 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': 'Failed to get mixed mode course directions',
+            'message': str(e)
+        }), 500
+
+
 if __name__ == '__main__':
-    port = int(os.getenv('FLASK_PORT', 5000))
+    port = int(os.getenv('FLASK_PORT', 5001))
     debug = os.getenv('FLASK_ENV') == 'development'
 
     app.run(host='0.0.0.0', port=port, debug=debug)

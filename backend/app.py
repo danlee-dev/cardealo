@@ -56,6 +56,7 @@ def health_check():
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.get_json()
+    user_name = data.get('user_name')
     user_id = data.get('user_id')
     user_pw = data.get('user_pw')
     user_email = data.get('user_email')
@@ -64,8 +65,8 @@ def register():
     card_name = data.get('card_name')
     print(f"user_id: {user_id}, user_pw: {user_pw}, user_email: {user_email}, user_age: {user_age}, isBusiness: {isBusiness}, card_name: {card_name}")
     
-    if not user_id or not user_pw or not user_email or not user_age or isBusiness is None or not card_name:
-        return jsonify({'success':False, 'error': 'user_id, user_pw, user_email, user_age, isBusiness, card_name are required'}), 400
+    if not user_name or not user_id or not user_pw or not user_email or not user_age or isBusiness is None or not card_name:
+        return jsonify({'success':False, 'error': 'user_name, user_id, user_pw, user_email, user_age, isBusiness, card_name are required'}), 400
     
     if isinstance(isBusiness, str):
         if not isBusiness or isBusiness.strip() == '':
@@ -92,7 +93,7 @@ def register():
         check_card = db.scalars(select(Card).where(Card.card_name == card_name)).first()
         if not check_card:
             return jsonify({'success':False, 'error': 'Card not found'}), 404
-        user = User(user_id=user_id, user_pw=user_pw, user_age=user_age, isBusiness=isBusiness, user_email=user_email)
+        user = User(user_id=user_id, user_name=user_name, user_pw=user_pw, user_age=user_age, isBusiness=isBusiness, user_email=user_email)
         mycard = MyCard(user_id=user_id, mycard_name=card_name, mycard_detail=check_card.card_benefit, mycard_pre_month_money=check_card.card_pre_month_money)
         db.add(mycard)
         db.add(user)
@@ -143,6 +144,7 @@ def mypage():
         if not user:
             return jsonify({'success':False, 'error': 'User not found'}), 404
         user_data = {
+            'user_name': user.user_name,
             'user_id': user.user_id,
             'user_age': user.user_age,
             'isBusiness': user.isBusiness,

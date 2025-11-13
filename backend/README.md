@@ -353,6 +353,7 @@ Content-Type: application/json
 
 {
     "user_id":"test",
+    "user_name":"홍길동",
     "user_email":"asdf@asdf.com",
     "user_pw":"test",
     "user_age":23,
@@ -422,6 +423,7 @@ Response:
         "isBusiness": false,
         "user_age": 1,
         "user_id": "test",
+        "user_name": "홍길동",
         "user_email":"asdf@asdf.com",
     }
 }

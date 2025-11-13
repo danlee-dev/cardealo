@@ -13,6 +13,8 @@ from services.database import init_db, get_db
 from services.database import User, Card, MyCard, CardBenefit
 from services.jwt_service import JwtService
 from utils.utils import parse_place_name
+from pprint import pprint
+import json
 
 load_dotenv()
 
@@ -382,13 +384,31 @@ def card_benefit():
             res[card.mycard_name] = []
             card_benefit = db.scalars(select(CardBenefit).where(CardBenefit.card_name == card.mycard_name)).all()
             for benefit in card_benefit:
+                category = benefit.category
+                places = benefit.places
+                discount_type = benefit.discount_type
+                discount_value = benefit.discount_value
+                max_discount = benefit.max_discount
+                pre_month_config = benefit.pre_month_config
+                limit_config = benefit.limit_config
+                places_display = benefit.places_display
+                discount_display = benefit.discount_display
+                limit_display = benefit.limit_display
+                max_discount_display = benefit.max_discount_display
                 tmp = {}
-                parsed_place = parse_place_name(benefit.card_benefit_places)
-                tmp['places'] = parsed_place
-                tmp['discount'] = benefit.card_benefit_discount
-                tmp['max_discount'] = benefit.card_benefit_max_discount
-                tmp['limit'] = benefit.card_benefit_limit
+                tmp['category'] = category
+                tmp['places'] = json.loads(places)
+                tmp['discount_type'] = discount_type
+                tmp['discount_value'] = discount_value
+                tmp['max_discount'] = max_discount
+                tmp['pre_month_config'] = json.loads(pre_month_config)
+                tmp['limit_config'] = json.loads(limit_config)
+                tmp['places_display'] = places_display
+                tmp['discount_display'] = discount_display
+                tmp['limit_display'] = limit_display
+                tmp['max_discount_display'] = max_discount_display
                 res[card.mycard_name].append(tmp)
+        # pprint(res)
     finally:
         db.close()
     return jsonify({'success':True, 'msg': 'card benefit', 'data': res}), 200

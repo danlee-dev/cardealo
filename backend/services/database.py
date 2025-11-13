@@ -63,13 +63,30 @@ class Card(Base):
 
 class CardBenefit(Base):
     __tablename__ = 'card_benefit'
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     card_name = Column(String, ForeignKey('card.card_name'))
-    card_benefit_places = Column(String)
-    card_benefit_discount = Column(Integer)
-    card_benefit_max_discount = Column(Integer)
-    card_benefit_limit = Column(String)
+
+    # Category and merchant matching
+    category = Column(String)  # 'convenience', 'mart', 'cafe', etc.
+    places = Column(String)  # JSON array: '["CU", "GS25"]' or null for all
+
+    # Discount configuration
+    discount_type = Column(String)  # 'percent', 'amount', 'point', 'per_unit'
+    discount_value = Column(Integer)  # 10 (for 10%), 1000 (for 1000원)
+    max_discount = Column(Integer)  # 최대 할인/적립 금액
+
+    # Pre-month requirements (JSON)
+    pre_month_config = Column(String)  # JSON: 전월실적 티어 정보
+
+    # Limit conditions (JSON)
+    limit_config = Column(String)  # JSON: 사용 제한 조건들
+
+    # Display fields (원본 자연어)
+    places_display = Column(String)  # "CU, GS25, 세븐일레븐"
+    discount_display = Column(String)  # "10% 할인"
+    limit_display = Column(String)  # "일 1회, 월 5회..."
+    max_discount_display = Column(String)  # "1회 최대 1천원"
 
     card = relationship("Card", back_populates="card_benefits")
 
@@ -105,7 +122,6 @@ def init_db():
             
             card = cards_data[card_name]
             card_pre_month_money = card.get('pre_month_money', 0)
-            card_pre_YN = card.get('pre_YN', False)
             card_benefit = ''
             for benefit in card.get('key_benefit', []):
                 card_benefit += benefit + '\n'
@@ -114,12 +130,12 @@ def init_db():
             db.add(new_card)
         db.commit()
         for row in card_benefits_data:
-            card_name, card_benefit_places, card_benefit_discount, card_benefit_max_discount, card_benefit_limit = row
+            card_name, category, places, discount_type, discount_value, max_discount, pre_month_config, limit_config, places_display, discount_display, limit_display, max_discount_display = row
             if card_name in cards_data:
                 existing_card = db.scalars(select(CardBenefit).where(CardBenefit.card_name == card_name)).first()
                 if existing_card:
                     continue
-                new_card_benefit = CardBenefit(card_name=card_name, card_benefit_places=card_benefit_places, card_benefit_discount=card_benefit_discount, card_benefit_max_discount=card_benefit_max_discount, card_benefit_limit=card_benefit_limit)
+                new_card_benefit = CardBenefit(card_name=card_name, category=category, places=places, discount_type=discount_type, discount_value=discount_value, max_discount=max_discount, pre_month_config=pre_month_config, limit_config=limit_config, places_display=places_display, discount_display=discount_display, limit_display=limit_display, max_discount_display=max_discount_display)
                 db.add(new_card_benefit)
         db.commit()
     except Exception as e:

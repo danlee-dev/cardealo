@@ -523,6 +523,117 @@ Response:
 }
 ```
 
+### Card benefit
+```json
+GET /api/card/benefit
+Authorization: bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidGVzdCJ9.ovXxDNossgChX4TpIcRy1SvCuIntuAJ54l0fMAUk0TQ
+```
+
+Response:
+
+```json
+{
+    "data": {
+        "신한카드 Mr.Life": [
+            {
+                "discount": "10%",
+                "limit": "일 1회, 월 5회, TIME 할인서비스 통합한도 (전월 30만: 1만원)",
+                "max_discount": "1회 최대 1천원",
+                "places": "편의점"
+            },
+            {
+                "discount": "10%",
+                "limit": "일 1회, 월 5회, 동물병원 제외, TIME 할인서비스 통합한도 (전월 30만: 1만원)",
+                "max_discount": "1회 최대 1천원",
+                "places": "병원, 약국"
+            },
+            {
+                "discount": "10%",
+                "limit": "일 1회, 월 5회, TIME 할인서비스 통합한도 (전월 30만: 1만원)",
+                "max_discount": "1회 최대 1천원",
+                "places": "세탁소"
+            },
+            {
+                "discount": "10%",
+                "limit": "오후 9시~오전 9시, 일 1회, 월 10회, TIME 할인서비스 통합한도 (전월 30만: 1만원)",
+                "max_discount": "1회 최대 1천원",
+                "places": "택시"
+            },
+            {
+                "discount": "10%",
+                "limit": "오후 9시~오전 9시, 일 1회, 월 10회, TIME 할인서비스 통합한도 (전월 30만: 1만원)",
+                "max_discount": "1회 최대 1천원",
+                "places": "한식, 양식, 일식, 중식, 뷔페, 패스트푸드, 커피전문점"
+            },
+            {
+                "discount": "10%",
+                "limit": "주말(토/일)만, 일 1회, 주말 할인서비스 통합한도 (전월 30만: 3천원), 온라인몰 포함",
+                "max_discount": "1회 최대 5천원",
+                "places": "이마트, 롯데마트, 홈플러스"
+            },
+            {
+                "discount": "리터당 60원",
+                "limit": "주말(토/일)만, 일 1회, LPG 제외, 주말 할인서비스 통합한도 (전월 30만: 3천원)",
+                "max_discount": "1회 10만원, 월 30만원까지",
+                "places": "SK에너지, GS칼텍스, H-Oil, S-Oil"
+            }
+        ],
+        "신한카드 처음(ANNIVERSE)": [
+            {
+                "discount": "5% 포인트 적립",
+                "limit": "전월 30만 이상, 오프라인, 일 1회, 통합 월 5천~2만 포인트, 임대매장 제외",
+                "max_discount": "1회 최대 1천 포인트",
+                "places": "한식, 중식, 일식, 양식, 패스트푸드, 뷔페"
+            },
+            {
+                "discount": "5% 포인트 적립",
+                "limit": "전월 30만 이상, 오프라인 (일부 스마트오더 포함), 일 1회, 통합 월 5천~2만 포인트, 임대매장 제외",
+                "max_discount": "1회 최대 1천 포인트",
+                "places": "카페"
+            },
+            {
+                "discount": "5% 포인트 적립",
+                "limit": "전월 30만 이상, 오프라인, 일 1회, 통합 월 5천~2만 포인트, 임대매장 제외",
+                "max_discount": "1회 최대 1천 포인트",
+                "places": "CU, GS25, 이마트24, 세븐일레븐"
+            },
+            {
+                "discount": "5% 포인트 적립",
+                "limit": "전월 30만 이상, 온/오프라인, 통합 월 5천~2만 포인트",
+                "max_discount": "1회 이용금액 5만원까지",
+                "places": "올리브영"
+            },
+            {
+                "discount": "5% 포인트 적립",
+                "limit": "전월 30만 이상, 오프라인, 통합 월 5천~2만 포인트",
+                "max_discount": "1회 이용금액 5만원까지",
+                "places": "다이소"
+            },
+            {
+                "discount": "5% 포인트 적립",
+                "limit": "전월 30만 이상, 통합 월 5천~2만 포인트",
+                "max_discount": "1회 이용금액 5만원까지",
+                "places": "택시"
+            },
+            {
+                "discount": "5% 포인트 적립",
+                "limit": "전월 30만 이상, 통합 월 5천~2만 포인트",
+                "max_discount": "1회 이용금액 5만원까지",
+                "places": "KTX"
+            },
+            {
+                "discount": "5% 포인트 적립",
+                "limit": "전월 30만 이상, 통합 월 5천~2만 포인트",
+                "max_discount": "1회 이용금액 5만원까지",
+                "places": "해외 가맹점"
+            }
+        ]
+    },
+    "msg": "card benefit",
+    "success": true
+}
+```
+
 
 
 #### `search_nearby_stores(lat, lng, radius, category)`

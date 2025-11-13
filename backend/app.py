@@ -1,7 +1,6 @@
 import os
 from flask import Flask, jsonify, request
 from functools import wraps
-import jwt
 from flask_cors import CORS
 from dotenv import load_dotenv
 from sqlalchemy import select
@@ -11,8 +10,9 @@ from services.location_service import LocationService
 from services.directions_service import DirectionsService
 from services.ocr_service import NaverOCRService
 from services.database import init_db, get_db
-from services.database import User, Card, MyCard
+from services.database import User, Card, MyCard, CardBenefit
 from services.jwt_service import JwtService
+from utils.utils import parse_place_name
 
 load_dotenv()
 
@@ -156,7 +156,8 @@ def mypage():
             user_data['cards'].append({
                 'card_name': card.mycard_name,
                 'card_benefit': card.mycard_detail,
-                'card_pre_month_money': card.mycard_pre_month_money
+                'card_pre_month_money': card.mycard_pre_month_money,
+                'card_pre_YN': card.mycard_pre_YN
             })
         return jsonify({'success':True, 'msg': 'mypage', 'user':user_data}), 200
     except Exception as e:
@@ -368,6 +369,30 @@ def card_delete():
         return jsonify({'success':False, 'error': str(e)}), 500
     finally:
         db.close()
+
+@app.route('/api/card/benefit', methods=['GET'])
+@login_required
+def card_benefit():
+    user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+    res = {}
+    try:
+        db = get_db()
+        user_cards = db.scalars(select(MyCard).where(MyCard.user_id == user_id)).all()
+        for card in user_cards:
+            res[card.mycard_name] = []
+            card_benefit = db.scalars(select(CardBenefit).where(CardBenefit.card_name == card.mycard_name)).all()
+            for benefit in card_benefit:
+                tmp = {}
+                parsed_place = parse_place_name(benefit.card_benefit_places)
+                tmp['places'] = parsed_place
+                tmp['discount'] = benefit.card_benefit_discount
+                tmp['max_discount'] = benefit.card_benefit_max_discount
+                tmp['limit'] = benefit.card_benefit_limit
+                res[card.mycard_name].append(tmp)
+    finally:
+        db.close()
+    return jsonify({'success':True, 'msg': 'card benefit', 'data': res}), 200
+
 
 @app.route('/api/geocode', methods=['GET'])
 def geocode():

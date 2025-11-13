@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ScrollView, Platform, Alert, TextInput, Keyboard, TouchableWithoutFeedback, Image, StatusBar, FlatList, Animated } from 'react-native';
-import { NaverMapView, NaverMapMarkerOverlay } from '@mj-studio/react-native-naver-map';
+import { NaverMapView, NaverMapMarkerOverlay, NaverMapPolylineOverlay } from '@mj-studio/react-native-naver-map';
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
-import { SearchIcon, StarsIcon, CafeIcon, CoffeeIcon, FoodIcon, CartIcon, CardsIcon, LocationMarkerIcon, StorePinIcon, StarIcon, MyLocationIcon, SearchPinIcon, RefreshIcon } from '../components/svg';
+import { SearchIcon, StarsIcon, CafeIcon, CoffeeIcon, FoodIcon, CartIcon, CardsIcon, LocationMarkerIcon, StorePinIcon, StarIcon, MyLocationIcon, SearchPinIcon, RefreshIcon, CourseIcon } from '../components/svg';
 import { FONTS, COLORS } from '../constants/theme';
 import * as Location from 'expo-location';
 import axios from 'axios';
@@ -12,6 +12,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { ProfileScreen } from './ProfileScreen';
 import { OnePayScreen } from './OnePayScreen';
 import { LocationDebugModal } from '../components/LocationDebugModal';
+import { calculateDistance } from '../constants/mapUtils';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -49,7 +50,66 @@ interface CardRecommendation {
   benefit_summary: string;
 }
 
-export const HomeScreen: React.FC = () => {
+interface CourseLeg {
+  from: string;
+  to: string;
+  mode: string;
+  distance: number;
+  duration: number;
+  fare: number | null;
+  distance_text: string;
+  duration_text: string;
+  fare_text: string | null;
+  polyline: string;
+}
+
+interface CourseRoute {
+  status: string;
+  legs_summary: CourseLeg[];
+  total_distance: number;
+  total_duration: number;
+  total_fare: number;
+  total_distance_text: string;
+  total_duration_text: string;
+  total_fare_text: string;
+}
+
+interface CoursePlace {
+  name: string;
+  category: string;
+  latitude: number;
+  longitude: number;
+  benefits: Array<{
+    card: string;
+    benefit: string;
+  }>;
+}
+
+interface AICourseResult {
+  intent: {
+    theme: string;
+    keywords: string[];
+    categories: string[];
+    num_places: number;
+    preferences: any;
+  };
+  course: {
+    title: string;
+    benefit_summary: string;
+    reasoning: string;
+    stops: CoursePlace[];
+    routes: any[];
+    total_distance: number;
+    total_duration: number;
+    total_benefit_score: number;
+  };
+}
+
+interface HomeScreenProps {
+  onLogout?: () => void;
+}
+
+export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [stores, setStores] = useState<StoreCard[]>([]);
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -79,6 +139,14 @@ export const HomeScreen: React.FC = () => {
   const [showSearchButton, setShowSearchButton] = useState(false);
   const [lastSearchCenter, setLastSearchCenter] = useState<{ latitude: number; longitude: number } | null>(null);
   const [forceIndoorMode, setForceIndoorMode] = useState(false);
+  const [currentSearchRadius, setCurrentSearchRadius] = useState(720); // Initial radius with 20% buffer
+
+  // AI Course Mode states
+  const [isCourseMode, setIsCourseMode] = useState(false);
+  const [courseQuery, setCourseQuery] = useState('');
+  const [courseResult, setCourseResult] = useState<AICourseResult | null>(null);
+  const [courseRoute, setCourseRoute] = useState<CourseRoute | null>(null);
+  const [loadingCourse, setLoadingCourse] = useState(false);
 
   const bottomSheetRef = useRef<BottomSheet>(null);
   const mapRef = useRef<any>(null);
@@ -155,11 +223,55 @@ export const HomeScreen: React.FC = () => {
     'taxi': ['택시', 'taxi'],
   };
 
+  // Decode Google Polyline Encoding
+  const decodePolyline = (encoded: string): Array<{ latitude: number; longitude: number }> => {
+    if (!encoded) return [];
+
+    const poly = [];
+    let index = 0;
+    const len = encoded.length;
+    let lat = 0;
+    let lng = 0;
+
+    while (index < len) {
+      let b;
+      let shift = 0;
+      let result = 0;
+
+      do {
+        b = encoded.charCodeAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+
+      const dlat = result & 1 ? ~(result >> 1) : result >> 1;
+      lat += dlat;
+
+      shift = 0;
+      result = 0;
+
+      do {
+        b = encoded.charCodeAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+
+      const dlng = result & 1 ? ~(result >> 1) : result >> 1;
+      lng += dlng;
+
+      poly.push({ latitude: lat / 1e5, longitude: lng / 1e5 });
+    }
+
+    return poly;
+  };
+
   const getCategoryIcon = (categoryId: string, isActive: boolean) => {
     const color = isActive ? '#FFFFFF' : '#666666';
     const iconProps = { width: 16, height: 16, color };
 
     switch (categoryId) {
+      case 'course':
+        return <CourseIcon width={20} height={19} color="#000000" />;
       case 'favorites':
         return <StarsIcon {...iconProps} />;
       case 'cafe':
@@ -176,6 +288,7 @@ export const HomeScreen: React.FC = () => {
   };
 
   const categories: CategoryButton[] = [
+    { id: 'course', label: '코스', icon: null },
     { id: 'favorites', label: '즐겨찾기', icon: null },
     { id: 'cafe', label: '카페', icon: null },
     { id: 'restaurant', label: '음식점', icon: null },
@@ -289,7 +402,7 @@ export const HomeScreen: React.FC = () => {
         const defaultCoords = { latitude: 37.5856, longitude: 127.0292 };
         setRealUserLocation(defaultCoords);
         setUserLocation(defaultCoords);
-        fetchNearbyStores(defaultCoords.latitude, defaultCoords.longitude);
+        fetchNearbyStores(defaultCoords.latitude, defaultCoords.longitude, currentSearchRadius);
         return;
       }
 
@@ -311,11 +424,11 @@ export const HomeScreen: React.FC = () => {
           const koreaCoords = { latitude: 37.5856, longitude: 127.0292 };
           setRealUserLocation(koreaCoords);
           setUserLocation(koreaCoords);
-          fetchNearbyStores(koreaCoords.latitude, koreaCoords.longitude);
+          fetchNearbyStores(koreaCoords.latitude, koreaCoords.longitude, currentSearchRadius);
         } else {
           setRealUserLocation(coords);
           setUserLocation(coords);
-          fetchNearbyStores(coords.latitude, coords.longitude);
+          fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
         }
         return;
       }
@@ -339,39 +452,58 @@ export const HomeScreen: React.FC = () => {
         const koreaCoords = { latitude: 37.5856, longitude: 127.0292 };
         setRealUserLocation(koreaCoords);
         setUserLocation(koreaCoords);
-        fetchNearbyStores(koreaCoords.latitude, koreaCoords.longitude);
+        fetchNearbyStores(koreaCoords.latitude, koreaCoords.longitude, currentSearchRadius);
       } else {
         setRealUserLocation(coords);
         setUserLocation(coords);
-        fetchNearbyStores(coords.latitude, coords.longitude);
+        fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
       }
     } catch (error) {
       console.error('위치 가져오기 실패:', error);
       const defaultCoords = { latitude: 37.5856, longitude: 127.0292 };
       setRealUserLocation(defaultCoords);
       setUserLocation(defaultCoords);
-      fetchNearbyStores(defaultCoords.latitude, defaultCoords.longitude);
+      fetchNearbyStores(defaultCoords.latitude, defaultCoords.longitude, currentSearchRadius);
       console.log('안암역을 기본 위치로 사용합니다.');
     }
   };
 
   // Calculate distance between two points using Haversine formula
-  const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
-    const R = 6371000; // Earth radius in meters
-    const lat1Rad = lat1 * Math.PI / 180;
-    const lat2Rad = lat2 * Math.PI / 180;
-    const dlat = (lat2 - lat1) * Math.PI / 180;
-    const dlng = (lng2 - lng1) * Math.PI / 180;
+  // Calculate search radius from zoom level with 20% buffer
+  const calculateRadiusFromZoom = (zoom: number): number => {
+    // Approximate radius in meters for each zoom level (visible map radius)
+    // These are rough estimates for Naver Map
+    const zoomRadiusMap: { [key: number]: number } = {
+      19: 50,
+      18: 100,
+      17: 200,
+      16: 400,
+      15: 800,
+      14: 1600,
+      13: 3200,
+      12: 6400,
+      11: 12800,
+      10: 25600,
+    };
 
-    const a = Math.sin(dlat / 2) ** 2 +
-              Math.cos(lat1Rad) * Math.cos(lat2Rad) *
-              Math.sin(dlng / 2) ** 2;
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    // Get base radius for zoom level (interpolate if needed)
+    const floorZoom = Math.floor(zoom);
+    const ceilZoom = Math.ceil(zoom);
 
-    return R * c;
+    const baseRadiusFloor = zoomRadiusMap[floorZoom] || 400;
+    const baseRadiusCeil = zoomRadiusMap[ceilZoom] || 400;
+
+    // Linear interpolation
+    const fraction = zoom - floorZoom;
+    const baseRadius = baseRadiusFloor + (baseRadiusCeil - baseRadiusFloor) * fraction;
+
+    // Add 20% buffer
+    const searchRadius = Math.round(baseRadius * 1.2);
+
+    return searchRadius;
   };
 
-  const fetchNearbyStores = async (lat: number, lng: number, radius: number = 600) => {
+  const fetchNearbyStores = async (lat: number, lng: number, radius: number) => {
     try {
       // Update staying duration
       const now = Date.now();
@@ -464,7 +596,7 @@ export const HomeScreen: React.FC = () => {
   const handleSearchCurrentArea = () => {
     if (currentMapCenter) {
       setLoading(true);
-      fetchNearbyStores(currentMapCenter.latitude, currentMapCenter.longitude, 600);
+      fetchNearbyStores(currentMapCenter.latitude, currentMapCenter.longitude, currentSearchRadius);
     }
   };
 
@@ -472,6 +604,11 @@ export const HomeScreen: React.FC = () => {
     const { latitude, longitude, zoom } = event;
     setCurrentZoom(zoom);
     setCurrentMapCenter({ latitude, longitude });
+
+    // Calculate and update search radius based on zoom level
+    const newRadius = calculateRadiusFromZoom(zoom);
+    setCurrentSearchRadius(newRadius);
+    console.log(`[Map] Zoom: ${zoom.toFixed(1)}, Search radius: ${newRadius}m`);
 
     // Check if map moved from last search
     if (lastSearchCenter) {
@@ -542,7 +679,7 @@ export const HomeScreen: React.FC = () => {
         }
 
         // Fetch nearby stores at search location
-        fetchNearbyStores(latitude, longitude, 500);
+        fetchNearbyStores(latitude, longitude, currentSearchRadius);
       } else {
         Alert.alert('검색 결과 없음', '검색 결과를 찾을 수 없습니다.');
         setSearchResultLocation(null);
@@ -588,6 +725,85 @@ export const HomeScreen: React.FC = () => {
     }
   };
 
+  // AI Course Recommendation
+  const handleCourseSearch = async () => {
+    if (!courseQuery.trim() || !userLocation) {
+      Alert.alert('안내', '검색어를 입력하고 위치 권한을 허용해주세요.');
+      return;
+    }
+
+    setLoadingCourse(true);
+    Keyboard.dismiss();
+
+    try {
+      console.log('[Course] AI 코스 추천 요청:', courseQuery);
+
+      const response = await axios.post(`${API_URL}/api/ai/course-recommend`, {
+        user_input: courseQuery,
+        user_location: {
+          latitude: userLocation.latitude,
+          longitude: userLocation.longitude,
+        },
+        user_cards: USER_CARDS,
+        max_distance: 5000,
+      });
+
+      const result: AICourseResult = response.data;
+      console.log('[Course] 추천 결과:', result);
+
+      setCourseResult(result);
+
+      // Fetch route for the recommended course
+      if (result.course && result.course.stops && result.course.stops.length > 0) {
+        await fetchCourseRoute(result.course.stops);
+      }
+
+      // Move map to first place
+      if (result.course && result.course.stops && result.course.stops.length > 0 && mapRef.current) {
+        const firstPlace = result.course.stops[0];
+        mapRef.current.animateCameraTo({
+          latitude: firstPlace.latitude,
+          longitude: firstPlace.longitude,
+          zoom: 14,
+          duration: 500,
+        });
+      }
+
+      bottomSheetRef.current?.snapToIndex(2);
+    } catch (error) {
+      console.error('[Course] AI 코스 추천 실패:', error);
+      Alert.alert('오류', 'AI 코스 추천에 실패했습니다.');
+    } finally {
+      setLoadingCourse(false);
+    }
+  };
+
+  // Fetch mixed-mode route for course
+  const fetchCourseRoute = async (places: CoursePlace[]) => {
+    if (!userLocation || places.length === 0) return;
+
+    try {
+      console.log('[Course Route] 경로 계산 중...');
+
+      const response = await axios.post(`${API_URL}/api/course-directions-mixed`, {
+        course_stops: places.map(p => ({
+          name: p.name,
+          latitude: p.latitude,
+          longitude: p.longitude,
+        })),
+        start_location: userLocation,
+      });
+
+      const route: CourseRoute = response.data;
+      console.log('[Course Route] 경로 계산 완료:', route);
+
+      setCourseRoute(route);
+    } catch (error) {
+      console.error('[Course Route] 경로 계산 실패:', error);
+      // Route calculation failure is not critical, so we don't show alert
+    }
+  };
+
   const handleScrollEnd = (event: any) => {
     // 스크롤이 완전히 끝났을 때만 카드 선택 업데이트
     const scrollPosition = event.nativeEvent.contentOffset.x;
@@ -626,7 +842,7 @@ export const HomeScreen: React.FC = () => {
     console.log(`[Debug] 위치 설정: ${latitude}, ${longitude}`);
     setDebugLocation({ latitude, longitude });
     setUserLocation({ latitude, longitude });
-    fetchNearbyStores(latitude, longitude);
+    fetchNearbyStores(latitude, longitude, currentSearchRadius);
 
     if (mapRef.current) {
       mapRef.current.animateCameraTo({
@@ -645,7 +861,7 @@ export const HomeScreen: React.FC = () => {
 
     if (realUserLocation) {
       setUserLocation(realUserLocation);
-      fetchNearbyStores(realUserLocation.latitude, realUserLocation.longitude);
+      fetchNearbyStores(realUserLocation.latitude, realUserLocation.longitude, currentSearchRadius);
 
       if (mapRef.current) {
         mapRef.current.animateCameraTo({
@@ -808,6 +1024,46 @@ export const HomeScreen: React.FC = () => {
             </View>
           </NaverMapMarkerOverlay>
         )}
+
+        {/* Course Route Polylines */}
+        {isCourseMode && courseRoute && courseRoute.legs_summary && courseRoute.legs_summary.map((leg, index) => {
+          // Decode polyline (simple implementation - you may need @mapbox/polyline library)
+          const coordinates = decodePolyline(leg.polyline);
+
+          // Color based on mode
+          const color = leg.mode === 'walking' ? '#00C853' : leg.mode === 'transit' ? '#007AFF' : '#FF5722';
+
+          return (
+            <NaverMapPolylineOverlay
+              key={`leg-${index}`}
+              coords={coordinates}
+              color={color}
+              width={5}
+            />
+          );
+        })}
+
+        {/* Course Place Markers */}
+        {isCourseMode && courseResult && courseResult.course && courseResult.course.stops && courseResult.course.stops.map((place, index) => (
+          <NaverMapMarkerOverlay
+            key={`course-place-${index}`}
+            latitude={place.latitude}
+            longitude={place.longitude}
+            anchor={{ x: 0.5, y: 1 }}
+            width={39}
+            height={39}
+            caption={{
+              text: place.name,
+              textSize: 14,
+              color: '#000000',
+              haloColor: '#FFFFFF',
+            }}
+          >
+            <View style={{ width: 39, height: 39 }}>
+              <SearchPinIcon width={39} height={39} />
+            </View>
+          </NaverMapMarkerOverlay>
+        ))}
       </NaverMapView>
 
       {process.env.EXPO_PUBLIC_ENABLE_LOCATION_DEBUG === 'true' && (
@@ -826,18 +1082,24 @@ export const HomeScreen: React.FC = () => {
           <SearchIcon width={20} height={20} color="#999999" />
           <TextInput
             style={styles.searchInput}
-            placeholder="장소, 주소 검색"
+            placeholder={isCourseMode ? "원하는 코스를 입력하세요 (예: 카페 → 점심 → 저녁)" : "장소, 주소 검색"}
             placeholderTextColor="#999999"
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            onSubmitEditing={handleSearch}
+            value={isCourseMode ? courseQuery : searchQuery}
+            onChangeText={isCourseMode ? setCourseQuery : setSearchQuery}
+            onSubmitEditing={isCourseMode ? handleCourseSearch : handleSearch}
             returnKeyType="search"
-            editable={!isSearching}
+            editable={!isSearching && !loadingCourse}
           />
-          {searchQuery.length > 0 && (
+          {(isCourseMode ? courseQuery.length > 0 : searchQuery.length > 0) && (
             <TouchableOpacity onPress={() => {
-              setSearchQuery('');
-              setSearchResultLocation(null);
+              if (isCourseMode) {
+                setCourseQuery('');
+                setCourseResult(null);
+                setCourseRoute(null);
+              } else {
+                setSearchQuery('');
+                setSearchResultLocation(null);
+              }
             }}>
               <Text style={styles.clearButton}>✕</Text>
             </TouchableOpacity>
@@ -862,6 +1124,44 @@ export const HomeScreen: React.FC = () => {
         >
           {categories.map((category) => {
             const isActive = selectedCategory === category.id;
+            const isCourse = category.id === 'course';
+
+            if (isCourse) {
+              return (
+                <TouchableOpacity
+                  key={category.id}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    const newCourseMode = !isCourseMode;
+                    setIsCourseMode(newCourseMode);
+                    setSelectedCategory(newCourseMode ? 'course' : null);
+
+                    // Clear previous results when toggling mode
+                    if (!newCourseMode) {
+                      setCourseResult(null);
+                      setCourseRoute(null);
+                      setCourseQuery('');
+                    } else {
+                      setSearchQuery('');
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <LinearGradient
+                    colors={['#FFCB9A', '#D3ADD8', '#6DDFE6']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.courseButton}
+                  >
+                    {getCategoryIcon(category.id, isActive)}
+                    <Text style={styles.courseText}>
+                      {category.label}
+                    </Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              );
+            }
+
             return (
               <TouchableOpacity
                 key={category.id}
@@ -1069,16 +1369,79 @@ export const HomeScreen: React.FC = () => {
             )
           )}
 
-          <BottomSheetScrollView
-            contentContainerStyle={{
-              paddingHorizontal: 8,
-              paddingBottom: 15,
-              backgroundColor: COLORS.background,
-            }}
-            showsVerticalScrollIndicator={false}
-            onScrollBeginDrag={() => Keyboard.dismiss()}
-          >
-            {selectedStore ? (
+          <View style={{ flex: 1 }}>
+            <BottomSheetScrollView
+              contentContainerStyle={{
+                paddingHorizontal: 8,
+                paddingBottom: 15,
+                backgroundColor: COLORS.background,
+              }}
+              showsVerticalScrollIndicator={false}
+              onScrollBeginDrag={() => Keyboard.dismiss()}
+            >
+            {isCourseMode ? (
+              // Course Mode Content
+              <>
+                {loadingCourse ? (
+                  <View style={styles.loadingContainer}>
+                    <Text style={styles.loadingText}>AI 코스 추천 중...</Text>
+                  </View>
+                ) : courseResult ? (
+                  <>
+                    <Text style={styles.recommendationsTitle}>{courseResult.course.title}</Text>
+                    <Text style={styles.courseSummary}>{courseResult.course.reasoning}</Text>
+
+                    {courseRoute && (
+                      <View style={styles.routeInfo}>
+                        <Text style={styles.routeInfoText}>총 거리: {courseRoute.total_distance_text}</Text>
+                        <Text style={styles.routeInfoText}>소요 시간: {courseRoute.total_duration_text}</Text>
+                        {courseRoute.total_fare > 0 && (
+                          <Text style={styles.routeInfoText}>교통비: {courseRoute.total_fare_text}</Text>
+                        )}
+                      </View>
+                    )}
+
+                    {courseResult.course && courseResult.course.stops && courseResult.course.stops.map((place, index) => (
+                      <View key={index} style={styles.coursePlaceCard}>
+                        <View style={styles.coursePlaceNumber}>
+                          <Text style={styles.coursePlaceNumberText}>{index + 1}</Text>
+                        </View>
+                        <View style={styles.coursePlaceInfo}>
+                          <Text style={styles.coursePlaceName}>{place.name}</Text>
+                          <Text style={styles.coursePlaceCategory}>{place.category}</Text>
+                          {place.benefits && place.benefits.length > 0 && (
+                            <View style={styles.benefitsContainer}>
+                              {place.benefits.map((benefit, idx) => (
+                                <View key={idx} style={styles.benefitChip}>
+                                  <Text style={styles.benefitChipText}>{benefit.card}</Text>
+                                  <Text style={styles.benefitChipDetail}>{benefit.benefit}</Text>
+                                </View>
+                              ))}
+                            </View>
+                          )}
+                        </View>
+
+                        {courseRoute && courseRoute.legs_summary && courseRoute.legs_summary[index] && (
+                          <View style={styles.legInfo}>
+                            <Text style={styles.legMode}>
+                              {courseRoute.legs_summary[index].mode === 'walking' ? '도보' :
+                               courseRoute.legs_summary[index].mode === 'transit' ? '대중교통' : '이동'}
+                            </Text>
+                            <Text style={styles.legDistance}>{courseRoute.legs_summary[index].distance_text}</Text>
+                            <Text style={styles.legDuration}>{courseRoute.legs_summary[index].duration_text}</Text>
+                          </View>
+                        )}
+                      </View>
+                    ))}
+                  </>
+                ) : (
+                  <View style={styles.emptyState}>
+                    <Text style={styles.emptyStateText}>원하는 코스를 검색해보세요</Text>
+                    <Text style={styles.emptyStateHint}>예: "카페에서 커피 마시고 점심 먹고 싶어"</Text>
+                  </View>
+                )}
+              </>
+            ) : selectedStore ? (
               <>
 
                 {loadingRecommendations ? (
@@ -1328,13 +1691,14 @@ export const HomeScreen: React.FC = () => {
               </>
             )}
           </BottomSheetScrollView>
+          </View>
         </View>
       </BottomSheet>
-        </View>
+      </View>
       </TouchableWithoutFeedback>
       {showProfile && (
         <View style={styles.profileOverlay}>
-          <ProfileScreen onBack={() => setShowProfile(false)} />
+          <ProfileScreen onBack={() => setShowProfile(false)} onLogout={onLogout} />
         </View>
       )}
       {showOnePay && (
@@ -1441,6 +1805,19 @@ const styles = StyleSheet.create({
   categoryTextActive: {
     color: '#FFFFFF',
     fontFamily: FONTS.semiBold,
+  },
+  courseButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  courseText: {
+    fontSize: 14,
+    fontFamily: FONTS.semiBold,
+    color: '#000000',
   },
   bottomSheetContainer: {
     flex: 1,
@@ -1959,5 +2336,138 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: FONTS.semiBold,
     color: '#FFFFFF',
+  },
+  // Course Mode Styles
+  courseSummary: {
+    fontSize: 15,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+    marginBottom: 16,
+    paddingHorizontal: 12,
+    lineHeight: 22,
+  },
+  routeInfo: {
+    backgroundColor: '#F8F8F8',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+    marginHorizontal: 12,
+  },
+  routeInfoText: {
+    fontSize: 14,
+    fontFamily: FONTS.medium,
+    color: '#333333',
+    marginBottom: 4,
+  },
+  coursePlaceCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    marginHorizontal: 12,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 2,
+      },
+    }),
+  },
+  coursePlaceNumber: {
+    position: 'absolute',
+    top: 16,
+    left: 16,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FF5722',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  coursePlaceNumberText: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
+  },
+  coursePlaceInfo: {
+    marginLeft: 48,
+  },
+  coursePlaceName: {
+    fontSize: 16,
+    fontFamily: FONTS.semiBold,
+    color: '#000000',
+    marginBottom: 4,
+  },
+  coursePlaceCategory: {
+    fontSize: 13,
+    fontFamily: FONTS.regular,
+    color: '#999999',
+    marginBottom: 8,
+  },
+  benefitsContainer: {
+    marginTop: 8,
+    gap: 6,
+  },
+  benefitChip: {
+    backgroundColor: '#E3F2FD',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    marginBottom: 4,
+  },
+  benefitChipText: {
+    fontSize: 12,
+    fontFamily: FONTS.semiBold,
+    color: '#1976D2',
+  },
+  benefitChipDetail: {
+    fontSize: 11,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+    marginTop: 2,
+  },
+  legInfo: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'center',
+  },
+  legMode: {
+    fontSize: 13,
+    fontFamily: FONTS.medium,
+    color: '#007AFF',
+  },
+  legDistance: {
+    fontSize: 12,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+  },
+  legDuration: {
+    fontSize: 12,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+  },
+  emptyState: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  emptyStateText: {
+    fontSize: 16,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+    marginBottom: 8,
+  },
+  emptyStateHint: {
+    fontSize: 13,
+    fontFamily: FONTS.regular,
+    color: '#999999',
+    textAlign: 'center',
   },
 });

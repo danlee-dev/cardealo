@@ -1,9 +1,21 @@
+# Web Framework
 Flask==3.0.0
 Flask-CORS==4.0.0
+
+# Environment & Configuration
 python-dotenv==1.0.0
+
+# HTTP Requests
 requests==2.31.0
-bs4==0.0.2
+
+# Database
 SQLAlchemy>=2.0.35
 SQLAlchemy-Utils==0.42.0
+
+# Authentication & Security
 passlib==1.7.4
 PyJWT==2.8.0
+cryptography>=41.0.0
+
+# Web Scraping (for scripts only)
+beautifulsoup4==4.12.2

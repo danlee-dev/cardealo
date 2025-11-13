@@ -16,6 +16,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { BackIcon, CameraIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import * as FileSystem from 'expo-file-system/legacy';
+import { AuthStorage } from '../utils/auth';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
@@ -146,13 +147,40 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
   const handleCardSelect = async (cardName: string) => {
     setShowCardSelection(false);
 
-    // TODO: 실제로는 로그인 토큰을 사용해야 함
-    // 지금은 카드 등록 성공 메시지만 표시
-    Alert.alert(
-      '등록 완료',
-      `${cardName}이(가) 등록되었습니다.`,
-      [{ text: '확인', onPress: handleBack }]
-    );
+    try {
+      const token = await AuthStorage.getToken();
+
+      if (!token) {
+        Alert.alert('오류', '로그인이 필요합니다.');
+        return;
+      }
+
+      const response = await fetch(`${BACKEND_URL}/api/card/add`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          card_name: cardName,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        Alert.alert(
+          '등록 완료',
+          `${cardName}이(가) 등록되었습니다.`,
+          [{ text: '확인', onPress: handleBack }]
+        );
+      } else {
+        Alert.alert('등록 실패', data.error || '카드 등록에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error('Card registration error:', error);
+      Alert.alert('오류', '카드 등록 중 오류가 발생했습니다.');
+    }
   };
 
   return (

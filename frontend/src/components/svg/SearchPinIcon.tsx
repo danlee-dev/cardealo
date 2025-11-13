@@ -24,7 +24,6 @@ export const SearchPinIcon: React.FC<SearchPinIconProps> = ({ width = 39, height
           width="25.0069"
           height="25.0069"
           filterUnits="userSpaceOnUse"
-          colorInterpolationFilters="sRGB"
         >
           <FeFlood floodOpacity="0" result="BackgroundImageFix"/>
           <FeBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>

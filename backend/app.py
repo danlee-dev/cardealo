@@ -109,16 +109,26 @@ def login():
     data = request.get_json()
     user_email = data.get('user_email')
     user_pw = data.get('user_pw')
-    
+
     try:
         db = get_db()
         user = db.scalars(select(User).where(User.user_email == user_email)).first()
         if not user:
             return jsonify({'success':False, 'error': 'User not found'}), 404
-        if not user.user_pw == user_pw:
-            return jsonify({'success':False, 'error': 'Invalid password'}), 401
+
+        # PasswordType 비교 방식 수정
+        try:
+            if user.user_pw != user_pw:
+                return jsonify({'success':False, 'error': 'Invalid password'}), 401
+        except Exception as pw_error:
+            print(f"[Password comparison error] {pw_error}")
+            return jsonify({'success':False, 'error': 'Password comparison failed'}), 500
+
         return jsonify({'success':True, 'msg': 'logged in', 'token': jwt_service.generate_token(user.user_id)}), 200
     except Exception as e:
+        print(f"[Login error] {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'success':False, 'error': str(e)}), 500
     finally:
         db.close()

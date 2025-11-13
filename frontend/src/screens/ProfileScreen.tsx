@@ -10,24 +10,73 @@ import {
   FlatList,
   Platform,
   Animated,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BackIcon, BellIcon, SettingsIcon, CardAddIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import { USER_CARDS, CARD_IMAGES } from '../constants/userCards';
 import { CardRegistrationScreen } from './CardRegistrationScreen';
+import { AdminAuthScreen } from './AdminAuthScreen';
+import { AdminDashboardScreen } from './AdminDashboardScreen';
+import { AdminDepartmentScreen } from './AdminDepartmentScreen';
+import { AuthAPI } from '../utils/auth';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CARD_SECTION_WIDTH = SCREEN_WIDTH - 40;
 
 interface ProfileScreenProps {
   onBack: () => void;
+  onLogout?: () => void;
 }
 
-export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack }) => {
+export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }) => {
   const [hasNotification] = useState(true);
   const [showCardRegistration, setShowCardRegistration] = useState(false);
+  const [showAdminAuth, setShowAdminAuth] = useState(false);
+  const [showAdminDashboard, setShowAdminDashboard] = useState(false);
+  const [showAdminDepartment, setShowAdminDepartment] = useState(false);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
+
+  const handleAdminAuthenticated = () => {
+    setShowAdminAuth(false);
+    setShowAdminDashboard(true);
+  };
+
+  const handleViewDepartments = () => {
+    setShowAdminDashboard(false);
+    setShowAdminDepartment(true);
+  };
+
+  const handleBackToDashboard = () => {
+    setShowAdminDepartment(false);
+    setShowAdminDashboard(true);
+  };
+
+  const handleCloseAdmin = () => {
+    setShowAdminDashboard(false);
+    setShowAdminDepartment(false);
+  };
+
+  const handleLogout = () => {
+    Alert.alert(
+      '로그아웃',
+      '정말 로그아웃 하시겠습니까?',
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '로그아웃',
+          style: 'destructive',
+          onPress: async () => {
+            await AuthAPI.logout();
+            if (onLogout) {
+              onLogout();
+            }
+          },
+        },
+      ]
+    );
+  };
 
   // Mock data for demonstration
   const userName = '이성민';
@@ -167,6 +216,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack }) => {
           <TouchableOpacity
             activeOpacity={0.7}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            onPress={handleLogout}
           >
             <SettingsIcon width={20} height={20} />
           </TouchableOpacity>
@@ -200,7 +250,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack }) => {
 
         {/* My Deck Report Section */}
         <View style={styles.deckReportSection}>
-          <Text style={styles.sectionTitle}>My Deck Report</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>My Deck Report</Text>
+            <TouchableOpacity
+              style={styles.adminButton}
+              onPress={() => setShowAdminAuth(true)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.adminButtonText}>관리자</Text>
+            </TouchableOpacity>
+          </View>
           <View style={styles.deckReportContainer}>
             <FlatList
               data={cardDetails}
@@ -274,6 +333,27 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack }) => {
       {showCardRegistration && (
         <View style={styles.overlay}>
           <CardRegistrationScreen onBack={() => setShowCardRegistration(false)} />
+        </View>
+      )}
+      {showAdminAuth && (
+        <View style={styles.overlay}>
+          <AdminAuthScreen
+            onAuthenticated={handleAdminAuthenticated}
+            onCancel={() => setShowAdminAuth(false)}
+          />
+        </View>
+      )}
+      {showAdminDashboard && (
+        <View style={styles.overlay}>
+          <AdminDashboardScreen
+            onClose={handleCloseAdmin}
+            onViewDepartments={handleViewDepartments}
+          />
+        </View>
+      )}
+      {showAdminDepartment && (
+        <View style={styles.overlay}>
+          <AdminDepartmentScreen onBack={handleBackToDashboard} />
         </View>
       )}
     </View>
@@ -354,12 +434,28 @@ const styles = StyleSheet.create({
     marginTop: 20,
     paddingBottom: 30,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    marginBottom: 0,
+  },
   sectionTitle: {
     fontSize: 20,
     fontFamily: FONTS.bold,
     color: '#212121',
-    paddingHorizontal: 20,
-    marginBottom: 0,
+  },
+  adminButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#9C27B0',
+    borderRadius: 6,
+  },
+  adminButtonText: {
+    fontSize: 13,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
   },
   deckReportContainer: {
     overflow: 'visible',

@@ -1,20 +1,43 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator } from 'react-native';
 import { LogoBlack, KakaoLogo, NaverLogo, GoogleLogo, AppleLogo } from '../components/svg';
+import { FONTS } from '../constants/theme';
+import { AuthAPI } from '../utils/auth';
 
 interface LoginScreenProps {
   onLogin: () => void;
+  onSignup: () => void;
 }
 
-export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
+export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onSignup }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [emailFocused, setEmailFocused] = useState(false);
   const [passwordFocused, setPasswordFocused] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSignup = () => {
-    console.log('Sign up pressed');
-    onLogin();
+  const handleLogin = async () => {
+    if (!email.trim() || !password.trim()) {
+      Alert.alert('오류', '이메일과 비밀번호를 입력해주세요.');
+      return;
+    }
+
+    setIsLoading(true);
+
+    try {
+      const response = await AuthAPI.login(email, password);
+
+      if (response.success) {
+        onLogin();
+      } else {
+        Alert.alert('로그인 실패', response.error || '이메일 또는 비밀번호가 올바르지 않습니다.');
+      }
+    } catch (error) {
+      Alert.alert('오류', '로그인 중 오류가 발생했습니다.');
+      console.error('Login error:', error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleKakaoLogin = () => {
@@ -74,8 +97,27 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
             secureTextEntry
           />
 
-          <TouchableOpacity style={styles.signupButton} onPress={handleSignup}>
-            <Text style={styles.signupButtonText}>로그인</Text>
+          <TouchableOpacity
+            style={[styles.loginButton, isLoading && styles.loginButtonDisabled]}
+            onPress={handleLogin}
+            disabled={isLoading}
+            activeOpacity={0.8}
+          >
+            {isLoading ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <Text style={styles.loginButtonText}>로그인</Text>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.signupLink}
+            onPress={onSignup}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.signupLinkText}>
+              계정이 없으신가요? <Text style={styles.signupLinkBold}>회원가입</Text>
+            </Text>
           </TouchableOpacity>
 
           <Text style={styles.dividerText}>or</Text>
@@ -141,6 +183,7 @@ const styles = StyleSheet.create({
   },
   label: {
     fontSize: 14,
+    fontFamily: FONTS.medium,
     color: '#999999',
     marginBottom: 8,
     marginLeft: 4,
@@ -152,6 +195,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 20,
     fontSize: 16,
+    fontFamily: FONTS.regular,
     color: '#393A39',
     marginBottom: 20,
     borderWidth: 2,
@@ -161,7 +205,7 @@ const styles = StyleSheet.create({
     borderColor: '#393A39',
     backgroundColor: '#FFFFFF',
   },
-  signupButton: {
+  loginButton: {
     width: '100%',
     height: 56,
     backgroundColor: '#393A39',
@@ -169,15 +213,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 8,
+    marginBottom: 16,
+  },
+  loginButtonDisabled: {
+    opacity: 0.6,
+  },
+  loginButtonText: {
+    fontSize: 18,
+    fontFamily: FONTS.semiBold,
+    color: '#FFFFFF',
+  },
+  signupLink: {
+    alignSelf: 'center',
     marginBottom: 24,
   },
-  signupButtonText: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#FFFFFF',
+  signupLinkText: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+  },
+  signupLinkBold: {
+    fontFamily: FONTS.bold,
+    color: '#393A39',
   },
   dividerText: {
     fontSize: 14,
+    fontFamily: FONTS.regular,
     color: '#999999',
     textAlign: 'center',
     marginBottom: 24,
@@ -228,22 +289,22 @@ const styles = StyleSheet.create({
   },
   kakaoButtonText: {
     fontSize: 16,
-    fontWeight: '700',
+    fontFamily: FONTS.bold,
     color: '#000000',
   },
   naverButtonText: {
     fontSize: 16,
-    fontWeight: '700',
+    fontFamily: FONTS.bold,
     color: '#FFFFFF',
   },
   googleButtonText: {
     fontSize: 16,
-    fontWeight: '700',
+    fontFamily: FONTS.bold,
     color: '#393A39',
   },
   appleButtonText: {
     fontSize: 16,
-    fontWeight: '700',
+    fontFamily: FONTS.bold,
     color: '#393A39',
   },
 });

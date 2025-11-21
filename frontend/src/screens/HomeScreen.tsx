@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ScrollView, Platform, Alert, TextInput, Keyboard, TouchableWithoutFeedback, Image, StatusBar, FlatList, Animated } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ScrollView, Platform, Alert, TextInput, Keyboard, TouchableWithoutFeedback, Image, StatusBar, FlatList, Animated, Modal } from 'react-native';
 import { NaverMapView, NaverMapMarkerOverlay, NaverMapPolylineOverlay } from '@mj-studio/react-native-naver-map';
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { SearchIcon, StarsIcon, CafeIcon, CoffeeIcon, FoodIcon, CartIcon, CardsIcon, LocationMarkerIcon, StorePinIcon, StarIcon, MyLocationIcon, SearchPinIcon, RefreshIcon, CourseIcon } from '../components/svg';
@@ -9,11 +9,13 @@ import axios from 'axios';
 import { USER_CARDS, API_URL, CARD_IMAGES } from '../constants/userCards';
 import { getMerchantLogo } from '../constants/merchantImages';
 import { AuthStorage } from '../utils/auth';
+import { CardPlaceholder } from '../components/CardPlaceholder';
 import { LinearGradient } from 'expo-linear-gradient';
 import { ProfileScreen } from './ProfileScreen';
 import { OnePayScreen } from './OnePayScreen';
 import { LocationDebugModal } from '../components/LocationDebugModal';
 import { calculateDistance } from '../constants/mapUtils';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -106,11 +108,32 @@ interface AICourseResult {
   };
 }
 
+interface SavedCourse {
+  id: string;
+  title: string;
+  description: string;
+  stops: CoursePlace[];
+  route_info?: CourseRoute;
+  total_distance: number;
+  total_duration: number;
+  total_benefit_score: number;
+  num_people: number;
+  budget: number;
+  created_at: string;
+  user_id: string;
+  is_saved_by_user: boolean;
+}
+
+interface PopularCourse extends SavedCourse {
+  save_count: number;
+}
+
 interface HomeScreenProps {
   onLogout?: () => void;
 }
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
+  const insets = useSafeAreaInsets();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [stores, setStores] = useState<StoreCard[]>([]);
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -150,11 +173,29 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const [courseRoute, setCourseRoute] = useState<CourseRoute | null>(null);
   const [loadingCourse, setLoadingCourse] = useState(false);
 
+  // Course filters
+  const [numPeople, setNumPeople] = useState(2);
+  const [budget, setBudget] = useState(100000);
+  const [showPeoplePicker, setShowPeoplePicker] = useState(false);
+  const [showBudgetPicker, setShowBudgetPicker] = useState(false);
+
+  // Course lists
+  const [showCourseList, setShowCourseList] = useState(true);
+  const [aiCourses, setAiCourses] = useState<AICourseResult[]>([]);
+  const [savedCourses, setSavedCourses] = useState<SavedCourse[]>([]);
+  const [popularCourses, setPopularCourses] = useState<PopularCourse[]>([]);
+  const [loadingCourseList, setLoadingCourseList] = useState(false);
+
+  // Selected course detail
+  const [selectedCourseDetail, setSelectedCourseDetail] = useState<SavedCourse | AICourseResult | null>(null);
+  const [courseSaved, setCourseSaved] = useState(false);
+  const [savingCourse, setSavingCourse] = useState(false);
+
   const bottomSheetRef = useRef<BottomSheet>(null);
   const mapRef = useRef<any>(null);
   const cardScrollRef = useRef<FlatList>(null);
   const isScrollingToCard = useRef(false);
-  const snapPoints = useMemo(() => ['25%', '45%', '70%', '85%'], []);
+  const snapPoints = useMemo(() => ['25%', '45%', '70%', '95%'], []);
 
   // 카드 애니메이션 값 배열
   const cardScaleAnims = useRef<Animated.Value[]>([]).current;
@@ -362,6 +403,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       userCards.forEach(() => {
         cardScaleAnims.push(new Animated.Value(1));
       });
+
+      // Refetch stores with user cards to get correct benefits
+      if (userLocation) {
+        console.log('[HomeScreen] User cards loaded, fetching stores with benefits...');
+        fetchNearbyStores(userLocation.latitude, userLocation.longitude, currentSearchRadius);
+      }
     }
   }, [userCards]);
 
@@ -444,11 +491,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('권한 필요', '위치 권한이 필요합니다.');
-        const defaultCoords = { latitude: 37.5856, longitude: 127.0292 };
-        setRealUserLocation(defaultCoords);
-        setUserLocation(defaultCoords);
-        fetchNearbyStores(defaultCoords.latitude, defaultCoords.longitude, currentSearchRadius);
+        Alert.alert('위치 권한 필요', '앱을 사용하려면 위치 권한이 필요합니다. 설정에서 권한을 허용해주세요.');
         return;
       }
 
@@ -464,18 +507,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         console.log(`[Location] Last known position - accuracy: ${accuracy}m`);
         setGpsAccuracy(accuracy);
 
-        // Check if location is in USA (emulator default), use Korea instead
+        // Check if location is in USA (emulator default)
         if (coords.latitude > 36 && coords.latitude < 38 && coords.longitude > -123 && coords.longitude < -121) {
-          console.log('[Location] 에뮬레이터 기본 위치 감지 (미국), 안암역으로 변경');
-          const koreaCoords = { latitude: 37.5856, longitude: 127.0292 };
-          setRealUserLocation(koreaCoords);
-          setUserLocation(koreaCoords);
-          fetchNearbyStores(koreaCoords.latitude, koreaCoords.longitude, currentSearchRadius);
-        } else {
-          setRealUserLocation(coords);
-          setUserLocation(coords);
-          fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
+          console.log('[Location] 에뮬레이터 기본 위치 감지 (미국)');
+          Alert.alert('위치 오류', '올바른 위치를 가져올 수 없습니다. 실제 기기에서 사용해주세요.');
+          return;
         }
+        setRealUserLocation(coords);
+        setUserLocation(coords);
+        fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
         return;
       }
 
@@ -492,25 +532,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       console.log(`[Location] Current position - accuracy: ${accuracy}m`);
       setGpsAccuracy(accuracy);
 
-      // Check if location is in USA (emulator default), use Korea instead
+      // Check if location is in USA (emulator default)
       if (coords.latitude > 36 && coords.latitude < 38 && coords.longitude > -123 && coords.longitude < -121) {
-        console.log('[Location] 에뮬레이터 기본 위치 감지 (미국), 안암역으로 변경');
-        const koreaCoords = { latitude: 37.5856, longitude: 127.0292 };
-        setRealUserLocation(koreaCoords);
-        setUserLocation(koreaCoords);
-        fetchNearbyStores(koreaCoords.latitude, koreaCoords.longitude, currentSearchRadius);
-      } else {
-        setRealUserLocation(coords);
-        setUserLocation(coords);
-        fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
+        console.log('[Location] 에뮬레이터 기본 위치 감지 (미국)');
+        Alert.alert('위치 오류', '올바른 위치를 가져올 수 없습니다. 실제 기기에서 사용해주세요.');
+        return;
       }
+      setRealUserLocation(coords);
+      setUserLocation(coords);
+      fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
     } catch (error) {
       console.error('위치 가져오기 실패:', error);
-      const defaultCoords = { latitude: 37.5856, longitude: 127.0292 };
-      setRealUserLocation(defaultCoords);
-      setUserLocation(defaultCoords);
-      fetchNearbyStores(defaultCoords.latitude, defaultCoords.longitude, currentSearchRadius);
-      console.log('안암역을 기본 위치로 사용합니다.');
+      Alert.alert('위치 오류', '위치를 가져올 수 없습니다. 위치 서비스를 확인해주세요.');
     }
   };
 
@@ -779,6 +812,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }
 
     setLoadingCourse(true);
+    setCourseSaved(false);
     Keyboard.dismiss();
 
     try {
@@ -801,6 +835,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
       setCourseResult(result);
 
+      // Add to AI courses list (keep only last 2)
+      setAiCourses(prev => {
+        const updated = [result, ...prev];
+        return updated.slice(0, 2);
+      });
+
       // Fetch route for the recommended course
       if (result.course && result.course.stops && result.course.stops.length > 0) {
         await fetchCourseRoute(result.course.stops);
@@ -817,7 +857,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         });
       }
 
-      bottomSheetRef.current?.snapToIndex(2);
+      // Show course detail instead of course list
+      setShowCourseList(false);
+
+      bottomSheetRef.current?.snapToIndex(3);
     } catch (error) {
       console.error('[Course] AI 코스 추천 실패:', error);
       Alert.alert('오류', 'AI 코스 추천에 실패했습니다.');
@@ -851,6 +894,117 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     } catch (error) {
       console.error('[Course Route] 경로 계산 실패:', error);
       // Route calculation failure is not critical, so we don't show alert
+    }
+  };
+
+  const handleSaveCourse = async () => {
+    if (!courseResult) {
+      Alert.alert('오류', '저장할 코스가 없습니다.');
+      return;
+    }
+
+    setSavingCourse(true);
+
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) {
+        Alert.alert('안내', '로그인이 필요합니다.');
+        setSavingCourse(false);
+        return;
+      }
+
+      console.log('[Course] 코스 저장 중...');
+
+      const response = await axios.post(
+        `${API_URL}/api/course/save`,
+        {
+          title: courseResult.course.title,
+          description: courseResult.course.reasoning,
+          stops: courseResult.course.stops.map(stop => ({
+            name: stop.name,
+            latitude: stop.latitude,
+            longitude: stop.longitude,
+            category: stop.category,
+            benefits: stop.benefits,
+          })),
+          route_info: courseRoute || null,
+          total_distance: courseRoute?.total_distance || 0,
+          total_duration: courseRoute?.total_duration || 0,
+          total_benefit_score: courseResult.course.total_benefit_score || 0,
+          num_people: numPeople,
+          budget: budget,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      console.log('[Course] 코스 저장 완료:', response.data);
+      setCourseSaved(true);
+      Alert.alert('성공', '코스가 저장되었습니다.');
+
+      // 저장 후 코스 리스트 새로고침
+      await fetchSavedCourses();
+    } catch (error: any) {
+      console.error('[Course] 코스 저장 실패:', error);
+      const errorMessage = error.response?.data?.error || '코스 저장에 실패했습니다.';
+      Alert.alert('오류', errorMessage);
+    } finally {
+      setSavingCourse(false);
+    }
+  };
+
+  const fetchSavedCourses = async () => {
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) {
+        console.log('[Course] 로그인하지 않아 저장 코스를 불러올 수 없습니다.');
+        return;
+      }
+
+      console.log('[Course] 저장 코스 불러오기...');
+
+      const response = await axios.get(`${API_URL}/api/course/saved?limit=10`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (response.data.success && response.data.courses) {
+        setSavedCourses(response.data.courses);
+        console.log('[Course] 저장 코스:', response.data.courses.length);
+      }
+    } catch (error: any) {
+      console.error('[Course] 저장 코스 불러오기 실패:', error);
+    }
+  };
+
+  const fetchPopularCourses = async () => {
+    try {
+      console.log('[Course] 인기 코스 불러오기...');
+
+      const response = await axios.get(`${API_URL}/api/course/popular?limit=10`);
+
+      if (response.data.success && response.data.courses) {
+        setPopularCourses(response.data.courses);
+        console.log('[Course] 인기 코스:', response.data.courses.length);
+      }
+    } catch (error: any) {
+      console.error('[Course] 인기 코스 불러오기 실패:', error);
+    }
+  };
+
+  const loadCourseList = async () => {
+    setLoadingCourseList(true);
+    try {
+      await Promise.all([
+        fetchSavedCourses(),
+        fetchPopularCourses(),
+      ]);
+    } finally {
+      setLoadingCourseList(false);
     }
   };
 
@@ -959,9 +1113,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
               resizeMode="contain"
             />
           ) : (
-            <View style={styles.cardPlaceholder}>
-              <Text style={styles.cardPlaceholderText}>카드</Text>
-            </View>
+            <CardPlaceholder
+              cardName={cardName}
+              width={60}
+              height={38}
+              style={styles.cardSelectorImage}
+            />
           )}
         </TouchableOpacity>
       </Animated.View>
@@ -990,11 +1147,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         <NaverMapView
           ref={mapRef}
           style={styles.map}
-          initialCamera={{
-            latitude: userLocation?.latitude || 37.5856,
-            longitude: userLocation?.longitude || 127.0292,
+          initialCamera={userLocation ? {
+            latitude: userLocation.latitude,
+            longitude: userLocation.longitude,
             zoom: 16,
-          }}
+          } : undefined}
           onCameraChanged={handleCameraChange}
         >
         {(() => {
@@ -1132,8 +1289,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       )}
 
       <View style={styles.searchContainer}>
-        <View style={styles.searchBar}>
-          <SearchIcon width={20} height={20} color="#999999" />
+        {isCourseMode && (
+          <TouchableOpacity
+            style={styles.backFromCourseButton}
+            onPress={() => {
+              setIsCourseMode(false);
+              setSelectedCategory(null);
+              setCourseResult(null);
+              setCourseRoute(null);
+              setCourseQuery('');
+              setShowCourseList(true);
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.backFromCourseButtonText}>←</Text>
+          </TouchableOpacity>
+        )}
+        <View style={[styles.searchBar, isCourseMode && styles.searchBarAIMode]}>
+          <SearchIcon width={20} height={20} color="#000000" />
           <TextInput
             style={styles.searchInput}
             placeholder={isCourseMode ? "원하는 코스를 입력하세요 (예: 카페 → 점심 → 저녁)" : "장소, 주소 검색"}
@@ -1168,7 +1341,43 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.categoryWrapper}>
+      {/* Course Filters */}
+      {isCourseMode && (
+        <View style={styles.courseFiltersContainer}>
+          <View style={styles.filterButtonsLeft}>
+            <TouchableOpacity
+              style={styles.courseFilterButton}
+              onPress={() => setShowPeoplePicker(true)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.courseFilterButtonText}>
+                인원: <Text style={styles.courseFilterButtonTextBold}>{numPeople}</Text>
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.courseFilterButton}
+              onPress={() => setShowBudgetPicker(true)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.courseFilterButtonText}>
+                예산: <Text style={styles.courseFilterButtonTextBold}>{budget / 10000}</Text>만 원
+              </Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity
+            style={styles.myCoursesButton}
+            onPress={() => {
+              // TODO: Navigate to my saved courses
+            }}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.myCoursesButtonText}>📍 내 코스</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {!isCourseMode && (
+        <View style={styles.categoryWrapper}>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -1197,6 +1406,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                       setCourseQuery('');
                     } else {
                       setSearchQuery('');
+                      // Load course list when entering course mode
+                      loadCourseList();
                     }
                   }}
                   activeOpacity={0.8}
@@ -1251,6 +1462,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
           </TouchableOpacity>
         )}
       </View>
+      )}
 
       <TouchableOpacity
         style={styles.myLocationButton}
@@ -1262,13 +1474,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
       <BottomSheet
         ref={bottomSheetRef}
-        index={1}
+        index={2}
         snapPoints={snapPoints}
         enablePanDownToClose={false}
-        enableContentPanningGesture={false}
+        enableContentPanningGesture={true}
         enableHandlePanningGesture={true}
         enableOverDrag={false}
         overDragResistanceFactor={0}
+        animateOnMount={true}
+        enableDynamicSizing={false}
         onAnimate={() => Keyboard.dismiss()}
         handleIndicatorStyle={{
           backgroundColor: '#D0D0D0',
@@ -1426,27 +1640,278 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
             )
           )}
 
-          <View style={{ flex: 1 }}>
-            <BottomSheetScrollView
-              contentContainerStyle={{
-                paddingBottom: 100,
-                backgroundColor: COLORS.background,
-              }}
-              showsVerticalScrollIndicator={true}
-              onScrollBeginDrag={() => Keyboard.dismiss()}
-              nestedScrollEnabled={true}
-            >
+          <BottomSheetScrollView
+            contentContainerStyle={{
+              paddingBottom: insets.bottom + 100,
+              paddingHorizontal: 10,
+              backgroundColor: COLORS.background,
+            }}
+            showsVerticalScrollIndicator={true}
+            onScrollBeginDrag={() => Keyboard.dismiss()}
+          >
             {isCourseMode ? (
               // Course Mode Content
               <>
-                {loadingCourse ? (
+                {loadingCourse || loadingCourseList ? (
                   <View style={styles.loadingContainer}>
-                    <Text style={styles.loadingText}>AI 코스 추천 중...</Text>
+                    <Text style={styles.loadingText}>
+                      {loadingCourse ? 'AI 코스 추천 중...' : '코스 목록 불러오는 중...'}
+                    </Text>
+                  </View>
+                ) : selectedCourseDetail ? (
+                  // Course Detail View from Course List
+                  <>
+                    <TouchableOpacity
+                      style={styles.backToCourseListButton}
+                      onPress={() => setSelectedCourseDetail(null)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.backToCourseListText}>← 코스 목록으로</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.recommendationsTitle}>
+                      {'course' in selectedCourseDetail ? selectedCourseDetail.course.title : selectedCourseDetail.title}
+                    </Text>
+                    <Text style={styles.courseSummary}>
+                      {'course' in selectedCourseDetail ? selectedCourseDetail.course.reasoning : selectedCourseDetail.description}
+                    </Text>
+
+                    {/* Route info from saved course */}
+                    {!('course' in selectedCourseDetail) && selectedCourseDetail.route_info && (
+                      <View style={styles.naverRouteContainer}>
+                        <View style={styles.naverRouteSummary}>
+                          <View style={styles.naverRouteSummaryItem}>
+                            <Text style={styles.naverRouteSummaryLabel}>총 시간</Text>
+                            <Text style={styles.naverRouteSummaryValue}>
+                              {selectedCourseDetail.route_info.total_duration_text || `${selectedCourseDetail.total_duration}분`}
+                            </Text>
+                          </View>
+                          <View style={styles.naverRouteDivider} />
+                          <View style={styles.naverRouteSummaryItem}>
+                            <Text style={styles.naverRouteSummaryLabel}>총 거리</Text>
+                            <Text style={styles.naverRouteSummaryValue}>
+                              {selectedCourseDetail.route_info.total_distance_text || `${(selectedCourseDetail.total_distance / 1000).toFixed(1)}km`}
+                            </Text>
+                          </View>
+                        </View>
+                      </View>
+                    )}
+
+                    {/* Places */}
+                    {(() => {
+                      const stops = 'course' in selectedCourseDetail ? selectedCourseDetail.course.stops : selectedCourseDetail.stops;
+                      return stops && stops.map((place: any, index: number) => {
+                        const bestBenefit = place.benefits && place.benefits.length > 0 ? place.benefits[0] : null;
+                        const cardImage = bestBenefit ? CARD_IMAGES[bestBenefit.card] : null;
+
+                        return (
+                          <React.Fragment key={index}>
+                            <View style={styles.naverPlaceCard}>
+                              <View style={styles.naverPlaceNumber}>
+                                <Text style={styles.naverPlaceNumberText}>{index + 1}</Text>
+                              </View>
+
+                              <View style={styles.naverPlaceContent}>
+                                <View style={styles.naverPlaceMerchant}>
+                                  <View style={styles.naverMerchantPlaceholder}>
+                                    <Text style={styles.naverMerchantPlaceholderText}>
+                                      {place.name.substring(0, 1)}
+                                    </Text>
+                                  </View>
+                                </View>
+
+                                <View style={styles.naverPlaceInfo}>
+                                  <Text style={styles.naverPlaceName}>{place.name}</Text>
+                                  <Text style={styles.naverPlaceCategory}>{place.category}</Text>
+                                  {bestBenefit && (
+                                    <View style={styles.naverBenefitInfo}>
+                                      <Text style={styles.naverBenefitCard}>{bestBenefit.card}</Text>
+                                      <Text style={styles.naverBenefitDetail}>{bestBenefit.benefit}</Text>
+                                    </View>
+                                  )}
+                                </View>
+
+                                {cardImage && (
+                                  <Image
+                                    source={cardImage}
+                                    style={styles.naverCardImage}
+                                    resizeMode="contain"
+                                  />
+                                )}
+                              </View>
+                            </View>
+
+                            {index < stops.length - 1 && (
+                              <View style={styles.naverRouteSegment}>
+                                <View style={styles.naverRouteDots}>
+                                  <View style={styles.naverRouteDot} />
+                                  <View style={styles.naverRouteDot} />
+                                  <View style={styles.naverRouteDot} />
+                                </View>
+                              </View>
+                            )}
+                          </React.Fragment>
+                        );
+                      });
+                    })()}
+                  </>
+                ) : showCourseList ? (
+                  // Course List View
+                  <View style={styles.courseListContainer}>
+                    <Text style={styles.courseListTitle}>추천 코스</Text>
+
+                    {/* AI 추천 코스 */}
+                    {aiCourses.length > 0 && aiCourses.slice(0, 2).map((course, index) => (
+                      <TouchableOpacity
+                        key={`ai-${index}`}
+                        style={styles.courseCard}
+                        onPress={() => setSelectedCourseDetail(course)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.courseCardHeader}>
+                          <Text style={styles.courseCardTitle}>{course.course.title}</Text>
+                          <View style={styles.courseCardBadge}>
+                            <Text style={styles.courseCardBadgeText}>AI 추천</Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.courseCardPlaces}>
+                          {course.course.stops.slice(0, 3).map((place, placeIndex) => (
+                            <React.Fragment key={placeIndex}>
+                              <View style={styles.coursePlaceImageContainer}>
+                                <View style={styles.coursePlacePlaceholder}>
+                                  <Text style={styles.coursePlacePlaceholderText}>
+                                    {place.name.substring(0, 1)}
+                                  </Text>
+                                </View>
+                                <Text style={styles.courseListPlaceName} numberOfLines={1}>
+                                  {place.name}
+                                </Text>
+                              </View>
+                              {placeIndex < Math.min(course.course.stops.length, 3) - 1 && (
+                                <Text style={styles.courseArrow}>→</Text>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </View>
+
+                        <View style={styles.courseCardFooter}>
+                          <Text style={styles.courseSavingsText}>
+                            {course.course.benefit_summary || '혜택 정보'}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+
+                    {/* 사용자 저장 코스 */}
+                    {savedCourses.length > 0 && (
+                      <TouchableOpacity
+                        style={styles.courseCard}
+                        onPress={() => setSelectedCourseDetail(savedCourses[0])}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.courseCardHeader}>
+                          <Text style={styles.courseCardTitle}>{savedCourses[0].title}</Text>
+                          <View style={[styles.courseCardBadge, styles.courseCardBadgeSaved]}>
+                            <Text style={styles.courseCardBadgeText}>내 코스</Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.courseCardPlaces}>
+                          {savedCourses[0].stops.slice(0, 3).map((place, placeIndex) => (
+                            <React.Fragment key={placeIndex}>
+                              <View style={styles.coursePlaceImageContainer}>
+                                <View style={styles.coursePlacePlaceholder}>
+                                  <Text style={styles.coursePlacePlaceholderText}>
+                                    {place.name.substring(0, 1)}
+                                  </Text>
+                                </View>
+                                <Text style={styles.courseListPlaceName} numberOfLines={1}>
+                                  {place.name}
+                                </Text>
+                              </View>
+                              {placeIndex < Math.min(savedCourses[0].stops.length, 3) - 1 && (
+                                <Text style={styles.courseArrow}>→</Text>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </View>
+
+                        <View style={styles.courseCardFooter}>
+                          <Text style={styles.courseSavingsText}>
+                            {savedCourses[0].description || '저장된 코스'}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    )}
+
+                    {/* 인기 코스 */}
+                    {popularCourses.length > 0 && (
+                      <TouchableOpacity
+                        style={styles.courseCard}
+                        onPress={() => setSelectedCourseDetail(popularCourses[0])}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.courseCardHeader}>
+                          <Text style={styles.courseCardTitle}>{popularCourses[0].title}</Text>
+                          <View style={[styles.courseCardBadge, styles.courseCardBadgePopular]}>
+                            <Text style={styles.courseCardBadgeText}>핫스팟</Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.courseCardPlaces}>
+                          {popularCourses[0].stops.slice(0, 3).map((place, placeIndex) => (
+                            <React.Fragment key={placeIndex}>
+                              <View style={styles.coursePlaceImageContainer}>
+                                <View style={styles.coursePlacePlaceholder}>
+                                  <Text style={styles.coursePlacePlaceholderText}>
+                                    {place.name.substring(0, 1)}
+                                  </Text>
+                                </View>
+                                <Text style={styles.courseListPlaceName} numberOfLines={1}>
+                                  {place.name}
+                                </Text>
+                              </View>
+                              {placeIndex < Math.min(popularCourses[0].stops.length, 3) - 1 && (
+                                <Text style={styles.courseArrow}>→</Text>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </View>
+
+                        <View style={styles.courseCardFooter}>
+                          <Text style={styles.courseSavingsText}>
+                            {popularCourses[0].save_count}명이 저장한 코스
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    )}
+
+                    {/* Empty state when no courses */}
+                    {aiCourses.length === 0 && savedCourses.length === 0 && popularCourses.length === 0 && (
+                      <View style={styles.emptyState}>
+                        <Text style={styles.emptyStateText}>아직 추천 코스가 없습니다</Text>
+                        <Text style={styles.emptyStateHint}>원하는 코스를 검색해보세요</Text>
+                      </View>
+                    )}
                   </View>
                 ) : courseResult ? (
                   <>
                     <Text style={styles.recommendationsTitle}>{courseResult.course.title}</Text>
                     <Text style={styles.courseSummary}>{courseResult.course.reasoning}</Text>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.saveCourseButton,
+                        (courseSaved || savingCourse) && styles.saveCourseButtonDisabled
+                      ]}
+                      onPress={handleSaveCourse}
+                      disabled={courseSaved || savingCourse}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.saveCourseButtonText}>
+                        {savingCourse ? '저장 중...' : courseSaved ? '✓ 저장됨' : '💾 코스 저장'}
+                      </Text>
+                    </TouchableOpacity>
 
                     {courseRoute && (
                       <View style={styles.naverRouteContainer}>
@@ -1578,11 +2043,19 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                               <Text style={styles.benefitSummary}>{rec.benefit_summary}</Text>
 
                               <View style={styles.benefitDetails}>
-                                {CARD_IMAGES[rec.card] && (
+                                {CARD_IMAGES[rec.card] ? (
                                   <Image
                                     source={CARD_IMAGES[rec.card]}
                                     style={styles.recommendationCardImage}
                                     resizeMode="contain"
+                                  />
+                                ) : (
+                                  <CardPlaceholder
+                                    cardName={rec.card}
+                                    benefit={rec.benefit_summary}
+                                    width={80}
+                                    height={50}
+                                    style={styles.recommendationCardImage}
                                   />
                                 )}
                                 <View style={styles.benefitDetailsText}>
@@ -1784,19 +2257,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                         )}
                       </View>
 
-                      {store.top_card && CARD_IMAGES[store.top_card.card] && (
-                        <Image
-                          source={CARD_IMAGES[store.top_card.card]}
-                          style={styles.cardImage}
-                          resizeMode="contain"
-                        />
+                      {store.top_card && (
+                        CARD_IMAGES[store.top_card.card] ? (
+                          <Image
+                            source={CARD_IMAGES[store.top_card.card]}
+                            style={styles.cardImage}
+                            resizeMode="contain"
+                          />
+                        ) : (
+                          <CardPlaceholder
+                            cardName={store.top_card.card}
+                            benefit={store.top_card.benefit}
+                            width={80}
+                            height={50}
+                            style={styles.cardImage}
+                          />
+                        )
                       )}
                     </TouchableOpacity>
                   ))}
               </>
             )}
           </BottomSheetScrollView>
-          </View>
         </View>
       </BottomSheet>
       </View>
@@ -1819,6 +2301,90 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         onForceIndoor={() => setForceIndoorMode(!forceIndoorMode)}
         isForceIndoor={forceIndoorMode}
       />
+
+      {/* People Picker Modal */}
+      <Modal
+        visible={showPeoplePicker}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowPeoplePicker(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowPeoplePicker(false)}>
+          <View style={styles.pickerModalOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={styles.pickerModalContent}>
+                <Text style={styles.pickerModalTitle}>인원 선택</Text>
+                <ScrollView style={styles.pickerScrollView}>
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
+                    <TouchableOpacity
+                      key={num}
+                      style={[
+                        styles.pickerOption,
+                        numPeople === num && styles.pickerOptionActive,
+                      ]}
+                      onPress={() => {
+                        setNumPeople(num);
+                        setShowPeoplePicker(false);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.pickerOptionText,
+                          numPeople === num && styles.pickerOptionTextActive,
+                        ]}
+                      >
+                        {num}명
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
+
+      {/* Budget Picker Modal */}
+      <Modal
+        visible={showBudgetPicker}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowBudgetPicker(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setShowBudgetPicker(false)}>
+          <View style={styles.pickerModalOverlay}>
+            <TouchableWithoutFeedback>
+              <View style={styles.pickerModalContent}>
+                <Text style={styles.pickerModalTitle}>예산 선택</Text>
+                <ScrollView style={styles.pickerScrollView}>
+                  {[5, 10, 15, 20, 25, 30, 35, 40, 45, 50].map((amount) => (
+                    <TouchableOpacity
+                      key={amount}
+                      style={[
+                        styles.pickerOption,
+                        budget === amount * 10000 && styles.pickerOptionActive,
+                      ]}
+                      onPress={() => {
+                        setBudget(amount * 10000);
+                        setShowBudgetPicker(false);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.pickerOptionText,
+                          budget === amount * 10000 && styles.pickerOptionTextActive,
+                        ]}
+                      >
+                        {amount}만 원
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            </TouchableWithoutFeedback>
+          </View>
+        </TouchableWithoutFeedback>
+      </Modal>
     </View>
   );
 };
@@ -1856,6 +2422,53 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
+  searchBarAIMode: {
+    backgroundColor: '#FAE8D7',
+  },
+  courseFiltersContainer: {
+    position: 'absolute',
+    top: 108,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    zIndex: 10,
+  },
+  filterButtonsLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  courseFilterButton: {
+    backgroundColor: '#E5EDF4',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  courseFilterButtonText: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#212121',
+  },
+  courseFilterButtonTextBold: {
+    fontFamily: FONTS.bold,
+  },
+  myCoursesButton: {
+    backgroundColor: '#FFF0B3',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 999,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  myCoursesButtonText: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#212121',
+  },
   myPageButton: {
     width: 48,
     height: 48,
@@ -1871,7 +2484,7 @@ const styles = StyleSheet.create({
   },
   clearButton: {
     fontSize: 20,
-    color: '#999999',
+    color: '#000000',
     marginRight: 8,
   },
   categoryWrapper: {
@@ -1927,7 +2540,6 @@ const styles = StyleSheet.create({
   bottomSheetContainer: {
     flex: 1,
     backgroundColor: COLORS.background,
-    overflow: 'visible',
   },
   onePayButton: {
     backgroundColor: '#000000',
@@ -2753,5 +3365,214 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: FONTS.regular,
     color: '#999999',
+  },
+  pickerModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pickerModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 20,
+    width: '80%',
+    maxHeight: '60%',
+  },
+  pickerModalTitle: {
+    fontSize: 18,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  pickerScrollView: {
+    maxHeight: 300,
+  },
+  pickerOption: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    marginBottom: 8,
+    backgroundColor: '#F5F5F5',
+  },
+  pickerOptionActive: {
+    backgroundColor: '#E5EDF4',
+  },
+  pickerOptionText: {
+    fontSize: 16,
+    fontFamily: FONTS.regular,
+    color: '#212121',
+    textAlign: 'center',
+  },
+  pickerOptionTextActive: {
+    fontFamily: FONTS.bold,
+    color: '#000000',
+  },
+  // Course List Styles
+  backToCourseListButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+  },
+  backToCourseListText: {
+    fontSize: 15,
+    fontFamily: FONTS.semiBold,
+    color: '#4AA63C',
+  },
+  courseListContainer: {
+    paddingTop: 8,
+  },
+  courseListTitle: {
+    fontSize: 20,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
+  courseCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 4,
+      },
+    }),
+  },
+  courseCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  courseCardTitle: {
+    flex: 1,
+    fontSize: 17,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginRight: 8,
+  },
+  courseCardBadge: {
+    backgroundColor: '#E8F5E9',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  courseCardBadgeSaved: {
+    backgroundColor: '#FFF0B3',
+  },
+  courseCardBadgePopular: {
+    backgroundColor: '#FFE5E5',
+  },
+  courseCardBadgeText: {
+    fontSize: 12,
+    fontFamily: FONTS.semiBold,
+    color: '#4AA63C',
+  },
+  courseCardPlaces: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  coursePlaceImageContainer: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  coursePlacePlaceholder: {
+    width: 80,
+    height: 80,
+    borderRadius: 6,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  coursePlacePlaceholderText: {
+    fontSize: 28,
+    fontFamily: FONTS.bold,
+    color: '#999999',
+  },
+  courseListPlaceName: {
+    fontSize: 12,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+    textAlign: 'center',
+  },
+  courseArrow: {
+    fontSize: 20,
+    color: '#CCCCCC',
+    marginHorizontal: 4,
+  },
+  courseCardFooter: {
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
+    paddingTop: 12,
+  },
+  courseSavingsText: {
+    fontSize: 14,
+    fontFamily: FONTS.semiBold,
+    color: '#22B573',
+  },
+  saveCourseButton: {
+    backgroundColor: '#22B573',
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginVertical: 16,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 3,
+      },
+    }),
+  },
+  saveCourseButtonDisabled: {
+    backgroundColor: '#B0B0B0',
+    opacity: 0.6,
+  },
+  saveCourseButtonText: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
+    letterSpacing: -0.3,
+  },
+  backFromCourseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 3,
+      },
+    }),
+  },
+  backFromCourseButtonText: {
+    fontSize: 24,
+    fontFamily: FONTS.bold,
+    color: '#393A39',
   },
 });

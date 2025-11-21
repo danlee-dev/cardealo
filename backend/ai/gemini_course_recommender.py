@@ -42,7 +42,9 @@ class GeminiCourseRecommender:
         user_input: str,
         user_location: Dict[str, float],
         user_cards: List[str],
-        max_distance: int = 5000
+        max_distance: int = 5000,
+        num_people: int = 2,
+        budget: int = 100000
     ) -> Dict[str, Any]:
         """
         혜택 극대화 기반 AI 코스 추천 (메인 함수)
@@ -52,6 +54,8 @@ class GeminiCourseRecommender:
             user_location: {"latitude": 37.xxx, "longitude": 127.xxx}
             user_cards: 보유 카드 리스트
             max_distance: 최대 검색 반경 (미터)
+            num_people: 인원 (기본: 2명)
+            budget: 예산 (기본: 100,000원)
 
         Returns:
             {
@@ -73,9 +77,11 @@ class GeminiCourseRecommender:
         print(f"[Input] {user_input}")
         print(f"[Location] {user_location}")
         print(f"[Cards] {user_cards}")
+        print(f"[People] {num_people}명")
+        print(f"[Budget] {budget:,}원")
 
         # Step 1: 의도 분석 (Gemini 1차)
-        intent = self._analyze_intent(user_input, user_location, user_cards)
+        intent = self._analyze_intent(user_input, user_location, user_cards, num_people, budget)
 
         # 위치 쿼리가 있으면 Geocoding으로 좌표 얻기
         search_location = user_location
@@ -104,7 +110,7 @@ class GeminiCourseRecommender:
 
         # Step 4: AI 코스 계획 (Gemini 2차)
         course = self._plan_course_with_gemini(
-            places_with_benefits, intent, user_location, user_cards
+            places_with_benefits, intent, user_location, user_cards, num_people, budget
         )
 
         # Step 5: 경로 및 시간 보강 (Directions API)
@@ -124,7 +130,9 @@ class GeminiCourseRecommender:
         self,
         user_input: str,
         user_location: Dict[str, float],
-        user_cards: List[str]
+        user_cards: List[str],
+        num_people: int = 2,
+        budget: int = 100000
     ) -> Dict[str, Any]:
         """
         Step 1: 의도 분석 (Gemini 1차)
@@ -138,6 +146,8 @@ class GeminiCourseRecommender:
 사용자 입력: "{user_input}"
 현재 위치: 위도 {user_location['latitude']}, 경도 {user_location['longitude']}
 보유 카드: {', '.join(user_cards) if user_cards else '없음'}
+인원: {num_people}명
+예산: {budget:,}원
 
 다음 JSON 형식으로만 응답해주세요:
 {{
@@ -156,6 +166,7 @@ class GeminiCourseRecommender:
 중요:
 - location_query: 사용자가 명시한 위치 (예: "고대 근처" → "고려대학교", "건대" → "건국대학교"). 언급이 없으면 null
 - 카테고리는 다음 중 선택: cafe, restaurant, bakery, mart, convenience, pharmacy, movie, beauty, gas_station, park
+- 인원과 예산을 고려하여 적절한 장소 개수와 카테고리를 선택하세요 (예: 인원이 많으면 넓은 장소, 예산이 적으면 저렴한 카페/공원 위주)
 """
 
         try:
@@ -330,7 +341,9 @@ class GeminiCourseRecommender:
         places_with_benefits: List[Dict[str, Any]],
         intent: Dict[str, Any],
         user_location: Dict[str, float],
-        user_cards: List[str]
+        user_cards: List[str],
+        num_people: int = 2,
+        budget: int = 100000
     ) -> Optional[Dict[str, Any]]:
         """
         Step 4: AI 코스 계획 (Gemini 2차)
@@ -361,10 +374,15 @@ class GeminiCourseRecommender:
 당신은 최고의 코스 플래너입니다.
 아래 [재료]를 사용해 '{theme}' 테마의 {num_places}단계 코스를 짜주세요.
 
+**[사용자 정보]**
+- 인원: {num_people}명
+- 예산: {budget:,}원
+
 **[중요 규칙]**
 1. 'benefit'이 있는 장소를 **최소 1개 이상 반드시 포함**하고, 가능하면 가장 많이 포함해주세요.
 2. 장소 간 이동이 효율적이어야 합니다. (거리가 가까운 순서로)
 3. 창의적인 코스 제목을 만들어주세요.
+4. 인원과 예산을 고려하여 적절한 장소를 선택하세요. (예: 예산이 적으면 저렴한 카페/공원 위주, 인원이 많으면 넓은 식당)
 
 **[재료 (혜택 보강 리스트)]**
 {json.dumps(places_info, ensure_ascii=False, indent=2)}

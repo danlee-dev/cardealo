@@ -1,7 +1,7 @@
-export default {
+module.exports = {
   expo: {
-    name: "CardDeal",
-    slug: "carddeal",
+    name: "Cardealo",
+    slug: "cardealo",
     version: "1.0.0",
     orientation: "portrait",
     icon: "./assets/icon.png",
@@ -14,10 +14,18 @@ export default {
     },
     ios: {
       supportsTablet: true,
-      bundleIdentifier: "com.carddeal.app",
+      usesNonExemptEncryption: false,
       config: {
-        googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY
-      }
+        googleMapsApiKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY
+      },
+      infoPlist: {
+        NMFClientId: process.env.EXPO_PUBLIC_NAVER_MAP_CLIENT_ID,
+        NMFClientSecret: process.env.EXPO_PUBLIC_NAVER_MAP_CLIENT_SECRET,
+        NMFNcpKeyId: process.env.EXPO_PUBLIC_NAVER_MAP_CLIENT_ID,
+        NSLocationWhenInUseUsageDescription: "This app needs access to your location to show nearby stores and card benefits.",
+        NSLocationAlwaysAndWhenInUseUsageDescription: "This app needs access to your location to show nearby stores and card benefits."
+      },
+      bundleIdentifier: "com.cardealo.app"
     },
     android: {
       adaptiveIcon: {
@@ -25,32 +33,32 @@ export default {
         backgroundColor: "#ffffff"
       },
       edgeToEdgeEnabled: true,
-      package: "com.carddeal.app",
-      permissions: [
-        "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION"
-      ],
+      predictiveBackGestureEnabled: false,
       config: {
         googleMaps: {
-          apiKey: process.env.GOOGLE_MAPS_API_KEY
+          apiKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY
         }
-      }
+      },
+      permissions: [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ],
+      package: "com.cardealo.app"
     },
     web: {
       favicon: "./assets/favicon.png"
     },
     plugins: [
-      [
-        "expo-location",
-        {
-          locationAlwaysAndWhenInUsePermission: "Allow CardDeal to use your location to find nearby merchants."
-        }
-      ]
+      "expo-font",
+      "expo-dev-client",
+      "./plugins/withNaverMaps",
+      "./plugins/withNaverMapsGradle",
+      "./plugins/withPodfileSource"
     ],
     extra: {
-      apiBaseUrl: process.env.API_BASE_URL || "http://localhost:5000/api",
-      googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY,
-      googleOAuthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID
+      eas: {
+        projectId: "8f5a86f1-d0fe-4f59-945b-de508bb92123"
+      }
     }
   }
 };

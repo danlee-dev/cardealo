@@ -243,7 +243,7 @@ class GeminiCourseRecommender:
                         'radius': max_distance,
                         'category': category
                     },
-                    timeout=10
+                    timeout=120
                 )
 
                 if response.status_code == 200:
@@ -292,7 +292,7 @@ class GeminiCourseRecommender:
                         'category': place['category'],
                         'user_cards': user_cards
                     },
-                    timeout=10
+                    timeout=120
                 )
 
                 if response.status_code == 200:

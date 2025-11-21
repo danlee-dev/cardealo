@@ -126,10 +126,8 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onB
       return false;
     }
 
-    if (!cardName.trim()) {
-      Alert.alert('오류', '보유하신 카드 이름을 입력해주세요.');
-      return false;
-    }
+    // Card registration is now optional
+    // Users can add cards later
 
     return true;
   };
@@ -305,6 +303,7 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onB
                   keyExtractor={(item, index) => `${item.card_name}-${index}`}
                   scrollEnabled={true}
                   nestedScrollEnabled={true}
+                  keyboardShouldPersistTaps="handled"
                   renderItem={({ item }) => (
                     <TouchableOpacity
                       style={styles.searchResultItem}

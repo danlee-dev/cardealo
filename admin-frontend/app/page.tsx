@@ -297,48 +297,28 @@ export default function Home() {
                 </div>
               )}
 
-              <div className="space-y-3">
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder="가맹점 검색"
-                    className="w-full px-5 py-4 rounded-2xl border border-gray-200 focus:border-gray-900 focus:ring-2 focus:ring-gray-200 outline-none transition-all text-base"
-                  />
-                  {searchResults.length > 0 && (
-                    <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden z-50">
-                      {searchResults.map((result) => (
-                        <button
-                          key={result.place_id}
-                          onClick={() => selectMerchant(result)}
-                          className="w-full px-5 py-4 text-left hover:bg-gray-50 border-b border-gray-50 last:border-0 transition-colors"
-                        >
-                          <div className="font-medium text-gray-900">{result.name}</div>
-                          <div className="text-sm text-gray-500 mt-0.5">{result.address}</div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  onClick={() => {
-                    setSelectedMerchant({
-                      place_id: 'test-merchant',
-                      name: '테스트 가맹점',
-                      address: '서울시 테스트구 테스트동',
-                      latitude: 37.5665,
-                      longitude: 126.9780,
-                      category: 'restaurant'
-                    });
-                    setSearchResults([]);
-                    setQuery('');
-                  }}
-                  className="w-full px-4 py-2 bg-gray-100 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-200 transition-colors"
-                >
-                  테스트 가맹점 사용
-                </button>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="가맹점 검색"
+                  className="w-full px-5 py-4 rounded-2xl border border-gray-200 focus:border-gray-900 focus:ring-2 focus:ring-gray-200 outline-none transition-all text-base"
+                />
+                {searchResults.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden z-50">
+                    {searchResults.map((result) => (
+                      <button
+                        key={result.place_id}
+                        onClick={() => selectMerchant(result)}
+                        className="w-full px-5 py-4 text-left hover:bg-gray-50 border-b border-gray-50 last:border-0 transition-colors"
+                      >
+                        <div className="font-medium text-gray-900">{result.name}</div>
+                        <div className="text-sm text-gray-500 mt-0.5">{result.address}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {viewMode === 'search' && (

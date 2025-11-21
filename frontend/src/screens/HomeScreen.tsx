@@ -858,7 +858,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
           latitude: userLocation.latitude,
           longitude: userLocation.longitude,
         },
-        user_cards: userCards,
+        user_cards: userCards.map(card => card.card_name),
         max_distance: 5000,
       }, {
         timeout: 120000, // 2 minutes timeout for AI processing

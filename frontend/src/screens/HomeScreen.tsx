@@ -792,6 +792,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         },
         user_cards: userCards,
         max_distance: 5000,
+      }, {
+        timeout: 120000, // 2 minutes timeout for AI processing
       });
 
       const result: AICourseResult = response.data;
@@ -838,6 +840,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
           longitude: p.longitude,
         })),
         start_location: userLocation,
+      }, {
+        timeout: 60000, // 1 minute timeout for route calculation
       });
 
       const route: CourseRoute = response.data;

@@ -136,16 +136,65 @@ class NaverOCRService:
                 year = '20' + year
             card_info['expiry_date'] = f"{month}/{year[-2:]}"  # MM/YY 형식으로 저장
 
-        # 카드사 이름 추출 (일반적인 카드사 이름 패턴)
-        card_companies = [
-            '신한', '삼성', '현대', '롯데', 'KB', '국민', '우리', 'NH', '농협',
-            '하나', '기업', 'IBK', 'SC', '씨티', '카카오뱅크', '토스뱅크',
-            'Shinhan', 'Samsung', 'Hyundai', 'Lotte', 'Woori', 'Hana', 'Kakao', 'Toss'
-        ]
+        # 카드사 이름 추출 (한글/영문 매칭)
+        # 한글 -> 영문 매핑 포함
+        card_company_mapping = {
+            # 한글 카드사
+            '신한': '신한',
+            '삼성': '삼성',
+            '현대': '현대',
+            '롯데': '롯데',
+            'KB': 'KB',
+            '국민': '국민',
+            '우리': '우리',
+            'NH': 'NH',
+            '농협': '농협',
+            '하나': '하나',
+            '기업': '기업',
+            'IBK': 'IBK',
+            'SC': 'SC',
+            '씨티': '씨티',
+            '카카오뱅크': '카카오뱅크',
+            '토스뱅크': '토스뱅크',
+            # 영문 카드사 (대소문자 구분 없이 매칭)
+            'SHINHAN': '신한',
+            'Shinhan': '신한',
+            'shinhan': '신한',
+            'SAMSUNG': '삼성',
+            'Samsung': '삼성',
+            'samsung': '삼성',
+            'HYUNDAI': '현대',
+            'Hyundai': '현대',
+            'hyundai': '현대',
+            'LOTTE': '롯데',
+            'Lotte': '롯데',
+            'lotte': '롯데',
+            'KOOKMIN': '국민',
+            'Kookmin': '국민',
+            'kookmin': '국민',
+            'WOORI': '우리',
+            'Woori': '우리',
+            'woori': '우리',
+            'HANA': '하나',
+            'Hana': '하나',
+            'hana': '하나',
+            'KAKAO': '카카오뱅크',
+            'Kakao': '카카오뱅크',
+            'kakao': '카카오뱅크',
+            'TOSS': '토스뱅크',
+            'Toss': '토스뱅크',
+            'toss': '토스뱅크',
+            'CITI': '씨티',
+            'Citi': '씨티',
+            'citi': '씨티',
+            'CITIBANK': '씨티',
+            'Citibank': '씨티',
+            'citibank': '씨티',
+        }
 
-        for company in card_companies:
-            if company in text:
-                card_info['card_name'] = company
+        for company_text, company_name in card_company_mapping.items():
+            if company_text in text:
+                card_info['card_name'] = company_name
                 break
 
         return card_info

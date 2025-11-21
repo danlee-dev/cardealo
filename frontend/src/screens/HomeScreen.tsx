@@ -826,7 +826,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       const response = await axios.post(`${API_URL}/api/merchant-recommendations`, {
         merchant_name: store.name,
         category: store.category,
-        user_cards: userCards,
+        user_cards: userCards.map(card => card.card_name),
       });
 
       setRecommendations(response.data.recommendations);

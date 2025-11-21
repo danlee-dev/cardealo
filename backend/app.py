@@ -10,11 +10,17 @@ from services.location_service import LocationService
 from services.directions_service import DirectionsService
 from services.ocr_service import NaverOCRService
 from services.database import init_db, get_db
-from services.database import User, Card, MyCard, CardBenefit, SavedCourse, SavedCourseUser
+from services.database import User, Card, MyCard, CardBenefit, SavedCourse, SavedCourseUser, PaymentHistory
 from services.jwt_service import JwtService
 from utils.utils import parse_place_name
 from pprint import pprint
 import json
+import qrcode
+from io import BytesIO
+import base64
+import hmac
+import hashlib
+from datetime import datetime, date
 
 load_dotenv()
 
@@ -159,6 +165,7 @@ def mypage():
         cards = db.scalars(select(MyCard).where(MyCard.user_id == user_id)).all()
         for card in cards:
             user_data['cards'].append({
+                'cid': card.cid,
                 'card_name': card.mycard_name,
                 'card_benefit': card.mycard_detail,
                 'card_pre_month_money': card.mycard_pre_month_money,
@@ -1313,6 +1320,338 @@ def get_course_directions_mixed():
         traceback.print_exc()
         return jsonify({
             'error': 'Failed to get mixed mode course directions',
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/qr/generate', methods=['POST'])
+@login_required
+def generate_qr():
+    """
+    QR/바코드 생성 API
+
+    Request:
+    {
+        "card_id": 1,
+        "type": "qr"  // or "barcode"
+    }
+
+    Response:
+    {
+        "qr_image": "data:image/png;base64,...",
+        "barcode_image": "data:image/png;base64,...",
+        "expires_in": 300  // seconds
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'Request body is required'}), 400
+
+        card_id = data.get('card_id')
+        qr_type = data.get('type', 'qr')
+
+        if not card_id:
+            return jsonify({'error': 'card_id is required'}), 400
+
+        db = get_db()
+
+        # 사용자 및 카드 정보 조회
+        user = db.scalars(select(User).where(User.user_id == user_id)).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        card = db.scalars(select(MyCard).where(MyCard.cid == card_id, MyCard.user_id == user_id)).first()
+        if not card:
+            return jsonify({'error': 'Card not found'}), 404
+
+        # QR 데이터 생성
+        timestamp = int(datetime.now().timestamp())
+        qr_data = {
+            "user_id": user_id,
+            "user_name": user.user_name,
+            "card_id": card.cid,
+            "card_name": card.mycard_name,
+            "timestamp": timestamp
+        }
+
+        # 서명 생성 (보안)
+        jwt_secret = os.getenv('JWT_SECRET', 'default-secret')
+        signature = hmac.new(
+            jwt_secret.encode(),
+            json.dumps(qr_data, sort_keys=True).encode(),
+            hashlib.sha256
+        ).hexdigest()
+        qr_data["signature"] = signature
+
+        qr_data_str = json.dumps(qr_data)
+
+        # QR 코드 이미지 생성
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(qr_data_str)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        buffered = BytesIO()
+        img.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        qr_image = f"data:image/png;base64,{img_str}"
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'qr_image': qr_image,
+            'barcode_image': qr_image,  # 동일하게 사용
+            'expires_in': 300
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] QR 생성 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': 'QR 생성에 실패했습니다',
+            'message': str(e)
+        }), 500
+
+
+def require_admin_auth(f):
+    """관리자 권한 검증 데코레이터"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'Authorization' not in request.headers:
+            return jsonify({'error': 'Authorization header is required'}), 401
+
+        token = request.headers['Authorization']
+        admin_secret = os.getenv('ADMIN_SECRET_KEY', 'default-admin-secret')
+
+        if token != f"Bearer {admin_secret}":
+            return jsonify({'error': 'Invalid admin token'}), 401
+
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+@app.route('/api/payment/webhook', methods=['POST'])
+@require_admin_auth
+def payment_webhook():
+    """
+    관리자 백엔드로부터 결제 정보 수신 API
+
+    Request:
+    {
+        "transaction_id": "uuid",
+        "user_id": "hong_gildong",
+        "card_id": 1,
+        "merchant_name": "스타벅스",
+        "payment_amount": 5000,
+        "discount_amount": 500,
+        "final_amount": 4500,
+        "benefit_text": "신한카드 15% 할인"
+    }
+
+    Response:
+    {
+        "status": "success"
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'Request body is required'}), 400
+
+        transaction_id = data.get('transaction_id')
+        user_id = data.get('user_id')
+        card_id = data.get('card_id')
+        merchant_name = data.get('merchant_name')
+        payment_amount = data.get('payment_amount')
+        discount_amount = data.get('discount_amount')
+        final_amount = data.get('final_amount')
+        benefit_text = data.get('benefit_text')
+
+        db = get_db()
+
+        # 카드 정보 업데이트
+        card = db.scalars(select(MyCard).where(MyCard.cid == card_id)).first()
+        if card:
+            today = date.today()
+
+            # 일자가 바뀌면 daily_count 리셋
+            if card.last_used_date != today:
+                card.daily_count = 0
+
+            # 월이 바뀌면 모든 카운터 리셋
+            if card.reset_date is None or (today.month != card.reset_date.month or today.year != card.reset_date.year):
+                card.used_amount = 0
+                card.monthly_performance = 0
+                card.monthly_count = 0
+                card.reset_date = today.replace(day=1)
+
+            # 사용 금액 및 실적 업데이트
+            card.used_amount += discount_amount
+            card.monthly_performance += final_amount
+            card.daily_count += 1
+            card.monthly_count += 1
+            card.last_used_date = today
+
+        # 결제 내역 저장
+        payment = PaymentHistory(
+            transaction_id=transaction_id,
+            user_id=user_id,
+            card_id=card_id,
+            merchant_name=merchant_name,
+            payment_amount=payment_amount,
+            discount_amount=discount_amount,
+            final_amount=final_amount,
+            benefit_text=benefit_text
+        )
+        db.add(payment)
+        db.commit()
+        db.close()
+
+        return jsonify({'status': 'success'}), 200
+
+    except Exception as e:
+        print(f"[Error] Webhook 처리 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': 'Webhook 처리에 실패했습니다',
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/card/limits', methods=['GET'])
+@login_required
+def get_card_limits():
+    """
+    카드별 한도 및 실적 조회 API
+
+    Response:
+    {
+        "cards": [
+            {
+                "card_id": 1,
+                "card_name": "신한카드 Deep Dream",
+                "monthly_limit": 50000,
+                "used_amount": 12500,
+                "remaining": 37500,
+                "monthly_performance": 320000,
+                "pre_month_required": 300000,
+                "is_eligible": true,
+                "daily_count": 2,
+                "monthly_count": 8
+            }
+        ]
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        cards = db.scalars(select(MyCard).where(MyCard.user_id == user_id)).all()
+
+        cards_data = []
+        for card in cards:
+            # 한도 계산 (기본값 설정)
+            monthly_limit = card.monthly_limit or 50000
+            used_amount = card.used_amount or 0
+            remaining = max(0, monthly_limit - used_amount)
+
+            # 전월 실적 체크
+            monthly_performance = card.monthly_performance or 0
+            pre_month_required = card.mycard_pre_month_money or 300000
+            is_eligible = monthly_performance >= pre_month_required
+
+            cards_data.append({
+                'card_id': card.cid,
+                'card_name': card.mycard_name,
+                'monthly_limit': monthly_limit,
+                'used_amount': used_amount,
+                'remaining': remaining,
+                'monthly_performance': monthly_performance,
+                'pre_month_required': pre_month_required,
+                'is_eligible': is_eligible,
+                'daily_count': card.daily_count or 0,
+                'monthly_count': card.monthly_count or 0
+            })
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'cards': cards_data
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 카드 한도 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': '카드 한도 조회에 실패했습니다',
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/payment/recent', methods=['GET'])
+@login_required
+def get_recent_payment():
+    """
+    최근 결제 내역 조회 (결제 완료 알림용)
+
+    Response:
+    {
+        "new_payment": true,
+        "transaction_id": "uuid",
+        "merchant_name": "스타벅스",
+        "payment_amount": 5000,
+        "discount_amount": 500,
+        "final_amount": 4500,
+        "benefit_text": "신한카드 15% 할인",
+        "payment_date": "2024-01-01T12:00:00"
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        # 최근 5분 이내 결제 내역 조회
+        five_minutes_ago = datetime.now().timestamp() - 300
+        recent_payment = db.scalars(
+            select(PaymentHistory)
+            .where(PaymentHistory.user_id == user_id)
+            .order_by(PaymentHistory.payment_date.desc())
+            .limit(1)
+        ).first()
+
+        if recent_payment and recent_payment.payment_date.timestamp() > five_minutes_ago:
+            return jsonify({
+                'new_payment': True,
+                'transaction_id': recent_payment.transaction_id,
+                'merchant_name': recent_payment.merchant_name,
+                'payment_amount': recent_payment.payment_amount,
+                'discount_amount': recent_payment.discount_amount,
+                'final_amount': recent_payment.final_amount,
+                'benefit_text': recent_payment.benefit_text,
+                'payment_date': recent_payment.payment_date.isoformat()
+            }), 200
+
+        db.close()
+
+        return jsonify({'new_payment': False}), 200
+
+    except Exception as e:
+        print(f"[Error] 최근 결제 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': '최근 결제 조회에 실패했습니다',
             'message': str(e)
         }), 500
 

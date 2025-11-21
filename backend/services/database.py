@@ -1,8 +1,8 @@
 import os
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, ForeignKey, select, DateTime, Text
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, ForeignKey, select, DateTime, Text, Date
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 from sqlalchemy_utils import PasswordType
-from datetime import datetime
+from datetime import datetime, date
 
 import json
 import csv
@@ -53,6 +53,16 @@ class MyCard(Base):
     mycard_detail = Column(String)
     mycard_pre_month_money = Column(Integer)
     mycard_pre_YN = Column(Boolean, default=False)
+
+    # 새로 추가되는 필드 (결제 시스템용)
+    monthly_limit = Column(Integer, default=0)  # 월 한도 (원)
+    used_amount = Column(Integer, default=0)  # 사용 금액 (원)
+    monthly_performance = Column(Integer, default=0)  # 월 실적 (원)
+    daily_count = Column(Integer, default=0)  # 일 사용 횟수
+    monthly_count = Column(Integer, default=0)  # 월 사용 횟수
+    last_used_date = Column(Date)  # 마지막 사용 날짜
+    reset_date = Column(Date)  # 한도 리셋 날짜 (매월 1일)
+
     user = relationship("User", back_populates="mycards")
 
 class Card(Base):
@@ -122,6 +132,25 @@ class SavedCourseUser(Base):
     course_id = Column(Integer, ForeignKey('saved_course.id'))
     user_id = Column(String, ForeignKey('user.user_id'))
     saved_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PaymentHistory(Base):
+    """결제 내역 (관리자 시스템에서 전송받음)"""
+    __tablename__ = 'payment_history'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    transaction_id = Column(String(36), unique=True, nullable=False)
+    user_id = Column(String, ForeignKey('user.user_id'))
+    card_id = Column(Integer, ForeignKey('mycard.cid'))
+    merchant_name = Column(String)
+    payment_amount = Column(Integer)
+    discount_amount = Column(Integer)
+    final_amount = Column(Integer)
+    benefit_text = Column(Text)
+    payment_date = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+    card = relationship("MyCard")
 
 def get_db() -> Session:
     """

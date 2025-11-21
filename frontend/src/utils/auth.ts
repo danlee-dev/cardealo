@@ -68,6 +68,7 @@ export interface LoginResponse {
 }
 
 export interface RegisterRequest {
+  user_name: string;
   user_id: string;
   user_pw: string;
   user_email: string;

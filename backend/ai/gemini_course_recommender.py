@@ -500,6 +500,19 @@ class GeminiCourseRecommender:
         course['total_distance'] = int(total_distance)
         course['total_duration'] = total_duration
 
+        # Transform benefit (singular) to benefits (plural array) for frontend
+        for stop in course.get('stops', []):
+            if 'benefit' in stop and stop['benefit']:
+                stop['benefits'] = [{
+                    'card': stop['benefit'].get('card', ''),
+                    'benefit': stop['benefit'].get('summary', '')
+                }]
+            else:
+                stop['benefits'] = []
+            # Remove the old benefit field
+            if 'benefit' in stop:
+                del stop['benefit']
+
         print(f"[Route] 총 거리: {total_distance}m, 총 시간: {total_duration}분")
 
         return course

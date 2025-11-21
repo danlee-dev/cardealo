@@ -9,17 +9,16 @@ import csv
 
 # 데이터베이스 경로 설정 (backend 폴더에 저장)
 DATABASE = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cardealo.db')
-cards_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '../ai/cards.json')
-card_benefits_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '../ai/card_benefits.csv')
-# print(cards_path)
+cards_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ai/cards.json')
+card_benefits_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ai/card_benefits.csv')
 
 # SQLAlchemy 설정
 DATABASE_URL = f"sqlite:///{DATABASE}"
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},  # SQLite용 설정
-    echo=False  # SQL 쿼리 로깅 (디버깅 시 True로 변경)
+    connect_args={"check_same_thread": False},
+    echo=False
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -36,6 +35,9 @@ class User(Base):
     user_email = Column(String, unique=True)
     user_pw = Column(PasswordType(schemes=['pbkdf2_sha512', 'md5_crypt'], deprecated=['md5_crypt']))
     user_age = Column(Integer)
+    user_phone = Column(String)
+    monthly_spending = Column(Integer, default=0)
+    monthly_savings = Column(Integer, default=0)
     isBusiness = Column(Boolean, default=False)
 
     mycards = relationship("MyCard", back_populates="user", cascade="all, delete-orphan")
@@ -106,6 +108,111 @@ def get_db() -> Session:
     return SessionLocal()
 
 
+def create_test_user():
+    """테스트 사용자 5명을 생성합니다"""
+    db = get_db()
+
+    test_users = [
+        {
+            'user_id': 'hong_gildong',
+            'user_name': '홍길동',
+            'user_email': 'hong@cardealo.com',
+            'user_pw': 'test1234!',
+            'user_age': 28,
+            'user_phone': '010-1111-1111',
+            'card_names': ['신한카드 The CLASSIC-Y', '신한카드 B.Big(삑)', '신한카드 Deep Oil']
+        },
+        {
+            'user_id': 'hong_gilsoon',
+            'user_name': '홍길순',
+            'user_email': 'gilsoon@cardealo.com',
+            'user_pw': 'test1234!',
+            'user_age': 26,
+            'user_phone': '010-2222-2222',
+            'card_names': ['신세계 신한카드', '신한카드 Simple+', '신한카드 Mr.Life']
+        },
+        {
+            'user_id': 'kim_chulsoo',
+            'user_name': '김철수',
+            'user_email': 'kim@cardealo.com',
+            'user_pw': 'test1234!',
+            'user_age': 32,
+            'user_phone': '010-3333-3333',
+            'card_names': ['GS칼텍스 신한카드 Shine', '신한카드 Shopping']
+        },
+        {
+            'user_id': 'lee_younghee',
+            'user_name': '이영희',
+            'user_email': 'lee@cardealo.com',
+            'user_pw': 'test1234!',
+            'user_age': 29,
+            'user_phone': '010-4444-4444',
+            'card_names': ['신한카드 Edu', '신한카드 YOLO ⓘ', '신한카드 The BEST-F', '신한카드 Deep Store']
+        },
+        {
+            'user_id': 'park_minsoo',
+            'user_name': '박민수',
+            'user_email': 'park@cardealo.com',
+            'user_pw': 'test1234!',
+            'user_age': 35,
+            'user_phone': '010-5555-5555',
+            'card_names': ['신한카드 Air Platinum#', '신한카드 Simple Platinum#']
+        }
+    ]
+
+    try:
+        created_count = 0
+        for user_data in test_users:
+            # 사용자가 이미 존재하는지 확인
+            existing_user = db.scalars(select(User).where(User.user_id == user_data['user_id'])).first()
+            if existing_user:
+                continue
+
+            # 테스트 사용자 생성
+            test_user = User(
+                user_id=user_data['user_id'],
+                user_name=user_data['user_name'],
+                user_email=user_data['user_email'],
+                user_pw=user_data['user_pw'],
+                user_age=user_data['user_age'],
+                user_phone=user_data['user_phone'],
+                monthly_spending=0,
+                monthly_savings=0,
+                isBusiness=False
+            )
+            db.add(test_user)
+            db.commit()
+
+            # 사용자의 카드 추가 - Card 테이블에서 실제 데이터 가져오기
+            for card_name in user_data['card_names']:
+                card = db.scalars(select(Card).where(Card.card_name == card_name)).first()
+                if card:
+                    my_card = MyCard(
+                        user_id=user_data['user_id'],
+                        mycard_name=card.card_name,
+                        mycard_detail=card.card_benefit,
+                        mycard_pre_month_money=card.card_pre_month_money or 300000,
+                        mycard_pre_YN=True if card.card_pre_month_money and card.card_pre_month_money > 0 else False
+                    )
+                    db.add(my_card)
+                else:
+                    print(f'[DB] Warning: Card "{card_name}" not found in Card table')
+
+            db.commit()
+            created_count += 1
+
+        if created_count > 0:
+            print(f'[DB] {created_count} test users created successfully')
+        else:
+            print('[DB] All test users already exist')
+
+    except Exception as e:
+        db.rollback()
+        print(f'[DB] Failed to create test users: {e}')
+    finally:
+        db.close()
+
+
 def init_db():
     """데이터베이스 테이블을 초기화합니다"""
     Base.metadata.create_all(bind=engine)
@@ -118,14 +225,14 @@ def init_db():
         for card_name in cards_data:
             existing_card = db.scalars(select(Card).where(Card.card_name == card_name)).first()
             if existing_card:
-                continue  # 이미 존재하면 건너뛰기
-            
+                continue
+
             card = cards_data[card_name]
             card_pre_month_money = card.get('pre_month_money', 0)
             card_benefit = ''
             for benefit in card.get('key_benefit', []):
                 card_benefit += benefit + '\n'
-            
+
             new_card = Card(card_name=card_name, card_benefit=card_benefit, card_pre_month_money=card_pre_month_money)
             db.add(new_card)
         db.commit()
@@ -143,3 +250,6 @@ def init_db():
         raise e
     finally:
         db.close()
+
+    # 테스트 사용자 자동 생성
+    create_test_user()

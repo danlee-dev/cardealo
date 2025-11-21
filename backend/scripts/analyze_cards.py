@@ -3,7 +3,7 @@ import os
 
 # 카드 데이터 로드
 script_dir = os.path.dirname(os.path.abspath(__file__))
-cards_path = os.path.join(script_dir, '../../ai/cards.json')
+cards_path = os.path.join(script_dir, '../ai/cards.json')
 
 with open(cards_path, 'r', encoding='utf-8') as f:
     cards_data = json.load(f)

@@ -15,12 +15,16 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { BackIcon, BellIcon, SettingsIcon, CardAddIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
-import { USER_CARDS, CARD_IMAGES } from '../constants/userCards';
+import { CARD_IMAGES } from '../constants/userCards';
 import { CardRegistrationScreen } from './CardRegistrationScreen';
 import { AdminAuthScreen } from './AdminAuthScreen';
 import { AdminDashboardScreen } from './AdminDashboardScreen';
 import { AdminDepartmentScreen } from './AdminDepartmentScreen';
-import { AuthAPI } from '../utils/auth';
+import { CardBenefitScreen } from './CardBenefitScreen';
+import { AuthAPI, AuthStorage } from '../utils/auth';
+import { CardEditModal } from '../components/CardEditModal';
+
+const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CARD_SECTION_WIDTH = SCREEN_WIDTH - 40;
@@ -33,10 +37,26 @@ interface ProfileScreenProps {
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }) => {
   const [hasNotification] = useState(true);
   const [showCardRegistration, setShowCardRegistration] = useState(false);
+  const [showCardBenefit, setShowCardBenefit] = useState(false);
   const [showAdminAuth, setShowAdminAuth] = useState(false);
   const [showAdminDashboard, setShowAdminDashboard] = useState(false);
   const [showAdminDepartment, setShowAdminDepartment] = useState(false);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
+
+  const [userData, setUserData] = useState<{
+    userName: string;
+    phoneNumber: string;
+    monthlySpending: number;
+    monthlySavings: number;
+    cards: Array<{
+      card_name: string;
+      card_benefit: string;
+      card_pre_month_money: number;
+      card_pre_YN: boolean;
+    }>;
+  } | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [editingCard, setEditingCard] = useState<string | null>(null);
 
   const handleAdminAuthenticated = () => {
     setShowAdminAuth(false);
@@ -78,11 +98,39 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     );
   };
 
-  // Mock data for demonstration
-  const userName = '이성민';
-  const phoneNumber = '010-****-1234';
-  const monthlySpending = 1250000;
-  const monthlySavings = 87500;
+  const fetchUserData = async () => {
+    try {
+      setIsLoading(true);
+      const token = await AuthStorage.getToken();
+      if (!token) {
+        console.error('No token found');
+        return;
+      }
+
+      const response = await fetch(`${BACKEND_URL}/api/mypage`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = await response.json();
+      if (data.success && data.user) {
+        setUserData({
+          userName: data.user.user_name || '사용자',
+          phoneNumber: data.user.user_phone || '010-****-****',
+          monthlySpending: data.user.monthly_spending || 0,
+          monthlySavings: data.user.monthly_savings || 0,
+          cards: data.user.cards || [],
+        });
+      }
+    } catch (error) {
+      console.error('Failed to fetch user data:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
     Animated.timing(slideAnim, {
@@ -90,6 +138,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
       duration: 300,
       useNativeDriver: true,
     }).start();
+
+    fetchUserData();
   }, []);
 
   const handleBack = () => {
@@ -102,24 +152,31 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     });
   };
 
-  // Mock card details for My Deck Report
-  const cardDetails = USER_CARDS.map((cardName) => ({
-    name: cardName,
-    image: CARD_IMAGES[cardName],
-    discounts: [
-      '편의점 10% 할인',
-      '카페 20% 할인',
-      '주유 리터당 100원 할인',
-    ],
-    benefitLimit: {
-      used: 150000,
-      total: 300000,
-    },
-    performance: {
-      current: 450000,
-      required: 500000,
-    },
-  }));
+  const cardDetails = userData?.cards.map((card) => {
+    // 혜택 텍스트를 줄 단위로 분리하고 처음 3개만 표시
+    let benefits: string[] = [];
+    if (card.card_benefit) {
+      const lines = card.card_benefit.split(/[/\n]/).map(line => line.trim()).filter(line => line.length > 0);
+      benefits = lines.slice(0, 3).map(line => {
+        // 각 줄이 너무 길면 50자로 제한
+        return line.length > 50 ? line.substring(0, 50) + '...' : line;
+      });
+    }
+
+    return {
+      name: card.card_name,
+      image: CARD_IMAGES[card.card_name],
+      discounts: benefits,
+      benefitLimit: {
+        used: 150000,
+        total: 300000,
+      },
+      performance: {
+        current: card.card_pre_month_money || 0,
+        required: card.card_pre_YN ? card.card_pre_month_money : 0,
+      },
+    };
+  }) || [];
 
   const renderCardSection = ({
     item,
@@ -132,9 +189,24 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     return (
       <View style={styles.cardSection}>
         <View style={styles.cardTopArea}>
-          <Image source={item.image} style={styles.cardImage} />
+          {item.image ? (
+            <Image source={item.image} style={styles.cardImage} />
+          ) : (
+            <View style={[styles.cardImage, styles.cardImagePlaceholder]}>
+              <Text style={styles.cardImagePlaceholderText}>카드</Text>
+            </View>
+          )}
           <View style={styles.cardInfo}>
-            <Text style={styles.cardName}>{item.name}</Text>
+            <View style={styles.cardNameRow}>
+              <Text style={styles.cardName}>{item.name}</Text>
+              <TouchableOpacity
+                style={styles.editButton}
+                onPress={() => setEditingCard(item.name)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.editButtonText}>수정</Text>
+              </TouchableOpacity>
+            </View>
             <View style={styles.discountList}>
               {item.discounts.map((discount, index) => (
                 <Text key={index} style={styles.discountItem}>
@@ -229,20 +301,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
       >
         {/* User Info Section */}
         <View style={styles.userInfoSection}>
-          <Text style={styles.greeting}>안녕하세요, {userName}님</Text>
-          <Text style={styles.phoneNumber}>{phoneNumber}</Text>
+          <Text style={styles.greeting}>안녕하세요, {userData?.userName || '사용자'}님</Text>
+          <Text style={styles.phoneNumber}>{userData?.phoneNumber || '010-****-****'}</Text>
           <View style={styles.statsRow}>
             <View style={styles.statItem}>
               <Text style={styles.statLabel}>이번 달 소비</Text>
               <Text style={styles.statValue}>
-                {monthlySpending.toLocaleString()}원
+                {(userData?.monthlySpending || 0).toLocaleString()}원
               </Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statItem}>
               <Text style={styles.statLabel}>혜택으로 절약</Text>
               <Text style={styles.statValueGreen}>
-                {monthlySavings.toLocaleString()}원
+                {(userData?.monthlySavings || 0).toLocaleString()}원
               </Text>
             </View>
           </View>
@@ -316,6 +388,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           </View>
         </View>
 
+        {/* Card Benefit Section */}
+        <TouchableOpacity
+          style={styles.benefitSection}
+          activeOpacity={0.8}
+          onPress={() => setShowCardBenefit(true)}
+        >
+          <Text style={styles.benefitTitle}>내 카드 혜택 상세 보기</Text>
+          <Text style={styles.benefitSubtitle}>
+            등록된 모든 카드의 혜택을 한눈에 확인하세요
+          </Text>
+        </TouchableOpacity>
+
         {/* Cardealo Combination Section */}
         <View style={styles.combinationSection}>
           <Text style={styles.combinationTitle}>
@@ -354,6 +438,22 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
       {showAdminDepartment && (
         <View style={styles.overlay}>
           <AdminDepartmentScreen onBack={handleBackToDashboard} />
+        </View>
+      )}
+      {editingCard && (
+        <CardEditModal
+          visible={true}
+          cardName={editingCard}
+          onClose={() => setEditingCard(null)}
+          onCardUpdated={() => {
+            fetchUserData();
+            setEditingCard(null);
+          }}
+        />
+      )}
+      {showCardBenefit && (
+        <View style={styles.overlay}>
+          <CardBenefitScreen onBack={() => setShowCardBenefit(false)} />
         </View>
       )}
     </View>
@@ -499,14 +599,41 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginRight: 15,
   },
+  cardImagePlaceholder: {
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cardImagePlaceholderText: {
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#999999',
+  },
   cardInfo: {
     flex: 1,
+  },
+  cardNameRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
   },
   cardName: {
     fontSize: 16,
     fontFamily: FONTS.bold,
     color: '#212121',
-    marginBottom: 10,
+    flex: 1,
+  },
+  editButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 6,
+  },
+  editButtonText: {
+    fontSize: 12,
+    fontFamily: FONTS.semiBold,
+    color: '#666666',
   },
   discountList: {
     gap: 4,
@@ -638,6 +765,25 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: FONTS.semiBold,
     color: '#4AA63C',
+  },
+  benefitSection: {
+    marginHorizontal: 20,
+    marginBottom: 20,
+    padding: 20,
+    backgroundColor: '#4AA63C',
+    borderRadius: 16,
+  },
+  benefitTitle: {
+    fontSize: 18,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
+    marginBottom: 8,
+  },
+  benefitSubtitle: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#FFFFFF',
+    opacity: 0.9,
   },
   combinationSection: {
     marginHorizontal: 20,

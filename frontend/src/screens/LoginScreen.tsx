@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator, Modal } from 'react-native';
 import { LogoBlack, KakaoLogo, NaverLogo, GoogleLogo, AppleLogo } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import { AuthAPI } from '../utils/auth';
@@ -9,12 +9,27 @@ interface LoginScreenProps {
   onSignup: () => void;
 }
 
+const TEST_ACCOUNTS = [
+  { name: '홍길동', email: 'hong@cardealo.com', password: 'test1234!' },
+  { name: '홍길순', email: 'gilsoon@cardealo.com', password: 'test1234!' },
+  { name: '김철수', email: 'kim@cardealo.com', password: 'test1234!' },
+  { name: '이영희', email: 'lee@cardealo.com', password: 'test1234!' },
+  { name: '박민수', email: 'park@cardealo.com', password: 'test1234!' },
+];
+
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onSignup }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [emailFocused, setEmailFocused] = useState(false);
   const [passwordFocused, setPasswordFocused] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [showTestAccountModal, setShowTestAccountModal] = useState(false);
+
+  const handleTestAccountSelect = (account: typeof TEST_ACCOUNTS[0]) => {
+    setEmail(account.email);
+    setPassword(account.password);
+    setShowTestAccountModal(false);
+  };
 
   const handleLogin = async () => {
     if (!email.trim() || !password.trim()) {
@@ -110,15 +125,26 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onSignup }) =
             )}
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.signupLink}
-            onPress={onSignup}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.signupLinkText}>
-              계정이 없으신가요? <Text style={styles.signupLinkBold}>회원가입</Text>
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.signupRow}>
+            <TouchableOpacity
+              style={styles.signupLink}
+              onPress={onSignup}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.signupLinkText}>
+                계정이 없으신가요? <Text style={styles.signupLinkBold}>회원가입</Text>
+              </Text>
+            </TouchableOpacity>
+            {__DEV__ && (
+              <TouchableOpacity
+                style={styles.testLoginButton}
+                onPress={() => setShowTestAccountModal(true)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.testLoginButtonText}>테스트</Text>
+              </TouchableOpacity>
+            )}
+          </View>
 
           <Text style={styles.dividerText}>or</Text>
 
@@ -159,6 +185,41 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onSignup }) =
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={showTestAccountModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowTestAccountModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowTestAccountModal(false)}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>테스트 계정 선택</Text>
+            {TEST_ACCOUNTS.map((account, index) => (
+              <TouchableOpacity
+                key={index}
+                style={styles.accountItem}
+                onPress={() => handleTestAccountSelect(account)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.accountName}>{account.name}</Text>
+                <Text style={styles.accountEmail}>{account.email}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              style={styles.modalCloseButton}
+              onPress={() => setShowTestAccountModal(false)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.modalCloseButtonText}>닫기</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </KeyboardAvoidingView>
   );
 };
@@ -223,9 +284,14 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.semiBold,
     color: '#FFFFFF',
   },
-  signupLink: {
-    alignSelf: 'center',
+  signupRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
     marginBottom: 24,
+    gap: 12,
+  },
+  signupLink: {
   },
   signupLinkText: {
     fontSize: 14,
@@ -235,6 +301,17 @@ const styles = StyleSheet.create({
   signupLinkBold: {
     fontFamily: FONTS.bold,
     color: '#393A39',
+  },
+  testLoginButton: {
+    backgroundColor: '#E8E8E8',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+  },
+  testLoginButtonText: {
+    fontSize: 12,
+    fontFamily: FONTS.semiBold,
+    color: '#666666',
   },
   dividerText: {
     fontSize: 14,
@@ -306,5 +383,55 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: FONTS.bold,
     color: '#393A39',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  accountItem: {
+    backgroundColor: '#F8F8F8',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+  },
+  accountName: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginBottom: 4,
+  },
+  accountEmail: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+  },
+  modalCloseButton: {
+    backgroundColor: '#393A39',
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 12,
+    alignItems: 'center',
+  },
+  modalCloseButtonText: {
+    fontSize: 16,
+    fontFamily: FONTS.semiBold,
+    color: '#FFFFFF',
   },
 });

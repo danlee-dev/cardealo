@@ -8,6 +8,7 @@ import * as Location from 'expo-location';
 import axios from 'axios';
 import { USER_CARDS, API_URL, CARD_IMAGES } from '../constants/userCards';
 import { getMerchantLogo } from '../constants/merchantImages';
+import { AuthStorage } from '../utils/auth';
 import { LinearGradient } from 'expo-linear-gradient';
 import { ProfileScreen } from './ProfileScreen';
 import { OnePayScreen } from './OnePayScreen';
@@ -140,6 +141,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const [lastSearchCenter, setLastSearchCenter] = useState<{ latitude: number; longitude: number } | null>(null);
   const [forceIndoorMode, setForceIndoorMode] = useState(false);
   const [currentSearchRadius, setCurrentSearchRadius] = useState(720); // Initial radius with 20% buffer
+  const [userCards, setUserCards] = useState<string[]>([]);
 
   // AI Course Mode states
   const [isCourseMode, setIsCourseMode] = useState(false);
@@ -155,9 +157,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const snapPoints = useMemo(() => ['25%', '45%', '70%', '85%'], []);
 
   // 카드 애니메이션 값 배열
-  const cardScaleAnims = useRef(
-    USER_CARDS.map(() => new Animated.Value(1))
-  ).current;
+  const cardScaleAnims = useRef<Animated.Value[]>([]).current;
 
   // Progress section 애니메이션 (height 기반)
   const progressHeightAnim = useRef(new Animated.Value(0)).current;
@@ -315,9 +315,55 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     return null;
   };
 
+  // Fetch user's cards from backend
+  const fetchUserCards = async () => {
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) {
+        console.error('[fetchUserCards] No token found, using hardcoded cards');
+        setUserCards(USER_CARDS);
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/api/mypage`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = await response.json();
+      if (data.success && data.user && data.user.cards) {
+        const cardNames = data.user.cards.map((card: any) => card.card_name);
+        console.log('[fetchUserCards] Fetched user cards:', cardNames);
+        setUserCards(cardNames);
+      } else {
+        console.error('[fetchUserCards] Failed to fetch user cards, using hardcoded cards');
+        setUserCards(USER_CARDS);
+      }
+    } catch (error) {
+      console.error('[fetchUserCards] Error fetching user cards:', error);
+      setUserCards(USER_CARDS);
+    }
+  };
+
   useEffect(() => {
     requestLocationPermission();
+    fetchUserCards();
   }, []);
+
+  // Initialize card scale animations when userCards change
+  useEffect(() => {
+    if (userCards.length > 0) {
+      // Clear existing animations
+      cardScaleAnims.length = 0;
+      // Add new animations for each card
+      userCards.forEach(() => {
+        cardScaleAnims.push(new Animated.Value(1));
+      });
+    }
+  }, [userCards]);
 
   const toggleFavorite = (storeName: string) => {
     const newFavorites = new Set(favoriteStores);
@@ -365,7 +411,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
   // 카드 선택 애니메이션
   useEffect(() => {
-    USER_CARDS.forEach((_, index) => {
+    userCards.forEach((_, index) => {
       if (index === selectedCardIndex) {
         // 선택된 카드 확대
         Animated.spring(cardScaleAnims[index], {
@@ -544,7 +590,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         user_lat: userLocation?.latitude || lat,
         user_lng: userLocation?.longitude || lng,
         radius,
-        cards: USER_CARDS.join(','),
+        cards: userCards.join(','),
       };
 
       // Force indoor mode for demo (발표용)
@@ -713,7 +759,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       const response = await axios.post(`${API_URL}/api/merchant-recommendations`, {
         merchant_name: store.name,
         category: store.category,
-        user_cards: USER_CARDS,
+        user_cards: userCards,
       });
 
       setRecommendations(response.data.recommendations);
@@ -744,7 +790,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
           latitude: userLocation.latitude,
           longitude: userLocation.longitude,
         },
-        user_cards: USER_CARDS,
+        user_cards: userCards,
         max_distance: 5000,
       });
 
@@ -809,14 +855,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     const scrollPosition = event.nativeEvent.contentOffset.x;
     const cardWidth = 150; // 카드 너비(120) + 간격(30)
     const index = Math.round(scrollPosition / cardWidth);
-    setSelectedCardIndex(Math.min(Math.max(index, 0), USER_CARDS.length - 1));
+    setSelectedCardIndex(Math.min(Math.max(index, 0), userCards.length - 1));
 
     // 프로그래밍 방식 스크롤 플래그 해제
     isScrollingToCard.current = false;
   };
 
   const handleRecommendationCardClick = (cardName: string) => {
-    const cardIndex = USER_CARDS.indexOf(cardName);
+    const cardIndex = userCards.indexOf(cardName);
     if (cardIndex !== -1) {
       isScrollingToCard.current = true;
       setSelectedCardIndex(cardIndex);
@@ -877,7 +923,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   };
 
   const renderCardItem = ({ item: cardName, index }: { item: string; index: number }) => {
-    const isLast = index === USER_CARDS.length - 1;
+    const isLast = index === userCards.length - 1;
 
     return (
       <Animated.View
@@ -1025,21 +1071,25 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
           </NaverMapMarkerOverlay>
         )}
 
-        {/* Course Route Polylines */}
+        {/* Course Route Polylines - Naver Style */}
         {isCourseMode && courseRoute && courseRoute.legs_summary && courseRoute.legs_summary.map((leg, index) => {
-          // Decode polyline (simple implementation - you may need @mapbox/polyline library)
           const coordinates = decodePolyline(leg.polyline);
 
-          // Color based on mode
-          const color = leg.mode === 'walking' ? '#00C853' : leg.mode === 'transit' ? '#007AFF' : '#FF5722';
-
           return (
-            <NaverMapPolylineOverlay
-              key={`leg-${index}`}
-              coords={coordinates}
-              color={color}
-              width={5}
-            />
+            <React.Fragment key={`leg-${index}`}>
+              {/* Outline layer (white border) */}
+              <NaverMapPolylineOverlay
+                coords={coordinates}
+                color="#FFFFFF"
+                width={12}
+              />
+              {/* Main layer (green route) */}
+              <NaverMapPolylineOverlay
+                coords={coordinates}
+                color="#00C853"
+                width={8}
+              />
+            </React.Fragment>
           );
         })}
 
@@ -1211,6 +1261,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         index={1}
         snapPoints={snapPoints}
         enablePanDownToClose={false}
+        enableContentPanningGesture={false}
+        enableHandlePanningGesture={true}
+        enableOverDrag={false}
+        overDragResistanceFactor={0}
         onAnimate={() => Keyboard.dismiss()}
         handleIndicatorStyle={{
           backgroundColor: '#D0D0D0',
@@ -1227,7 +1281,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
           shadowRadius: 6,
           elevation: 8,
         }}
-        enableContentPanningGesture={false}
         topInset={StatusBar.currentHeight || 0}
       >
         <View style={styles.bottomSheetContainer}>
@@ -1246,7 +1299,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
               <View style={styles.cardSelectorWrapper}>
                 <FlatList
                   ref={cardScrollRef}
-                  data={USER_CARDS}
+                  data={userCards}
                   renderItem={renderCardItem}
                   keyExtractor={(_item, index) => `card-${index}`}
                   horizontal
@@ -1302,7 +1355,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                 <Text style={[styles.bottomSheetTitle, { fontFamily: FONTS.bold, textAlign: 'center' }]}>
                   여기서 결제 중이신가요?
                 </Text>
-              ) : (
+              ) : !isCourseMode ? (
                 <View style={styles.filterContainer}>
                   <TouchableOpacity
                     style={[styles.filterButton, filterOpenOnly && styles.filterButtonActive]}
@@ -1365,19 +1418,19 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                     </Text>
                   </TouchableOpacity>
                 </View>
-              )
+              ) : null
             )
           )}
 
           <View style={{ flex: 1 }}>
             <BottomSheetScrollView
               contentContainerStyle={{
-                paddingHorizontal: 8,
-                paddingBottom: 15,
+                paddingBottom: 100,
                 backgroundColor: COLORS.background,
               }}
-              showsVerticalScrollIndicator={false}
+              showsVerticalScrollIndicator={true}
               onScrollBeginDrag={() => Keyboard.dismiss()}
+              nestedScrollEnabled={true}
             >
             {isCourseMode ? (
               // Course Mode Content
@@ -1392,47 +1445,95 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                     <Text style={styles.courseSummary}>{courseResult.course.reasoning}</Text>
 
                     {courseRoute && (
-                      <View style={styles.routeInfo}>
-                        <Text style={styles.routeInfoText}>총 거리: {courseRoute.total_distance_text}</Text>
-                        <Text style={styles.routeInfoText}>소요 시간: {courseRoute.total_duration_text}</Text>
-                        {courseRoute.total_fare > 0 && (
-                          <Text style={styles.routeInfoText}>교통비: {courseRoute.total_fare_text}</Text>
-                        )}
+                      <View style={styles.naverRouteContainer}>
+                        <View style={styles.naverRouteSummary}>
+                          <View style={styles.naverRouteSummaryItem}>
+                            <Text style={styles.naverRouteSummaryLabel}>총 시간</Text>
+                            <Text style={styles.naverRouteSummaryValue}>{courseRoute.total_duration_text}</Text>
+                          </View>
+                          <View style={styles.naverRouteDivider} />
+                          <View style={styles.naverRouteSummaryItem}>
+                            <Text style={styles.naverRouteSummaryLabel}>총 거리</Text>
+                            <Text style={styles.naverRouteSummaryValue}>{courseRoute.total_distance_text}</Text>
+                          </View>
+                          {courseRoute.total_fare > 0 && (
+                            <>
+                              <View style={styles.naverRouteDivider} />
+                              <View style={styles.naverRouteSummaryItem}>
+                                <Text style={styles.naverRouteSummaryLabel}>교통비</Text>
+                                <Text style={styles.naverRouteSummaryValue}>{courseRoute.total_fare_text}</Text>
+                              </View>
+                            </>
+                          )}
+                        </View>
                       </View>
                     )}
 
-                    {courseResult.course && courseResult.course.stops && courseResult.course.stops.map((place, index) => (
-                      <View key={index} style={styles.coursePlaceCard}>
-                        <View style={styles.coursePlaceNumber}>
-                          <Text style={styles.coursePlaceNumberText}>{index + 1}</Text>
-                        </View>
-                        <View style={styles.coursePlaceInfo}>
-                          <Text style={styles.coursePlaceName}>{place.name}</Text>
-                          <Text style={styles.coursePlaceCategory}>{place.category}</Text>
-                          {place.benefits && place.benefits.length > 0 && (
-                            <View style={styles.benefitsContainer}>
-                              {place.benefits.map((benefit, idx) => (
-                                <View key={idx} style={styles.benefitChip}>
-                                  <Text style={styles.benefitChipText}>{benefit.card}</Text>
-                                  <Text style={styles.benefitChipDetail}>{benefit.benefit}</Text>
+                    {courseResult.course && courseResult.course.stops && courseResult.course.stops.map((place, index) => {
+                      const bestBenefit = place.benefits && place.benefits.length > 0 ? place.benefits[0] : null;
+                      const cardImage = bestBenefit ? CARD_IMAGES[bestBenefit.card] : null;
+
+                      return (
+                        <React.Fragment key={index}>
+                          <View style={styles.naverPlaceCard}>
+                            <View style={styles.naverPlaceNumber}>
+                              <Text style={styles.naverPlaceNumberText}>{index + 1}</Text>
+                            </View>
+
+                            <View style={styles.naverPlaceContent}>
+                              <View style={styles.naverPlaceMerchant}>
+                                <View style={styles.naverMerchantPlaceholder}>
+                                  <Text style={styles.naverMerchantPlaceholderText}>
+                                    {place.name.substring(0, 1)}
+                                  </Text>
                                 </View>
-                              ))}
+                              </View>
+
+                              <View style={styles.naverPlaceInfo}>
+                                <Text style={styles.naverPlaceName}>{place.name}</Text>
+                                <Text style={styles.naverPlaceCategory}>{place.category}</Text>
+                                {bestBenefit && (
+                                  <View style={styles.naverBenefitInfo}>
+                                    <Text style={styles.naverBenefitCard}>{bestBenefit.card}</Text>
+                                    <Text style={styles.naverBenefitDetail}>{bestBenefit.benefit}</Text>
+                                  </View>
+                                )}
+                              </View>
+
+                              {cardImage && (
+                                <Image
+                                  source={cardImage}
+                                  style={styles.naverCardImage}
+                                  resizeMode="contain"
+                                />
+                              )}
+                            </View>
+                          </View>
+
+                          {courseRoute && courseRoute.legs_summary && courseRoute.legs_summary[index] && index < courseResult.course.stops.length - 1 && (
+                            <View style={styles.naverRouteSegment}>
+                              <View style={styles.naverRouteDots}>
+                                <View style={styles.naverRouteDot} />
+                                <View style={styles.naverRouteDot} />
+                                <View style={styles.naverRouteDot} />
+                              </View>
+                              <View style={styles.naverRouteDetails}>
+                                <View style={styles.naverRouteMode}>
+                                  <Text style={styles.naverRouteModeText}>
+                                    {courseRoute.legs_summary[index].mode === 'walking' ? '도보' :
+                                     courseRoute.legs_summary[index].mode === 'transit' ? '대중교통' : '이동'}
+                                  </Text>
+                                </View>
+                                <Text style={styles.naverRouteSegmentText}>
+                                  {courseRoute.legs_summary[index].distance_text} · {courseRoute.legs_summary[index].duration_text}
+                                  {courseRoute.legs_summary[index].fare && courseRoute.legs_summary[index].fare > 0 && ` · ${courseRoute.legs_summary[index].fare}원`}
+                                </Text>
+                              </View>
                             </View>
                           )}
-                        </View>
-
-                        {courseRoute && courseRoute.legs_summary && courseRoute.legs_summary[index] && (
-                          <View style={styles.legInfo}>
-                            <Text style={styles.legMode}>
-                              {courseRoute.legs_summary[index].mode === 'walking' ? '도보' :
-                               courseRoute.legs_summary[index].mode === 'transit' ? '대중교통' : '이동'}
-                            </Text>
-                            <Text style={styles.legDistance}>{courseRoute.legs_summary[index].distance_text}</Text>
-                            <Text style={styles.legDuration}>{courseRoute.legs_summary[index].duration_text}</Text>
-                          </View>
-                        )}
-                      </View>
-                    ))}
+                        </React.Fragment>
+                      );
+                    })}
                   </>
                 ) : (
                   <View style={styles.emptyState}>
@@ -1450,7 +1551,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                   <>
                     <Text style={styles.recommendationsTitle}>내 카드 혜택 순위</Text>
                     {recommendations.map((rec) => {
-                      const selectedCardName = USER_CARDS[selectedCardIndex];
+                      const selectedCardName = userCards[selectedCardIndex];
                       const isSelectedCard = rec.card === selectedCardName;
                       const performanceData = getSamplePerformanceData(rec);
 
@@ -2359,6 +2460,52 @@ const styles = StyleSheet.create({
     color: '#333333',
     marginBottom: 4,
   },
+  naverRouteContainer: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    marginHorizontal: 12,
+    marginBottom: 16,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 3,
+      },
+    }),
+  },
+  naverRouteSummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    paddingVertical: 16,
+    paddingHorizontal: 8,
+  },
+  naverRouteSummaryItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  naverRouteSummaryLabel: {
+    fontSize: 13,
+    fontFamily: FONTS.regular,
+    color: '#999999',
+    marginBottom: 4,
+  },
+  naverRouteSummaryValue: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#333333',
+  },
+  naverRouteDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: '#E0E0E0',
+    marginHorizontal: 4,
+  },
   coursePlaceCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 12,
@@ -2469,5 +2616,138 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.regular,
     color: '#999999',
     textAlign: 'center',
+  },
+  // Naver-style Course Place Cards
+  naverPlaceCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    marginHorizontal: 12,
+    marginBottom: 8,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 3,
+      },
+    }),
+  },
+  naverPlaceNumber: {
+    position: 'absolute',
+    top: 16,
+    left: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#4AA63C',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  naverPlaceNumberText: {
+    fontSize: 14,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
+  },
+  naverPlaceContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    paddingLeft: 52,
+    gap: 12,
+  },
+  naverPlaceMerchant: {
+    marginRight: 4,
+  },
+  naverMerchantPlaceholder: {
+    width: 56,
+    height: 56,
+    borderRadius: 12,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  naverMerchantPlaceholderText: {
+    fontSize: 24,
+    fontFamily: FONTS.bold,
+    color: '#999999',
+  },
+  naverPlaceInfo: {
+    flex: 1,
+  },
+  naverPlaceName: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginBottom: 4,
+  },
+  naverPlaceCategory: {
+    fontSize: 13,
+    fontFamily: FONTS.regular,
+    color: '#999999',
+    marginBottom: 8,
+  },
+  naverBenefitInfo: {
+    backgroundColor: '#F0F8EE',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  naverBenefitCard: {
+    fontSize: 12,
+    fontFamily: FONTS.semiBold,
+    color: '#4AA63C',
+    marginBottom: 2,
+  },
+  naverBenefitDetail: {
+    fontSize: 11,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+  },
+  naverCardImage: {
+    width: 70,
+    height: 44,
+    borderRadius: 6,
+  },
+  // Naver-style Route Segment
+  naverRouteSegment: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingLeft: 40,
+    paddingRight: 20,
+    paddingVertical: 8,
+    marginHorizontal: 12,
+  },
+  naverRouteDots: {
+    width: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    marginRight: 12,
+  },
+  naverRouteDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#D0D0D0',
+  },
+  naverRouteDetails: {
+    flex: 1,
+  },
+  naverRouteMode: {
+    marginBottom: 4,
+  },
+  naverRouteModeText: {
+    fontSize: 13,
+    fontFamily: FONTS.semiBold,
+    color: '#666666',
+  },
+  naverRouteSegmentText: {
+    fontSize: 12,
+    fontFamily: FONTS.regular,
+    color: '#999999',
   },
 });

@@ -30,6 +30,7 @@ interface CardSearchResult {
 }
 
 export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onBack }) => {
+  const [userName, setUserName] = useState('');
   const [userId, setUserId] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -43,6 +44,7 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onB
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
 
+  const [userNameFocused, setUserNameFocused] = useState(false);
   const [userIdFocused, setUserIdFocused] = useState(false);
   const [emailFocused, setEmailFocused] = useState(false);
   const [passwordFocused, setPasswordFocused] = useState(false);
@@ -93,6 +95,11 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onB
   };
 
   const validateInputs = (): boolean => {
+    if (!userName.trim()) {
+      Alert.alert('오류', '이름을 입력해주세요.');
+      return false;
+    }
+
     if (!userId.trim()) {
       Alert.alert('오류', '아이디를 입력해주세요.');
       return false;
@@ -136,6 +143,7 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onB
 
     try {
       const response = await AuthAPI.register({
+        user_name: userName,
         user_id: userId,
         user_pw: password,
         user_email: email,
@@ -188,6 +196,17 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onB
         </View>
 
         <View style={styles.formContainer}>
+          <Text style={styles.label}>이름</Text>
+          <TextInput
+            style={[styles.input, userNameFocused && styles.inputFocused]}
+            placeholder="이름을 입력하세요"
+            placeholderTextColor="#C7C7C7"
+            value={userName}
+            onChangeText={setUserName}
+            onFocus={() => setUserNameFocused(true)}
+            onBlur={() => setUserNameFocused(false)}
+          />
+
           <Text style={styles.label}>아이디</Text>
           <TextInput
             style={[styles.input, userIdFocused && styles.inputFocused]}

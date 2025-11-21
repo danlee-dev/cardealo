@@ -149,6 +149,9 @@ def mypage():
             'user_name': user.user_name,
             'user_id': user.user_id,
             'user_age': user.user_age,
+            'user_phone': user.user_phone,
+            'monthly_spending': user.monthly_spending,
+            'monthly_savings': user.monthly_savings,
             'isBusiness': user.isBusiness,
             'user_email': user.user_email,
             'cards': []
@@ -777,7 +780,7 @@ def ai_course_recommend():
         # AI 서비스 모듈 동적 import
         import sys
         import os
-        ai_path = os.path.join(os.path.dirname(__file__), '..', 'ai')
+        ai_path = os.path.join(os.path.dirname(__file__), 'ai')
         if ai_path not in sys.path:
             sys.path.insert(0, ai_path)
 

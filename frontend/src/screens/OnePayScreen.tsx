@@ -144,6 +144,7 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
         setTimeLeft(data.expires_in || 300);
         setQrTimestamp(data.timestamp);
         setPaymentStatus('idle'); // QR 생성 직후는 idle 상태
+        stopPaymentPolling(); // 이전 polling 정리
         startPaymentPolling(data.timestamp);
       } else {
         Alert.alert('오류', `QR 코드 생성 실패: ${data.error || data.message || '알 수 없는 오류'}`);
@@ -236,6 +237,7 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
               setPaymentStatus('idle');
               setPaymentResult(null);
               successScaleAnim.setValue(0);
+              generateCode(); // QR 자동 갱신
             }, 3000);
           }
         }

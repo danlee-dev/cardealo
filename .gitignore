@@ -26,7 +26,6 @@ temp_img/
 *.orig.*
 
 benefits_db_old.json
-benefits_db.json
 /cards.json
 !backend/ai/cards.json
 !backend/ai/card_benefits.csv

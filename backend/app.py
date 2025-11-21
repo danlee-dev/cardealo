@@ -1461,13 +1461,19 @@ def get_qr_scan_status():
         if not timestamp:
             return jsonify({'error': 'timestamp is required'}), 400
 
+        # Validate timestamp is numeric
+        try:
+            timestamp_int = int(timestamp)
+        except ValueError:
+            return jsonify({'error': 'invalid timestamp format'}), 400
+
         db = get_db()
 
         # QR 스캔 상태 조회
         qr_status = db.scalars(
             select(QRScanStatus).where(
                 QRScanStatus.user_id == user_id,
-                QRScanStatus.timestamp == int(timestamp)
+                QRScanStatus.timestamp == timestamp_int
             ).order_by(QRScanStatus.created_at.desc())
         ).first()
 

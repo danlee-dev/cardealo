@@ -10,7 +10,7 @@ from services.location_service import LocationService
 from services.directions_service import DirectionsService
 from services.ocr_service import NaverOCRService
 from services.database import init_db, get_db
-from services.database import User, Card, MyCard, CardBenefit
+from services.database import User, Card, MyCard, CardBenefit, SavedCourse, SavedCourseUser
 from services.jwt_service import JwtService
 from utils.utils import parse_place_name
 from pprint import pprint
@@ -758,7 +758,9 @@ def ai_course_recommend():
         "user_input": "주말 단풍 데이트",
         "user_location": {"latitude": 37.xxx, "longitude": 127.xxx},
         "user_cards": ["현대 M카드", "신한 Love카드"],
-        "max_distance": 5000
+        "max_distance": 5000,
+        "num_people": 2,
+        "budget": 100000
     }
 
     Response:
@@ -795,6 +797,8 @@ def ai_course_recommend():
         user_location = data.get('user_location')
         user_cards = data.get('user_cards', [])
         max_distance = data.get('max_distance', 5000)
+        num_people = data.get('num_people', 2)
+        budget = data.get('budget', 100000)
 
         if not user_input or not user_location:
             return jsonify({
@@ -807,7 +811,9 @@ def ai_course_recommend():
             user_input=user_input,
             user_location=user_location,
             user_cards=user_cards,
-            max_distance=max_distance
+            max_distance=max_distance,
+            num_people=num_people,
+            budget=budget
         )
 
         return jsonify(result), 200
@@ -820,6 +826,273 @@ def ai_course_recommend():
             'error': 'AI course recommendation failed',
             'message': str(e)
         }), 500
+
+
+@app.route('/api/course/save', methods=['POST'])
+@login_required
+def save_course():
+    """
+    코스 저장 API
+
+    Request:
+    {
+        "title": "잠실 석촌호수 산책 코스",
+        "description": "혜택까지 알뜰한 코스",
+        "stops": [...],  // JSON: 코스 장소 목록
+        "route_info": {...},  // JSON: 경로 정보
+        "total_distance": 1234,
+        "total_duration": 45,
+        "total_benefit_score": 250,
+        "num_people": 2,
+        "budget": 100000
+    }
+
+    Response:
+    {
+        "success": true,
+        "course_id": 1,
+        "message": "코스가 저장되었습니다"
+    }
+    """
+    user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'success': False, 'error': 'Request body is required'}), 400
+
+    title = data.get('title')
+    description = data.get('description', '')
+    stops = data.get('stops', [])
+    route_info = data.get('route_info')
+    total_distance = data.get('total_distance', 0)
+    total_duration = data.get('total_duration', 0)
+    total_benefit_score = data.get('total_benefit_score', 0)
+    num_people = data.get('num_people', 2)
+    budget = data.get('budget', 100000)
+
+    if not title or not stops:
+        return jsonify({
+            'success': False,
+            'error': 'title and stops are required'
+        }), 400
+
+    try:
+        db = get_db()
+
+        # 코스 저장
+        new_course = SavedCourse(
+            user_id=user_id,
+            title=title,
+            description=description,
+            stops=json.dumps(stops, ensure_ascii=False),
+            route_info=json.dumps(route_info, ensure_ascii=False) if route_info else None,
+            total_distance=total_distance,
+            total_duration=total_duration,
+            total_benefit_score=total_benefit_score,
+            num_people=num_people,
+            budget=budget,
+            save_count=1
+        )
+        db.add(new_course)
+        db.commit()
+        db.refresh(new_course)
+
+        # 사용자-코스 매핑 추가
+        course_user = SavedCourseUser(
+            course_id=new_course.id,
+            user_id=user_id
+        )
+        db.add(course_user)
+        db.commit()
+
+        return jsonify({
+            'success': True,
+            'course_id': new_course.id,
+            'message': '코스가 저장되었습니다'
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 코스 저장 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        db.rollback()
+        return jsonify({
+            'success': False,
+            'error': '코스 저장에 실패했습니다',
+            'message': str(e)
+        }), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/course/saved', methods=['GET'])
+@login_required
+def get_saved_courses():
+    """
+    사용자가 저장한 코스 조회 API
+
+    Query params:
+        - limit: 최대 결과 개수 (기본: 10)
+        - offset: 오프셋 (기본: 0)
+
+    Response:
+    {
+        "success": true,
+        "courses": [
+            {
+                "id": 1,
+                "title": "잠실 석촌호수 산책 코스",
+                "description": "혜택까지 알뜰한 코스",
+                "stops": [...],
+                "route_info": {...},
+                "total_distance": 1234,
+                "total_duration": 45,
+                "total_benefit_score": 250,
+                "num_people": 2,
+                "budget": 100000,
+                "created_at": "2024-01-01T00:00:00",
+                "is_saved_by_user": true
+            }
+        ]
+    }
+    """
+    user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+    limit = request.args.get('limit', 10, type=int)
+    offset = request.args.get('offset', 0, type=int)
+
+    try:
+        db = get_db()
+
+        # 사용자가 저장한 코스 ID 가져오기
+        saved_course_ids = db.scalars(
+            select(SavedCourseUser.course_id)
+            .where(SavedCourseUser.user_id == user_id)
+        ).all()
+
+        # 코스 정보 가져오기
+        courses = db.scalars(
+            select(SavedCourse)
+            .where(SavedCourse.id.in_(saved_course_ids))
+            .order_by(SavedCourse.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+
+        courses_data = []
+        for course in courses:
+            courses_data.append({
+                'id': course.id,
+                'title': course.title,
+                'description': course.description,
+                'stops': json.loads(course.stops) if course.stops else [],
+                'route_info': json.loads(course.route_info) if course.route_info else None,
+                'total_distance': course.total_distance,
+                'total_duration': course.total_duration,
+                'total_benefit_score': course.total_benefit_score,
+                'num_people': course.num_people,
+                'budget': course.budget,
+                'created_at': course.created_at.isoformat() if course.created_at else None,
+                'user_id': course.user_id,
+                'is_saved_by_user': True
+            })
+
+        return jsonify({
+            'success': True,
+            'courses': courses_data
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 저장 코스 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': '저장 코스 조회에 실패했습니다',
+            'message': str(e)
+        }), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/course/popular', methods=['GET'])
+def get_popular_courses():
+    """
+    인기 코스 조회 API
+
+    Query params:
+        - limit: 최대 결과 개수 (기본: 10)
+        - offset: 오프셋 (기본: 0)
+
+    Response:
+    {
+        "success": true,
+        "courses": [
+            {
+                "id": 1,
+                "title": "잠실 석촌호수 산책 코스",
+                "description": "혜택까지 알뜰한 코스",
+                "stops": [...],
+                "route_info": {...},
+                "total_distance": 1234,
+                "total_duration": 45,
+                "total_benefit_score": 250,
+                "num_people": 2,
+                "budget": 100000,
+                "created_at": "2024-01-01T00:00:00",
+                "save_count": 42
+            }
+        ]
+    }
+    """
+    limit = request.args.get('limit', 10, type=int)
+    offset = request.args.get('offset', 0, type=int)
+
+    try:
+        db = get_db()
+
+        # 저장 횟수 기준 인기 코스 가져오기
+        courses = db.scalars(
+            select(SavedCourse)
+            .where(SavedCourse.save_count > 0)
+            .order_by(SavedCourse.save_count.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+
+        courses_data = []
+        for course in courses:
+            courses_data.append({
+                'id': course.id,
+                'title': course.title,
+                'description': course.description,
+                'stops': json.loads(course.stops) if course.stops else [],
+                'route_info': json.loads(course.route_info) if course.route_info else None,
+                'total_distance': course.total_distance,
+                'total_duration': course.total_duration,
+                'total_benefit_score': course.total_benefit_score,
+                'num_people': course.num_people,
+                'budget': course.budget,
+                'created_at': course.created_at.isoformat() if course.created_at else None,
+                'user_id': course.user_id,
+                'save_count': course.save_count
+            })
+
+        return jsonify({
+            'success': True,
+            'courses': courses_data
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 인기 코스 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': '인기 코스 조회에 실패했습니다',
+            'message': str(e)
+        }), 500
+    finally:
+        db.close()
 
 
 @app.route('/api/directions', methods=['POST'])

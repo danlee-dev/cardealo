@@ -1,7 +1,8 @@
 import os
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, ForeignKey, select
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, ForeignKey, select, DateTime, Text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 from sqlalchemy_utils import PasswordType
+from datetime import datetime
 
 import json
 import csv
@@ -91,6 +92,36 @@ class CardBenefit(Base):
     max_discount_display = Column(String)  # "1회 최대 1천원"
 
     card = relationship("Card", back_populates="card_benefits")
+
+
+class SavedCourse(Base):
+    __tablename__ = 'saved_course'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey('user.user_id'))
+    title = Column(String, nullable=False)
+    description = Column(Text)
+    stops = Column(Text)  # JSON: 코스 장소 목록
+    route_info = Column(Text)  # JSON: 경로 정보
+    total_distance = Column(Integer)  # 총 거리 (미터)
+    total_duration = Column(Integer)  # 총 소요 시간 (분)
+    total_benefit_score = Column(Integer)  # 총 혜택 점수
+    num_people = Column(Integer, default=2)  # 인원
+    budget = Column(Integer, default=100000)  # 예산
+    created_at = Column(DateTime, default=datetime.utcnow)
+    save_count = Column(Integer, default=0)  # 저장 횟수 (인기도)
+
+    user = relationship("User")
+
+
+class SavedCourseUser(Base):
+    """사용자가 저장한 코스 (다대다 관계)"""
+    __tablename__ = 'saved_course_user'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    course_id = Column(Integer, ForeignKey('saved_course.id'))
+    user_id = Column(String, ForeignKey('user.user_id'))
+    saved_at = Column(DateTime, default=datetime.utcnow)
 
 def get_db() -> Session:
     """

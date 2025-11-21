@@ -11,6 +11,8 @@ import {
   ActivityIndicator,
   Modal,
   ScrollView,
+  TextInput,
+  FlatList,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { BackIcon, CameraIcon } from '../components/svg';
@@ -38,12 +40,18 @@ interface OCRResult {
   raw_text: string | null;
 }
 
+type RegistrationMode = 'ocr' | 'search';
+
 export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ onBack }) => {
+  const [mode, setMode] = useState<RegistrationMode>('ocr');
   const [cardImage, setCardImage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [ocrResult, setOcrResult] = useState<OCRResult | null>(null);
   const [matchingCards, setMatchingCards] = useState<CardMatch[]>([]);
   const [showCardSelection, setShowCardSelection] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<CardMatch[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
 
   useEffect(() => {
@@ -55,10 +63,43 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
     }).start();
   }, []);
 
+  useEffect(() => {
+    const debounceTimer = setTimeout(() => {
+      if (searchQuery.trim().length >= 2) {
+        searchCards(searchQuery);
+      } else {
+        setSearchResults([]);
+      }
+    }, 300);
+
+    return () => clearTimeout(debounceTimer);
+  }, [searchQuery]);
+
   const requestCameraPermission = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('권한 필요', '카메라 권한이 필요합니다.');
+    }
+  };
+
+  const searchCards = async (query: string) => {
+    if (!query.trim()) return;
+
+    setIsSearching(true);
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/card/list?keyword=${encodeURIComponent(query)}&page=1`);
+      const data = await response.json();
+
+      if (data.success && data.cards) {
+        setSearchResults(data.cards);
+      } else {
+        setSearchResults([]);
+      }
+    } catch (error) {
+      console.error('Card search error:', error);
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
     }
   };
 
@@ -205,7 +246,31 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
       </View>
 
       <View style={styles.content}>
-        <Text style={styles.instruction}>카드를 촬영해주세요</Text>
+        {/* 모드 선택 탭 */}
+        <View style={styles.modeTabContainer}>
+          <TouchableOpacity
+            style={[styles.modeTab, mode === 'ocr' && styles.modeTabActive]}
+            onPress={() => setMode('ocr')}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.modeTabText, mode === 'ocr' && styles.modeTabTextActive]}>
+              카메라 촬영
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.modeTab, mode === 'search' && styles.modeTabActive]}
+            onPress={() => setMode('search')}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.modeTabText, mode === 'search' && styles.modeTabTextActive]}>
+              카드 검색
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {mode === 'ocr' ? (
+          <>
+            <Text style={styles.instruction}>카드를 촬영해주세요</Text>
 
         <TouchableOpacity
           style={[
@@ -232,14 +297,68 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
           )}
         </TouchableOpacity>
 
-        {cardImage && !isProcessing && (
-          <TouchableOpacity
-            style={styles.retakeButton}
-            onPress={takePicture}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.retakeButtonText}>다시 촬영하기</Text>
-          </TouchableOpacity>
+            {cardImage && !isProcessing && (
+              <TouchableOpacity
+                style={styles.retakeButton}
+                onPress={takePicture}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.retakeButtonText}>다시 촬영하기</Text>
+              </TouchableOpacity>
+            )}
+          </>
+        ) : (
+          <>
+            <Text style={styles.instruction}>카드를 검색해주세요</Text>
+
+            <View style={styles.searchContainer}>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="카드 이름을 입력하세요 (예: 신한, 삼성)"
+                placeholderTextColor="#C7C7C7"
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+              />
+              {isSearching && (
+                <View style={styles.searchingIndicator}>
+                  <ActivityIndicator size="small" color="#393A39" />
+                </View>
+              )}
+            </View>
+
+            {searchResults.length > 0 && (
+              <FlatList
+                data={searchResults}
+                keyExtractor={(item, index) => `${item.card_name}-${index}`}
+                showsVerticalScrollIndicator={true}
+                style={styles.searchResultsList}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.searchResultCard}
+                    onPress={() => handleCardSelect(item.card_name)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.searchResultCardName}>{item.card_name}</Text>
+                    <Text style={styles.searchResultCardBenefit} numberOfLines={2}>
+                      {item.card_benefit}
+                    </Text>
+                    {item.card_pre_month_money > 0 && (
+                      <Text style={styles.searchResultCardCondition}>
+                        전월 {(item.card_pre_month_money / 10000).toFixed(0)}만원 이상
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                )}
+              />
+            )}
+
+            {searchQuery.trim().length > 0 && !isSearching && searchResults.length === 0 && (
+              <View style={styles.noResultsContainer}>
+                <Text style={styles.noResultsText}>검색 결과가 없습니다</Text>
+                <Text style={styles.noResultsSubtext}>다른 키워드로 검색해보세요</Text>
+              </View>
+            )}
+          </>
         )}
       </View>
 
@@ -488,5 +607,102 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: FONTS.semiBold,
     color: '#666666',
+  },
+  modeTabContainer: {
+    flexDirection: 'row',
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 32,
+  },
+  modeTab: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modeTabActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  modeTabText: {
+    fontSize: 14,
+    fontFamily: FONTS.medium,
+    color: '#999999',
+  },
+  modeTabTextActive: {
+    color: '#212121',
+    fontFamily: FONTS.semiBold,
+  },
+  searchContainer: {
+    marginBottom: 24,
+  },
+  searchInput: {
+    width: '100%',
+    height: 56,
+    backgroundColor: '#F8F8F8',
+    borderRadius: 12,
+    paddingHorizontal: 20,
+    fontSize: 15,
+    fontFamily: FONTS.regular,
+    color: '#393A39',
+    borderWidth: 2,
+    borderColor: '#E0E0E0',
+  },
+  searchingIndicator: {
+    position: 'absolute',
+    right: 16,
+    top: 16,
+  },
+  searchResultsList: {
+    flex: 1,
+  },
+  searchResultCard: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+  },
+  searchResultCardName: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginBottom: 8,
+  },
+  searchResultCardBenefit: {
+    fontSize: 13,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+    lineHeight: 18,
+    marginBottom: 6,
+  },
+  searchResultCardCondition: {
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#4AA63C',
+  },
+  noResultsContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingTop: 60,
+  },
+  noResultsText: {
+    fontSize: 16,
+    fontFamily: FONTS.semiBold,
+    color: '#999999',
+    marginBottom: 8,
+  },
+  noResultsSubtext: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#CCCCCC',
   },
 });

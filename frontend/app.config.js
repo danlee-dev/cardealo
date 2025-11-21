@@ -7,6 +7,12 @@ module.exports = {
     icon: "./assets/icon.png",
     userInterfaceStyle: "light",
     newArchEnabled: true,
+    runtimeVersion: {
+      policy: "appVersion"
+    },
+    updates: {
+      url: "https://u.expo.dev/8f5a86f1-d0fe-4f59-945b-de508bb92123"
+    },
     splash: {
       image: "./assets/splash-icon.png",
       resizeMode: "contain",
@@ -51,6 +57,7 @@ module.exports = {
     plugins: [
       "expo-font",
       "expo-dev-client",
+      "expo-updates",
       "./plugins/withNaverMaps",
       "./plugins/withNaverMapsGradle",
       "./plugins/withPodfileSource"

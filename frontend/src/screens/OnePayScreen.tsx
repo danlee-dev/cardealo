@@ -12,12 +12,17 @@ import {
   NativeSyntheticEvent,
   NativeScrollEvent,
   ScrollView,
+  ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BackIcon, RefreshIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
-import { USER_CARDS, CARD_IMAGES } from '../constants/userCards';
+import { CARD_IMAGES } from '../constants/userCards';
+import { AuthStorage } from '../utils/auth';
+import { CardPlaceholder } from '../components/CardPlaceholder';
 
+const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CARD_WIDTH = 140;
 const CARD_SPACING = 20;
@@ -34,13 +39,221 @@ interface OnePayScreenProps {
 export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStore }) => {
   const [displayMode, setDisplayMode] = useState<'barcode' | 'qr'>('barcode');
   const [selectedCardIndex, setSelectedCardIndex] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(180); // 3 minutes in seconds
+  const [timeLeft, setTimeLeft] = useState(300); // 5 minutes in seconds
+  const [userCards, setUserCards] = useState<Array<{
+    cid: number;
+    card_name: string;
+    card_benefit: string;
+    card_pre_month_money: number;
+    card_pre_YN: boolean;
+    monthly_limit?: number;
+    used_amount?: number;
+    monthly_performance?: number;
+    daily_count?: number;
+    monthly_count?: number;
+    last_used_date?: string | null;
+    reset_date?: string | null;
+  }>>([]);
+  const [qrImage, setQrImage] = useState<string | null>(null);
+  const [barcodeImage, setBarcodeImage] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [paymentStatus, setPaymentStatus] = useState<'idle' | 'waiting' | 'completed' | 'failed' | 'cancelled'>('idle');
+  const [paymentResult, setPaymentResult] = useState<{
+    merchant_name: string;
+    final_amount: number;
+    discount_amount: number;
+    benefit_text: string;
+  } | null>(null);
+  const [qrTimestamp, setQrTimestamp] = useState<number | null>(null);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
   const cardListRef = useRef<FlatList>(null);
-  const cardScaleAnims = useRef(
-    USER_CARDS.map(() => new Animated.Value(1))
-  ).current;
+  const cardScaleAnims = useRef<Animated.Value[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const successScaleAnim = useRef(new Animated.Value(0)).current;
+
+  const fetchUserCards = async () => {
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) return;
+
+      const response = await fetch(`${BACKEND_URL}/api/mypage`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = await response.json();
+      console.log('User cards data:', data);
+      if (data.success && data.user.cards) {
+        console.log('Cards:', data.user.cards);
+        setUserCards(data.user.cards);
+        cardScaleAnims.current = data.user.cards.map(() => new Animated.Value(1));
+      }
+    } catch (error) {
+      console.error('Failed to fetch user cards:', error);
+      Alert.alert('오류', '카드 정보를 불러올 수 없습니다');
+    }
+  };
+
+  const generateCode = async () => {
+    if (userCards.length === 0) return;
+
+    try {
+      setIsLoading(true);
+      const token = await AuthStorage.getToken();
+      if (!token) {
+        Alert.alert('오류', '로그인이 필요합니다');
+        return;
+      }
+
+      const selectedCard = userCards[selectedCardIndex];
+      console.log('Generating QR for card:', selectedCard.cid);
+      console.log('Backend URL:', BACKEND_URL);
+
+      const response = await fetch(`${BACKEND_URL}/api/qr/generate`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          card_id: selectedCard.cid,
+          type: 'qr',
+        }),
+      });
+
+      console.log('Response status:', response.status);
+      const responseText = await response.text();
+      console.log('Response text:', responseText.substring(0, 200));
+
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (e) {
+        console.error('JSON parse error:', e);
+        Alert.alert('오류', `서버 응답 오류: ${response.status}\n${responseText.substring(0, 100)}`);
+        return;
+      }
+
+      if (data.success) {
+        setQrImage(data.qr_image);
+        setBarcodeImage(data.barcode_image);
+        setTimeLeft(data.expires_in || 300);
+        setQrTimestamp(data.timestamp);
+        setPaymentStatus('idle'); // QR 생성 직후는 idle 상태
+        startPaymentPolling(data.timestamp);
+      } else {
+        Alert.alert('오류', `QR 코드 생성 실패: ${data.error || data.message || '알 수 없는 오류'}`);
+      }
+    } catch (error: any) {
+      console.error('Failed to generate code:', error);
+      Alert.alert('오류', `QR 코드 생성 중 오류: ${error.message || error}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const startPaymentPolling = async (timestamp: number) => {
+    let scanChecked = false; // QR 스캔 확인 완료 여부
+
+    const checkPayment = async () => {
+      try {
+        const token = await AuthStorage.getToken();
+        if (!token) return;
+
+        // 1단계: QR 스캔 상태 확인 (스캔 확인 전까지만)
+        if (!scanChecked) {
+          const scanResponse = await fetch(`${BACKEND_URL}/api/qr/scan-status?timestamp=${timestamp}`, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+          });
+
+          const scanData = await scanResponse.json();
+
+          if (scanData.status === 'scanned' || scanData.status === 'processing') {
+            // QR이 스캔됨 - 이제 "결제 대기 중..." 표시
+            setPaymentStatus('waiting');
+            scanChecked = true;
+          } else if (scanData.status === 'completed') {
+            // 이미 완료됨 (빠른 결제)
+            scanChecked = true;
+          } else if (scanData.status === 'failed') {
+            // 타임아웃 또는 실패
+            setPaymentStatus('failed');
+            stopPaymentPolling();
+            setTimeout(() => {
+              setPaymentStatus('idle');
+              generateCode(); // QR 재생성
+            }, 2000);
+            return;
+          } else if (scanData.status === 'cancelled') {
+            // 관리자가 취소
+            setPaymentStatus('cancelled');
+            stopPaymentPolling();
+            setTimeout(() => {
+              setPaymentStatus('idle');
+              generateCode(); // QR 재생성
+            }, 2000);
+            return;
+          }
+          // 'waiting' 상태면 계속 대기
+        }
+
+        // 2단계: 결제 완료 확인 (스캔 확인 후에만)
+        if (scanChecked) {
+          const response = await fetch(`${BACKEND_URL}/api/payment/recent`, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+          });
+
+          const data = await response.json();
+          if (data.new_payment) {
+            setPaymentResult({
+              merchant_name: data.merchant_name,
+              final_amount: data.final_amount,
+              discount_amount: data.discount_amount,
+              benefit_text: data.benefit_text,
+            });
+            setPaymentStatus('completed');
+            stopPaymentPolling();
+
+            Animated.spring(successScaleAnim, {
+              toValue: 1,
+              useNativeDriver: true,
+              friction: 7,
+            }).start();
+
+            setTimeout(() => {
+              setPaymentStatus('idle');
+              setPaymentResult(null);
+              successScaleAnim.setValue(0);
+            }, 3000);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to check payment:', error);
+      }
+    };
+
+    checkPayment();
+    pollingRef.current = setInterval(checkPayment, 2000);
+  };
+
+  const stopPaymentPolling = () => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  };
 
   useEffect(() => {
     Animated.timing(slideAnim, {
@@ -48,14 +261,22 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
       duration: 300,
       useNativeDriver: true,
     }).start();
+
+    fetchUserCards();
   }, []);
 
   useEffect(() => {
-    // Start timer
+    if (userCards.length > 0) {
+      generateCode();
+    }
+  }, [userCards, selectedCardIndex]);
+
+  useEffect(() => {
     timerRef.current = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
-          return 180; // Reset to 3 minutes
+          generateCode();
+          return 300;
         }
         return prev - 1;
       });
@@ -65,18 +286,20 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
       if (timerRef.current) {
         clearInterval(timerRef.current);
       }
+      stopPaymentPolling();
     };
-  }, []);
+  }, [userCards, selectedCardIndex]);
 
   useEffect(() => {
-    // Animate cards based on selected index
-    cardScaleAnims.forEach((anim, index) => {
-      Animated.spring(anim, {
-        toValue: index === selectedCardIndex ? 1.1 : 1,
-        useNativeDriver: true,
-        friction: 7,
-      }).start();
-    });
+    if (cardScaleAnims.current.length > 0) {
+      cardScaleAnims.current.forEach((anim, index) => {
+        Animated.spring(anim, {
+          toValue: index === selectedCardIndex ? 1.1 : 1,
+          useNativeDriver: true,
+          friction: 7,
+        }).start();
+      });
+    }
   }, [selectedCardIndex]);
 
   const handleBack = () => {
@@ -92,7 +315,7 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const scrollPosition = event.nativeEvent.contentOffset.x;
     const index = Math.round(scrollPosition / (CARD_WIDTH + CARD_SPACING));
-    if (index >= 0 && index < USER_CARDS.length && index !== selectedCardIndex) {
+    if (index >= 0 && index < userCards.length && index !== selectedCardIndex) {
       setSelectedCardIndex(index);
     }
   };
@@ -107,7 +330,7 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
   };
 
   const handleRefresh = () => {
-    setTimeLeft(180); // Reset to 3 minutes
+    generateCode();
   };
 
   const formatTime = (seconds: number): string => {
@@ -116,28 +339,34 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Mock card details
-  const cardDetails = USER_CARDS.map((cardName) => ({
-    name: cardName,
-    image: CARD_IMAGES[cardName],
-    discounts: [
-      '편의점 10% 할인',
-      '카페 20% 할인',
-      '주유 리터당 100원 할인',
-    ],
-    benefitLimit: {
-      used: 150000,
-      total: 300000,
-    },
-    performance: {
-      current: 450000,
-      required: 500000,
-    },
-  }));
+  const cardDetails = userCards.map((card) => {
+    let benefits: string[] = [];
+    if (card.card_benefit) {
+      const lines = card.card_benefit.split(/[/\n]/).map(line => line.trim()).filter(line => line.length > 0);
+      benefits = lines.slice(0, 3).map(line => {
+        return line.length > 50 ? line.substring(0, 50) + '...' : line;
+      });
+    }
 
-  const selectedCard = cardDetails[selectedCardIndex];
-  const benefitPercent = (selectedCard.benefitLimit.used / selectedCard.benefitLimit.total) * 100;
-  const performancePercent = (selectedCard.performance.current / selectedCard.performance.required) * 100;
+    return {
+      cid: card.cid,
+      name: card.card_name,
+      image: CARD_IMAGES[card.card_name],
+      discounts: benefits,
+      benefitLimit: {
+        used: card.used_amount || 0,
+        total: card.monthly_limit || 300000,
+      },
+      performance: {
+        current: card.monthly_performance || 0,
+        required: card.card_pre_month_money || 0,
+      },
+    };
+  });
+
+  const selectedCard = cardDetails.length > 0 ? cardDetails[selectedCardIndex] : null;
+  const benefitPercent = selectedCard ? (selectedCard.benefitLimit.used / selectedCard.benefitLimit.total) * 100 : 0;
+  const performancePercent = selectedCard ? (selectedCard.performance.current / selectedCard.performance.required) * 100 : 0;
 
   return (
     <Animated.View
@@ -206,21 +435,34 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
 
       {/* Barcode/QR Display */}
       <View style={styles.codeDisplayContainer}>
-        {displayMode === 'barcode' ? (
+        {isLoading ? (
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#2563EB" />
+            <Text style={styles.loadingText}>코드 생성 중...</Text>
+          </View>
+        ) : displayMode === 'barcode' ? (
           <View style={styles.barcodeContainer}>
-            <Image
-              source={require('../../assets/images/sample-bar-code.png')}
-              style={styles.barcodeImage}
-              resizeMode="contain"
-            />
+            {barcodeImage ? (
+              <Image
+                source={{ uri: barcodeImage }}
+                style={styles.barcodeImage}
+                resizeMode="contain"
+              />
+            ) : (
+              <Text style={styles.noCodeText}>바코드를 생성할 수 없습니다</Text>
+            )}
           </View>
         ) : (
           <View style={styles.qrContainer}>
-            <Image
-              source={require('../../assets/images/sample-qr-code.png')}
-              style={styles.qrImage}
-              resizeMode="contain"
-            />
+            {qrImage ? (
+              <Image
+                source={{ uri: qrImage }}
+                style={styles.qrImage}
+                resizeMode="contain"
+              />
+            ) : (
+              <Text style={styles.noCodeText}>QR 코드를 생성할 수 없습니다</Text>
+            )}
           </View>
         )}
         <View style={styles.timerContainer}>
@@ -232,62 +474,73 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
       </View>
 
       {/* Selected Card Info */}
-      <View style={styles.cardInfoContainer}>
-        <View style={styles.cardHeader}>
-          <Image source={selectedCard.image} style={styles.selectedCardImage} />
-          <View style={styles.cardHeaderText}>
-            <Text style={styles.cardName}>{selectedCard.name}</Text>
-            <View style={styles.discountList}>
-              {selectedCard.discounts.map((discount, index) => (
-                <Text key={index} style={styles.discountItem}>
-                  {discount}
-                </Text>
-              ))}
+      {selectedCard && (
+        <View style={styles.cardInfoContainer}>
+          <View style={styles.cardHeader}>
+            {selectedCard.image ? (
+              <Image source={selectedCard.image} style={styles.selectedCardImage} />
+            ) : (
+              <CardPlaceholder
+                cardName={selectedCard.name}
+                benefit={selectedCard.discounts[0] || ''}
+                width={100}
+                height={62}
+              />
+            )}
+            <View style={styles.cardHeaderText}>
+              <Text style={styles.cardName}>{selectedCard.name}</Text>
+              <View style={styles.discountList}>
+                {selectedCard.discounts.map((discount, index) => (
+                  <Text key={index} style={styles.discountItem}>
+                    {discount}
+                  </Text>
+                ))}
+              </View>
+            </View>
+          </View>
+
+          {/* Benefit Limit Progress */}
+          <View style={styles.progressItem}>
+            <View style={styles.progressHeader}>
+              <Text style={styles.progressLabel}>혜택한도</Text>
+              <Text style={styles.progressValue}>
+                {selectedCard.benefitLimit.used.toLocaleString()}원 /{' '}
+                {selectedCard.benefitLimit.total.toLocaleString()}원
+              </Text>
+            </View>
+            <View style={styles.progressBarContainer}>
+              <LinearGradient
+                colors={['#FCC490', '#8586CA']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={[styles.progressBar, { width: `${100 - benefitPercent}%` }]}
+              />
+            </View>
+            <Text style={styles.progressSubtext}>
+              실적 / 혜택한도
+            </Text>
+          </View>
+
+          {/* Performance Progress */}
+          <View style={styles.progressItem}>
+            <View style={styles.progressHeader}>
+              <Text style={styles.progressLabel}>실적</Text>
+              <Text style={styles.progressValue}>
+                {selectedCard.performance.current.toLocaleString()}원 /{' '}
+                {selectedCard.performance.required.toLocaleString()}원
+              </Text>
+            </View>
+            <View style={styles.progressBarContainer}>
+              <LinearGradient
+                colors={['#22B573', '#FFFFFF']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={[styles.progressBar, { width: `${performancePercent}%` }]}
+              />
             </View>
           </View>
         </View>
-
-        {/* Benefit Limit Progress */}
-        <View style={styles.progressItem}>
-          <View style={styles.progressHeader}>
-            <Text style={styles.progressLabel}>혜택한도</Text>
-            <Text style={styles.progressValue}>
-              {selectedCard.benefitLimit.used.toLocaleString()}원 /{' '}
-              {selectedCard.benefitLimit.total.toLocaleString()}원
-            </Text>
-          </View>
-          <View style={styles.progressBarContainer}>
-            <LinearGradient
-              colors={['#FCC490', '#8586CA']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={[styles.progressBar, { width: `${100 - benefitPercent}%` }]}
-            />
-          </View>
-          <Text style={styles.progressSubtext}>
-            실적 / 혜택한도
-          </Text>
-        </View>
-
-        {/* Performance Progress */}
-        <View style={styles.progressItem}>
-          <View style={styles.progressHeader}>
-            <Text style={styles.progressLabel}>실적</Text>
-            <Text style={styles.progressValue}>
-              {selectedCard.performance.current.toLocaleString()}원 /{' '}
-              {selectedCard.performance.required.toLocaleString()}원
-            </Text>
-          </View>
-          <View style={styles.progressBarContainer}>
-            <LinearGradient
-              colors={['#22B573', '#FFFFFF']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={[styles.progressBar, { width: `${performancePercent}%` }]}
-            />
-          </View>
-        </View>
-      </View>
+      )}
 
       {/* Card Selection Scroll */}
       <View style={styles.cardSelectionSection}>
@@ -311,7 +564,7 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
             renderItem={({ item, index }) => (
               <Animated.View
                 style={{
-                  transform: [{ scale: cardScaleAnims[index] }],
+                  transform: [{ scale: cardScaleAnims.current[index] || new Animated.Value(1) }],
                 }}
               >
                 <TouchableOpacity
@@ -322,7 +575,16 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
                   onPress={() => handleCardPress(index)}
                   activeOpacity={0.8}
                 >
-                  <Image source={item.image} style={styles.cardThumbnail} />
+                  {item.image ? (
+                    <Image source={item.image} style={styles.cardThumbnail} />
+                  ) : (
+                    <CardPlaceholder
+                      cardName={item.name}
+                      benefit={item.discounts[0] || ''}
+                      width={100}
+                      height={62}
+                    />
+                  )}
                   <Text
                     style={[
                       styles.cardItemName,
@@ -339,6 +601,73 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
         </View>
       </View>
       </ScrollView>
+
+      {/* Payment Waiting Overlay */}
+      {paymentStatus === 'waiting' && (
+        <View style={styles.overlayContainer}>
+          <View style={styles.overlayContent}>
+            <ActivityIndicator size="large" color="#2563EB" />
+            <Text style={styles.overlayTitle}>결제 대기 중</Text>
+            <Text style={styles.overlaySubtitle}>가맹점에서 QR 코드를 스캔해주세요</Text>
+          </View>
+        </View>
+      )}
+
+      {/* Payment Success Overlay */}
+      {paymentStatus === 'completed' && paymentResult && (
+        <View style={styles.overlayContainer}>
+          <View style={styles.overlayContent}>
+            <Animated.View style={{ transform: [{ scale: successScaleAnim }] }}>
+              <View style={styles.successIconContainer}>
+                <Text style={styles.successIcon}>✓</Text>
+              </View>
+            </Animated.View>
+            <Text style={styles.successTitle}>결제 완료</Text>
+            <Text style={styles.successSubtitle}>{paymentResult.merchant_name}</Text>
+            <View style={styles.amountContainer}>
+              <View style={styles.amountRow}>
+                <Text style={styles.amountLabel}>할인 금액</Text>
+                <Text style={styles.discountAmount}>
+                  -{paymentResult.discount_amount.toLocaleString()}원
+                </Text>
+              </View>
+              <View style={styles.amountRow}>
+                <Text style={styles.amountLabel}>최종 결제</Text>
+                <Text style={styles.finalAmount}>
+                  {paymentResult.final_amount.toLocaleString()}원
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.benefitText}>{paymentResult.benefit_text}</Text>
+          </View>
+        </View>
+      )}
+
+      {/* Payment Failed Overlay */}
+      {paymentStatus === 'failed' && (
+        <View style={styles.overlayContainer}>
+          <View style={styles.overlayContent}>
+            <View style={styles.failedIconContainer}>
+              <Text style={styles.failedIcon}>✕</Text>
+            </View>
+            <Text style={styles.failedTitle}>결제 실패</Text>
+            <Text style={styles.overlaySubtitle}>시간 초과 또는 오류가 발생했습니다</Text>
+          </View>
+        </View>
+      )}
+
+      {/* Payment Cancelled Overlay */}
+      {paymentStatus === 'cancelled' && (
+        <View style={styles.overlayContainer}>
+          <View style={styles.overlayContent}>
+            <View style={styles.failedIconContainer}>
+              <Text style={styles.failedIcon}>✕</Text>
+            </View>
+            <Text style={styles.failedTitle}>결제 취소</Text>
+            <Text style={styles.overlaySubtitle}>가맹점에서 결제를 취소했습니다</Text>
+          </View>
+        </View>
+      )}
     </Animated.View>
   );
 };
@@ -399,6 +728,8 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 20,
     alignItems: 'center',
+    minHeight: 250,
+    justifyContent: 'center',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -410,6 +741,23 @@ const styles = StyleSheet.create({
         elevation: 4,
       },
     }),
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+  },
+  noCodeText: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#999999',
+    textAlign: 'center',
   },
   barcodeContainer: {
     alignItems: 'center',
@@ -467,10 +815,11 @@ const styles = StyleSheet.create({
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
+    gap: 15,
   },
   selectedCardImage: {
-    width: 110,
-    height: 70,
+    width: 100,
+    height: 75,
     borderRadius: 8,
     marginRight: 15,
   },
@@ -559,10 +908,123 @@ const styles = StyleSheet.create({
   cardItemName: {
     fontSize: 13,
     fontFamily: FONTS.semiBold,
+    marginTop: 10,
     color: '#666666',
     textAlign: 'center',
   },
   cardItemNameSelected: {
     color: '#FFFFFF',
+  },
+  overlayContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  overlayContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 40,
+    alignItems: 'center',
+    width: SCREEN_WIDTH - 80,
+    maxWidth: 320,
+  },
+  overlayTitle: {
+    fontSize: 24,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginTop: 24,
+    marginBottom: 8,
+  },
+  overlaySubtitle: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+    textAlign: 'center',
+  },
+  successIconContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#2563EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  successIcon: {
+    fontSize: 48,
+    color: '#FFFFFF',
+    fontFamily: FONTS.bold,
+  },
+  successTitle: {
+    fontSize: 28,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginTop: 24,
+    marginBottom: 8,
+  },
+  successSubtitle: {
+    fontSize: 16,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+    marginBottom: 24,
+  },
+  amountContainer: {
+    width: '100%',
+    backgroundColor: '#F5F8FF',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+  },
+  amountRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  amountLabel: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+  },
+  discountAmount: {
+    fontSize: 18,
+    fontFamily: FONTS.bold,
+    color: '#2563EB',
+  },
+  finalAmount: {
+    fontSize: 22,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+  },
+  benefitText: {
+    fontSize: 12,
+    fontFamily: FONTS.regular,
+    color: '#999999',
+    textAlign: 'center',
+  },
+  failedIconContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#EF4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  failedIcon: {
+    fontSize: 48,
+    color: '#FFFFFF',
+    fontFamily: FONTS.bold,
+  },
+  failedTitle: {
+    fontSize: 28,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginTop: 24,
+    marginBottom: 8,
   },
 });

@@ -23,6 +23,8 @@ import { AdminDepartmentScreen } from './AdminDepartmentScreen';
 import { CardBenefitScreen } from './CardBenefitScreen';
 import { AuthAPI, AuthStorage } from '../utils/auth';
 import { CardEditModal } from '../components/CardEditModal';
+import { CardPlaceholder } from '../components/CardPlaceholder';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 
@@ -35,6 +37,7 @@ interface ProfileScreenProps {
 }
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }) => {
+  const insets = useSafeAreaInsets();
   const [hasNotification] = useState(true);
   const [showCardRegistration, setShowCardRegistration] = useState(false);
   const [showCardBenefit, setShowCardBenefit] = useState(false);
@@ -49,10 +52,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     monthlySpending: number;
     monthlySavings: number;
     cards: Array<{
+      cid: number;
       card_name: string;
       card_benefit: string;
       card_pre_month_money: number;
       card_pre_YN: boolean;
+      monthly_limit?: number;
+      used_amount?: number;
+      monthly_performance?: number;
+      daily_count?: number;
+      monthly_count?: number;
+      last_used_date?: string | null;
+      reset_date?: string | null;
     }>;
   } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -132,6 +143,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     }
   };
 
+
   useEffect(() => {
     Animated.timing(slideAnim, {
       toValue: 0,
@@ -141,6 +153,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
 
     fetchUserData();
   }, []);
+
 
   const handleBack = () => {
     Animated.timing(slideAnim, {
@@ -164,17 +177,21 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     }
 
     return {
+      id: card.cid,
       name: card.card_name,
       image: CARD_IMAGES[card.card_name],
       discounts: benefits,
       benefitLimit: {
-        used: 150000,
-        total: 300000,
+        used: card.used_amount || 0,
+        total: card.monthly_limit || 300000, // Default 30만원 if not set
       },
       performance: {
-        current: card.card_pre_month_money || 0,
-        required: card.card_pre_YN ? card.card_pre_month_money : 0,
+        current: card.monthly_performance || 0,
+        required: card.card_pre_month_money || 0,
       },
+      // Original card data for CardPlaceholder
+      cardBenefit: card.card_benefit,
+      cardPreMoney: card.card_pre_month_money,
     };
   }) || [];
 
@@ -192,9 +209,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           {item.image ? (
             <Image source={item.image} style={styles.cardImage} />
           ) : (
-            <View style={[styles.cardImage, styles.cardImagePlaceholder]}>
-              <Text style={styles.cardImagePlaceholderText}>카드</Text>
-            </View>
+            <CardPlaceholder
+              cardName={item.name}
+              benefit={item.cardBenefit}
+              preMoney={item.cardPreMoney}
+              width={120}
+              height={75}
+              style={styles.cardImage}
+            />
           )}
           <View style={styles.cardInfo}>
             <View style={styles.cardNameRow}>
@@ -253,6 +275,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
               />
             </View>
           </View>
+
         </View>
       </View>
     );
@@ -297,6 +320,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
 
       <ScrollView
         style={styles.scrollView}
+        contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}
         showsVerticalScrollIndicator={false}
       >
         {/* User Info Section */}
@@ -456,6 +480,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           <CardBenefitScreen onBack={() => setShowCardBenefit(false)} />
         </View>
       )}
+
     </View>
   );
 };
@@ -822,5 +847,127 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     zIndex: 1000,
+  },
+  paymentButton: {
+    marginTop: 15,
+    paddingVertical: 14,
+    backgroundColor: '#2563EB',
+    borderRadius: 8,
+    alignItems: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#2563EB',
+        shadowOffset: {
+          width: 0,
+          height: 2,
+        },
+        shadowOpacity: 0.25,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 4,
+      },
+    }),
+  },
+  paymentButtonText: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
+  },
+  qrModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  qrModalContent: {
+    width: SCREEN_WIDTH - 60,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: {
+          width: 0,
+          height: 10,
+        },
+        shadowOpacity: 0.3,
+        shadowRadius: 20,
+      },
+      android: {
+        elevation: 10,
+      },
+    }),
+  },
+  qrModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    marginBottom: 10,
+  },
+  qrModalTitle: {
+    fontSize: 22,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+  },
+  qrModalCloseButton: {
+    padding: 8,
+  },
+  qrModalCloseText: {
+    fontSize: 24,
+    color: '#666666',
+  },
+  qrModalCardName: {
+    fontSize: 16,
+    fontFamily: FONTS.semiBold,
+    color: '#2563EB',
+    marginBottom: 20,
+  },
+  qrCodeContainer: {
+    width: 250,
+    height: 250,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  qrCodeImage: {
+    width: 240,
+    height: 240,
+  },
+  qrErrorText: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#999999',
+    textAlign: 'center',
+  },
+  qrTimerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 16,
+  },
+  qrTimerLabel: {
+    fontSize: 14,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+  },
+  qrTimerValue: {
+    fontSize: 18,
+    fontFamily: FONTS.bold,
+    color: '#EF4444',
+  },
+  qrInstructionText: {
+    fontSize: 13,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+    textAlign: 'center',
+    lineHeight: 18,
   },
 });

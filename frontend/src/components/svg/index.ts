@@ -25,3 +25,4 @@ export { RefreshIcon } from './RefreshIcon';
 export { MyLocationIcon } from './MyLocationIcon';
 export { SearchPinIcon } from './SearchPinIcon';
 export { CourseIcon } from './CourseIcon';
+export { SavedCourseIcon } from './SavedCourseIcon';

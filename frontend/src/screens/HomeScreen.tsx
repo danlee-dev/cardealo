@@ -2,7 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ScrollView, Platform, Alert, TextInput, Keyboard, TouchableWithoutFeedback, Image, StatusBar, FlatList, Animated, Modal } from 'react-native';
 import { NaverMapView, NaverMapMarkerOverlay, NaverMapPolylineOverlay } from '@mj-studio/react-native-naver-map';
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
-import { SearchIcon, StarsIcon, CafeIcon, CoffeeIcon, FoodIcon, CartIcon, CardsIcon, LocationMarkerIcon, StorePinIcon, StarIcon, MyLocationIcon, SearchPinIcon, RefreshIcon, CourseIcon } from '../components/svg';
+import { SearchIcon, StarsIcon, CafeIcon, CoffeeIcon, FoodIcon, CartIcon, CardsIcon, LocationMarkerIcon, StorePinIcon, StarIcon, MyLocationIcon, SearchPinIcon, RefreshIcon, CourseIcon, SavedCourseIcon, BackIcon } from '../components/svg';
 import { FONTS, COLORS } from '../constants/theme';
 import * as Location from 'expo-location';
 import axios from 'axios';
@@ -164,7 +164,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const [lastSearchCenter, setLastSearchCenter] = useState<{ latitude: number; longitude: number } | null>(null);
   const [forceIndoorMode, setForceIndoorMode] = useState(false);
   const [currentSearchRadius, setCurrentSearchRadius] = useState(720); // Initial radius with 20% buffer
-  const [userCards, setUserCards] = useState<string[]>([]);
+  const [userCards, setUserCards] = useState<Array<{
+    cid: number;
+    card_name: string;
+    card_benefit: string;
+    card_pre_month_money: number;
+    card_pre_YN: boolean;
+    monthly_limit?: number;
+    used_amount?: number;
+    monthly_performance?: number;
+    daily_count?: number;
+    monthly_count?: number;
+    last_used_date?: string | null;
+    reset_date?: string | null;
+  }>>([]);
 
   // AI Course Mode states
   const [isCourseMode, setIsCourseMode] = useState(false);
@@ -196,6 +209,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const cardScrollRef = useRef<FlatList>(null);
   const isScrollingToCard = useRef(false);
   const snapPoints = useMemo(() => ['25%', '45%', '70%', '95%'], []);
+
+  // Animation for course mode transition
+  const courseModeAnimation = useRef(new Animated.Value(0)).current;
 
   // 카드 애니메이션 값 배열
   const cardScaleAnims = useRef<Animated.Value[]>([]).current;
@@ -230,22 +246,32 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
   // Sample performance data (실제로는 API에서 받아와야 함)
   const getSamplePerformanceData = (rec: CardRecommendation) => {
-    // Sample current performance (60-90% of required)
-    const currentPerformance = rec.pre_month_money > 0
-      ? Math.floor(rec.pre_month_money * (0.6 + Math.random() * 0.3))
-      : 0;
+    // Find the user's actual card data by matching card name
+    const userCard = userCards.find(card => card.card_name === rec.card);
 
-    // Sample used benefit (30-70% of limit)
-    const usedBenefit = rec.monthly_limit > 0
-      ? Math.floor(rec.monthly_limit * (0.3 + Math.random() * 0.4))
-      : 0;
+    if (userCard) {
+      // Use real data from user's card
+      const usedBenefit = userCard.used_amount || 0;
+      const totalBenefitLimit = userCard.monthly_limit || rec.monthly_limit || 300000;
+      const currentPerformance = userCard.monthly_performance || 0;
+      const requiredPerformance = userCard.card_pre_month_money || rec.pre_month_money || 0;
 
+      return {
+        currentPerformance,
+        requiredPerformance,
+        usedBenefit,
+        totalBenefitLimit,
+        remainingBenefit: totalBenefitLimit - usedBenefit,
+      };
+    }
+
+    // Fallback to recommendation data if user doesn't have this card
     return {
-      currentPerformance,
+      currentPerformance: 0,
       requiredPerformance: rec.pre_month_money,
-      usedBenefit,
+      usedBenefit: 0,
       totalBenefitLimit: rec.monthly_limit,
-      remainingBenefit: rec.monthly_limit - usedBenefit,
+      remainingBenefit: rec.monthly_limit,
     };
   };
 
@@ -361,8 +387,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     try {
       const token = await AuthStorage.getToken();
       if (!token) {
-        console.error('[fetchUserCards] No token found, using hardcoded cards');
-        setUserCards(USER_CARDS);
+        console.error('[fetchUserCards] No token found, using empty array');
+        setUserCards([]);
         return;
       }
 
@@ -376,16 +402,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
       const data = await response.json();
       if (data.success && data.user && data.user.cards) {
-        const cardNames = data.user.cards.map((card: any) => card.card_name);
-        console.log('[fetchUserCards] Fetched user cards:', cardNames);
-        setUserCards(cardNames);
+        console.log('[fetchUserCards] Fetched user cards:', data.user.cards);
+        setUserCards(data.user.cards);
       } else {
-        console.error('[fetchUserCards] Failed to fetch user cards, using hardcoded cards');
-        setUserCards(USER_CARDS);
+        console.error('[fetchUserCards] Failed to fetch user cards, using empty array');
+        setUserCards([]);
       }
     } catch (error) {
       console.error('[fetchUserCards] Error fetching user cards:', error);
-      setUserCards(USER_CARDS);
+      setUserCards([]);
     }
   };
 
@@ -393,6 +418,15 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     requestLocationPermission();
     fetchUserCards();
   }, []);
+
+  // Animate course mode transition
+  useEffect(() => {
+    Animated.timing(courseModeAnimation, {
+      toValue: isCourseMode ? 1 : 0,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+  }, [isCourseMode]);
 
   // Initialize card scale animations when userCards change
   useEffect(() => {
@@ -833,34 +867,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       const result: AICourseResult = response.data;
       console.log('[Course] 추천 결과:', result);
 
-      setCourseResult(result);
-
       // Add to AI courses list (keep only last 2)
       setAiCourses(prev => {
         const updated = [result, ...prev];
         return updated.slice(0, 2);
       });
 
-      // Fetch route for the recommended course
-      if (result.course && result.course.stops && result.course.stops.length > 0) {
-        await fetchCourseRoute(result.course.stops);
-      }
+      // Show course list view
+      setCourseResult(null);
+      setCourseRoute(null);
+      setShowCourseList(true);
 
-      // Move map to first place
-      if (result.course && result.course.stops && result.course.stops.length > 0 && mapRef.current) {
-        const firstPlace = result.course.stops[0];
-        mapRef.current.animateCameraTo({
-          latitude: firstPlace.latitude,
-          longitude: firstPlace.longitude,
-          zoom: 14,
-          duration: 500,
-        });
-      }
-
-      // Show course detail instead of course list
-      setShowCourseList(false);
-
-      bottomSheetRef.current?.snapToIndex(3);
+      bottomSheetRef.current?.snapToIndex(2);
     } catch (error) {
       console.error('[Course] AI 코스 추천 실패:', error);
       Alert.alert('오류', 'AI 코스 추천에 실패했습니다.');
@@ -895,6 +913,59 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       console.error('[Course Route] 경로 계산 실패:', error);
       // Route calculation failure is not critical, so we don't show alert
     }
+  };
+
+  // Handle course selection from course list
+  const handleCourseSelect = async (course: SavedCourse | AICourseResult) => {
+    console.log('[Course] 코스 선택:', course);
+
+    // Convert SavedCourse or AICourseResult to AICourseResult format
+    const courseResult: AICourseResult = 'course' in course
+      ? course // Already AICourseResult
+      : {
+          // Convert SavedCourse to AICourseResult
+          intent: {
+            theme: '',
+            keywords: [],
+            categories: [],
+            num_places: course.stops.length,
+            preferences: {},
+          },
+          course: {
+            title: course.title,
+            reasoning: course.description || '',
+            stops: course.stops,
+            benefit_summary: '',
+            routes: [],
+            total_distance: course.total_distance,
+            total_duration: course.total_duration,
+            total_benefit_score: course.total_benefit_score || 0,
+          }
+        };
+
+    setCourseResult(courseResult);
+    setShowCourseList(false);
+    setCourseSaved(false);
+
+    // Fetch route for the course
+    const stops = 'course' in course ? course.course.stops : course.stops;
+    if (stops && stops.length > 0) {
+      await fetchCourseRoute(stops);
+
+      // Move map to first place
+      if (mapRef.current) {
+        const firstPlace = stops[0];
+        mapRef.current.animateCameraTo({
+          latitude: firstPlace.latitude,
+          longitude: firstPlace.longitude,
+          zoom: 14,
+          duration: 500,
+        });
+      }
+    }
+
+    // Expand bottom sheet
+    bottomSheetRef.current?.snapToIndex(3);
   };
 
   const handleSaveCourse = async () => {
@@ -1020,7 +1091,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   };
 
   const handleRecommendationCardClick = (cardName: string) => {
-    const cardIndex = userCards.indexOf(cardName);
+    const cardIndex = userCards.findIndex(card => card.card_name === cardName);
     if (cardIndex !== -1) {
       isScrollingToCard.current = true;
       setSelectedCardIndex(cardIndex);
@@ -1080,8 +1151,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }
   };
 
-  const renderCardItem = ({ item: cardName, index }: { item: string; index: number }) => {
+  const renderCardItem = ({ item: card, index }: { item: typeof userCards[0]; index: number }) => {
     const isLast = index === userCards.length - 1;
+    const cardName = card.card_name;
 
     return (
       <Animated.View
@@ -1305,7 +1377,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
             <Text style={styles.backFromCourseButtonText}>←</Text>
           </TouchableOpacity>
         )}
-        <View style={[styles.searchBar, isCourseMode && styles.searchBarAIMode]}>
+        <Animated.View
+          style={[
+            styles.searchBar,
+            {
+              backgroundColor: courseModeAnimation.interpolate({
+                inputRange: [0, 1],
+                outputRange: ['#FFFFFF', '#FAE8D7'],
+              }),
+            },
+          ]}
+        >
           <SearchIcon width={20} height={20} color="#000000" />
           <TextInput
             style={styles.searchInput}
@@ -1331,7 +1413,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
               <Text style={styles.clearButton}>✕</Text>
             </TouchableOpacity>
           )}
-        </View>
+        </Animated.View>
         <TouchableOpacity
           style={styles.myPageButton}
           onPress={() => setShowProfile(true)}
@@ -1342,42 +1424,71 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       </View>
 
       {/* Course Filters */}
-      {isCourseMode && (
-        <View style={styles.courseFiltersContainer}>
-          <View style={styles.filterButtonsLeft}>
-            <TouchableOpacity
-              style={styles.courseFilterButton}
-              onPress={() => setShowPeoplePicker(true)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.courseFilterButtonText}>
-                인원: <Text style={styles.courseFilterButtonTextBold}>{numPeople}</Text>
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.courseFilterButton}
-              onPress={() => setShowBudgetPicker(true)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.courseFilterButtonText}>
-                예산: <Text style={styles.courseFilterButtonTextBold}>{budget / 10000}</Text>만 원
-              </Text>
-            </TouchableOpacity>
-          </View>
+      <Animated.View
+        style={[
+          styles.courseFiltersContainer,
+          {
+            transform: [{
+              translateX: courseModeAnimation.interpolate({
+                inputRange: [0, 1],
+                outputRange: [400, 0],
+              }),
+            }],
+            opacity: courseModeAnimation,
+          },
+        ]}
+        pointerEvents={isCourseMode ? 'auto' : 'none'}
+      >
+        <View style={styles.filterButtonsLeft}>
           <TouchableOpacity
-            style={styles.myCoursesButton}
-            onPress={() => {
-              // TODO: Navigate to my saved courses
-            }}
+            style={styles.courseFilterButton}
+            onPress={() => setShowPeoplePicker(true)}
             activeOpacity={0.7}
           >
-            <Text style={styles.myCoursesButtonText}>📍 내 코스</Text>
+            <Text style={styles.courseFilterButtonText}>
+              인원: <Text style={styles.courseFilterButtonTextBold}>{numPeople}</Text>
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.courseFilterButton}
+            onPress={() => setShowBudgetPicker(true)}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.courseFilterButtonText}>
+              예산: <Text style={styles.courseFilterButtonTextBold}>{budget / 10000}</Text>만 원
+            </Text>
           </TouchableOpacity>
         </View>
-      )}
+        <TouchableOpacity
+          style={styles.myCoursesButton}
+          onPress={() => {
+            // TODO: Navigate to my saved courses
+          }}
+          activeOpacity={0.7}
+        >
+          <SavedCourseIcon width={14} height={15} color="#000000" />
+          <Text style={styles.myCoursesButtonText}>내 코스</Text>
+        </TouchableOpacity>
+      </Animated.View>
 
-      {!isCourseMode && (
-        <View style={styles.categoryWrapper}>
+      <Animated.View
+        style={[
+          styles.categoryWrapper,
+          {
+            transform: [{
+              translateX: courseModeAnimation.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, -400],
+              }),
+            }],
+            opacity: courseModeAnimation.interpolate({
+              inputRange: [0, 1],
+              outputRange: [1, 0],
+            }),
+          },
+        ]}
+        pointerEvents={!isCourseMode ? 'auto' : 'none'}
+      >
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -1461,8 +1572,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
             <Text style={styles.searchAreaButtonText}>현 지도에서 검색</Text>
           </TouchableOpacity>
         )}
-      </View>
-      )}
+      </Animated.View>
 
       <TouchableOpacity
         style={styles.myLocationButton}
@@ -1764,7 +1874,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                       <TouchableOpacity
                         key={`ai-${index}`}
                         style={styles.courseCard}
-                        onPress={() => setSelectedCourseDetail(course)}
+                        onPress={() => handleCourseSelect(course)}
                         activeOpacity={0.7}
                       >
                         <View style={styles.courseCardHeader}>
@@ -1806,7 +1916,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                     {savedCourses.length > 0 && (
                       <TouchableOpacity
                         style={styles.courseCard}
-                        onPress={() => setSelectedCourseDetail(savedCourses[0])}
+                        onPress={() => handleCourseSelect(savedCourses[0])}
                         activeOpacity={0.7}
                       >
                         <View style={styles.courseCardHeader}>
@@ -1838,7 +1948,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
                         <View style={styles.courseCardFooter}>
                           <Text style={styles.courseSavingsText}>
-                            {savedCourses[0].description || '저장된 코스'}
+                            {savedCourses[0].stops[0]?.benefits[0]
+                              ? `${savedCourses[0].stops[0].benefits[0].card} ${savedCourses[0].stops[0].benefits[0].benefit}`
+                              : '혜택 정보'}
                           </Text>
                         </View>
                       </TouchableOpacity>
@@ -1848,7 +1960,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                     {popularCourses.length > 0 && (
                       <TouchableOpacity
                         style={styles.courseCard}
-                        onPress={() => setSelectedCourseDetail(popularCourses[0])}
+                        onPress={() => handleCourseSelect(popularCourses[0])}
                         activeOpacity={0.7}
                       >
                         <View style={styles.courseCardHeader}>
@@ -1880,7 +1992,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
                         <View style={styles.courseCardFooter}>
                           <Text style={styles.courseSavingsText}>
-                            {popularCourses[0].save_count}명이 저장한 코스
+                            {popularCourses[0].stops[0]?.benefits[0]
+                              ? `${popularCourses[0].stops[0].benefits[0].card} ${popularCourses[0].stops[0].benefits[0].benefit}`
+                              : '혜택 정보'}
                           </Text>
                         </View>
                       </TouchableOpacity>
@@ -1896,22 +2010,45 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                   </View>
                 ) : courseResult ? (
                   <>
-                    <Text style={styles.recommendationsTitle}>{courseResult.course.title}</Text>
-                    <Text style={styles.courseSummary}>{courseResult.course.reasoning}</Text>
-
                     <TouchableOpacity
-                      style={[
-                        styles.saveCourseButton,
-                        (courseSaved || savingCourse) && styles.saveCourseButtonDisabled
-                      ]}
-                      onPress={handleSaveCourse}
-                      disabled={courseSaved || savingCourse}
+                      style={styles.backToListButton}
+                      onPress={() => {
+                        // First trigger animation
+                        setIsCourseMode(false);
+                        setSelectedCategory(null);
+
+                        // Then update UI after animation completes
+                        setTimeout(() => {
+                          setShowCourseList(true);
+                          setCourseResult(null);
+                          setCourseRoute(null);
+                          setCourseQuery('');
+                          bottomSheetRef.current?.snapToIndex(2);
+                        }, 300); // Match animation duration
+                      }}
                       activeOpacity={0.7}
                     >
-                      <Text style={styles.saveCourseButtonText}>
-                        {savingCourse ? '저장 중...' : courseSaved ? '✓ 저장됨' : '💾 코스 저장'}
-                      </Text>
+                      <BackIcon width={20} height={20} color="#666666" />
+                      <Text style={styles.backToListButtonText}>뒤로 가기</Text>
                     </TouchableOpacity>
+
+                    <View style={styles.courseTitleRow}>
+                      <Text style={styles.recommendationsTitle}>{courseResult.course.title}</Text>
+                      <TouchableOpacity
+                        style={styles.saveCourseIconButton}
+                        onPress={handleSaveCourse}
+                        disabled={courseSaved || savingCourse}
+                        activeOpacity={0.7}
+                      >
+                        <SavedCourseIcon
+                          width={24}
+                          height={24}
+                          color={courseSaved ? '#FFD700' : savingCourse ? '#CCCCCC' : '#666666'}
+                        />
+                      </TouchableOpacity>
+                    </View>
+
+                    <Text style={styles.courseSummary}>{courseResult.course.reasoning}</Text>
 
                     {courseRoute && (
                       <View style={styles.naverRouteContainer}>
@@ -2020,7 +2157,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                   <>
                     <Text style={styles.recommendationsTitle}>내 카드 혜택 순위</Text>
                     {recommendations.map((rec) => {
-                      const selectedCardName = userCards[selectedCardIndex];
+                      const selectedCardName = userCards[selectedCardIndex]?.card_name;
                       const isSelectedCard = rec.card === selectedCardName;
                       const performanceData = getSamplePerformanceData(rec);
 
@@ -2427,7 +2564,7 @@ const styles = StyleSheet.create({
   },
   courseFiltersContainer: {
     position: 'absolute',
-    top: 108,
+    top: 124,
     left: 0,
     right: 0,
     flexDirection: 'row',
@@ -3055,6 +3192,29 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   // Course Mode Styles
+  backToListButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 12,
+  },
+  backToListButtonText: {
+    fontSize: 15,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+  },
+  courseTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    marginBottom: 8,
+  },
+  saveCourseIconButton: {
+    padding: 8,
+  },
   courseSummary: {
     fontSize: 15,
     fontFamily: FONTS.regular,

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Font from 'expo-font';
 import * as ExpoSplashScreen from 'expo-splash-screen';
 import { SplashScreen } from './src/screens/SplashScreen';
@@ -82,10 +83,12 @@ export default function App() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
-        {renderScreen()}
-        <StatusBar style="dark" />
-      </View>
+      <SafeAreaProvider>
+        <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
+          {renderScreen()}
+          <StatusBar style="dark" />
+        </View>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

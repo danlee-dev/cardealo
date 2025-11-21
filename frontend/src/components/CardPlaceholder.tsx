@@ -25,14 +25,14 @@ export const CardPlaceholder: React.FC<CardPlaceholderProps> = ({
   // Scale factor based on card size (base: 320x200)
   const scale = useMemo(() => Math.min(width / 320, height / 200), [width, height]);
 
-  // Scaled dimensions
-  const borderRadius = useMemo(() => Math.max(8, 20 * scale), [scale]);
-  const paddingHorizontal = useMemo(() => Math.max(4, 12 * scale), [scale]);
-  const paddingVertical = useMemo(() => Math.max(4, 10 * scale), [scale]);
+  // Scaled dimensions with better minimum values for small cards
+  const borderRadius = useMemo(() => Math.max(6, 20 * scale), [scale]);
+  const paddingHorizontal = useMemo(() => Math.max(6, 12 * scale), [scale]);
+  const paddingVertical = useMemo(() => Math.max(5, 10 * scale), [scale]);
 
   // Format benefit text - extract discount/savings info
   const benefitSummary = useMemo(() => {
-    if (!benefit) return '혜택 정보';
+    if (!benefit) return '혜택';
 
     // Try to extract percentage or amount
     const percentMatch = benefit.match(/(\d+(?:\.\d+)?)%/);
@@ -48,9 +48,10 @@ export const CardPlaceholder: React.FC<CardPlaceholderProps> = ({
       return `${amount}원 할인`;
     }
 
-    // Take first 20 characters or less
-    return benefit.length > 20 ? benefit.substring(0, 20) + '...' : benefit;
-  }, [benefit]);
+    // Scale-based character limit: smaller cards get fewer characters
+    const maxLength = scale < 0.5 ? 12 : 20;
+    return benefit.length > maxLength ? benefit.substring(0, maxLength) + '...' : benefit;
+  }, [benefit, scale]);
 
   return (
     <View style={[
@@ -77,7 +78,7 @@ export const CardPlaceholder: React.FC<CardPlaceholderProps> = ({
           borderRadius,
           paddingHorizontal,
           paddingTop: paddingVertical,
-          paddingBottom: Math.max(4, 12 * scale),
+          paddingBottom: Math.max(6, 12 * scale),
           borderColor: '#FFFFFF',
         }
       ]}>
@@ -87,11 +88,13 @@ export const CardPlaceholder: React.FC<CardPlaceholderProps> = ({
             styles.cardName,
             {
               color: companyInfo.textColor,
-              fontSize: Math.max(10, 22 * scale),
-              lineHeight: Math.max(12, 26 * scale),
+              fontSize: Math.max(9, 22 * scale),
+              lineHeight: Math.max(11, 26 * scale),
+              flexShrink: 1,
             }
           ]}
           numberOfLines={2}
+          ellipsizeMode="tail"
         >
           {cardName}
         </Text>
@@ -102,11 +105,13 @@ export const CardPlaceholder: React.FC<CardPlaceholderProps> = ({
             styles.companyName,
             {
               color: companyInfo.textColor,
-              fontSize: Math.max(6, 12 * scale),
-              lineHeight: Math.max(8, 16 * scale),
+              fontSize: Math.max(7, 12 * scale),
+              lineHeight: Math.max(9, 16 * scale),
+              flexShrink: 1,
             }
           ]}
           numberOfLines={1}
+          ellipsizeMode="tail"
         >
           {companyInfo.name}
         </Text>
@@ -117,11 +122,13 @@ export const CardPlaceholder: React.FC<CardPlaceholderProps> = ({
             styles.benefitSummary,
             {
               color: companyInfo.textColor,
-              fontSize: Math.max(9, 16 * scale),
-              lineHeight: Math.max(11, 20 * scale),
+              fontSize: Math.max(8, 16 * scale),
+              lineHeight: Math.max(10, 20 * scale),
+              flexShrink: 1,
             }
           ]}
           numberOfLines={1}
+          ellipsizeMode="tail"
         >
           {benefitSummary}
         </Text>
@@ -149,22 +156,25 @@ const styles = StyleSheet.create({
   cardName: {
     fontSize: 18,
     fontFamily: FONTS.bold,
-    marginBottom: 4,
-    marginTop: 2,
-    lineHeight: 22,
-    letterSpacing: -0.5,
+    marginBottom: 2,
+    marginTop: 0,
+    lineHeight: 20,
+    letterSpacing: -0.3,
+    flexShrink: 1,
   },
   companyName: {
     fontSize: 12,
     fontFamily: FONTS.semiBold,
-    marginBottom: 8,
-    lineHeight: 16,
-    letterSpacing: -0.3,
+    marginBottom: 4,
+    lineHeight: 14,
+    letterSpacing: -0.2,
+    flexShrink: 1,
   },
   benefitSummary: {
     fontSize: 11,
     fontFamily: FONTS.semiBold,
-    lineHeight: 14,
-    letterSpacing: -0.3,
+    lineHeight: 13,
+    letterSpacing: -0.2,
+    flexShrink: 1,
   },
 });

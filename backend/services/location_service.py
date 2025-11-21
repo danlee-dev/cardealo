@@ -98,7 +98,7 @@ class LocationService:
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self.google_api_key,
-            "X-Goog-FieldMask": "places.id,places.displayName,places.location,places.types"
+            "X-Goog-FieldMask": "places.id,places.displayName,places.location,places.types,places.formattedAddress"
         }
 
         try:

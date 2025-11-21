@@ -135,7 +135,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onSignup }) =
                 계정이 없으신가요? <Text style={styles.signupLinkBold}>회원가입</Text>
               </Text>
             </TouchableOpacity>
-            {__DEV__ && (
+            {(__DEV__ || process.env.EXPO_PUBLIC_ENABLE_TEST_LOGIN === 'true') && (
               <TouchableOpacity
                 style={styles.testLoginButton}
                 onPress={() => setShowTestAccountModal(true)}

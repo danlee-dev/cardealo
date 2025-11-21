@@ -17,17 +17,20 @@ export const CARD_IMAGES: { [key: string]: any } = {
 };
 
 // Backend API URL
-// Automatically use the same IP as Metro bundler
+// Use environment variable or fall back to local development server
 const getApiUrl = () => {
+  // Priority 1: Environment variable (for production/preview builds)
+  const envUrl = process.env.EXPO_PUBLIC_API_URL;
+  if (envUrl) {
+    console.log('[API] Using environment URL:', envUrl);
+    return envUrl;
+  }
+
+  // Priority 2: Auto-detect Metro bundler IP (for development)
   if (__DEV__) {
-    // In development, use the same IP as the Metro bundler
     const debuggerHost = Constants.expoConfig?.hostUri;
-
     if (debuggerHost) {
-      // Extract IP from hostUri (format: "192.168.x.x:8081")
       const host = debuggerHost.split(':')[0];
-
-      // Don't use localhost/127.0.0.1 for physical devices
       if (host !== 'localhost' && host !== '127.0.0.1') {
         console.log('[API] Auto-detected backend URL:', `http://${host}:5001`);
         return `http://${host}:5001`;
@@ -35,9 +38,9 @@ const getApiUrl = () => {
     }
   }
 
-  // Fallback for production or if auto-detection fails
-  console.log('[API] Using fallback backend URL:', 'http://192.168.35.4:5001');
-  return 'http://192.168.35.4:5001';
+  // Priority 3: Fallback to localhost
+  console.log('[API] Using fallback backend URL:', 'http://localhost:5001');
+  return 'http://localhost:5001';
 };
 
 export const API_URL = getApiUrl();

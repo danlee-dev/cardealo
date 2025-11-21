@@ -152,6 +152,24 @@ class PaymentHistory(Base):
     user = relationship("User")
     card = relationship("MyCard")
 
+
+class QRScanStatus(Base):
+    """QR 스캔 상태 추적"""
+    __tablename__ = 'qr_scan_status'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey('user.user_id'))
+    card_id = Column(Integer, ForeignKey('mycard.cid'))
+    timestamp = Column(Integer, nullable=False)  # QR 생성 시간
+    status = Column(String, default='waiting')  # waiting, scanned, processing, completed, failed, cancelled
+    merchant_name = Column(String)
+    scanned_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User")
+    card = relationship("MyCard")
+
 def get_db() -> Session:
     """
     데이터베이스 세션을 가져옵니다.

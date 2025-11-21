@@ -10,7 +10,7 @@ from services.location_service import LocationService
 from services.directions_service import DirectionsService
 from services.ocr_service import NaverOCRService
 from services.database import init_db, get_db
-from services.database import User, Card, MyCard, CardBenefit, SavedCourse, SavedCourseUser, PaymentHistory
+from services.database import User, Card, MyCard, CardBenefit, SavedCourse, SavedCourseUser, PaymentHistory, QRScanStatus
 from services.jwt_service import JwtService
 from utils.utils import parse_place_name
 from pprint import pprint
@@ -169,7 +169,15 @@ def mypage():
                 'card_name': card.mycard_name,
                 'card_benefit': card.mycard_detail,
                 'card_pre_month_money': card.mycard_pre_month_money,
-                'card_pre_YN': card.mycard_pre_YN
+                'card_pre_YN': card.mycard_pre_YN,
+                # 결제 추적 필드
+                'monthly_limit': card.monthly_limit or 0,
+                'used_amount': card.used_amount or 0,
+                'monthly_performance': card.monthly_performance or 0,
+                'daily_count': card.daily_count or 0,
+                'monthly_count': card.monthly_count or 0,
+                'last_used_date': card.last_used_date.isoformat() if card.last_used_date else None,
+                'reset_date': card.reset_date.isoformat() if card.reset_date else None
             })
         return jsonify({'success':True, 'msg': 'mypage', 'user':user_data}), 200
     except Exception as e:
@@ -1388,6 +1396,16 @@ def generate_qr():
 
         qr_data_str = json.dumps(qr_data)
 
+        # QR 스캔 상태 생성
+        qr_status = QRScanStatus(
+            user_id=user_id,
+            card_id=card.cid,
+            timestamp=timestamp,
+            status='waiting'
+        )
+        db.add(qr_status)
+        db.commit()
+
         # QR 코드 이미지 생성
         qr = qrcode.QRCode(version=1, box_size=10, border=5)
         qr.add_data(qr_data_str)
@@ -1405,7 +1423,8 @@ def generate_qr():
             'success': True,
             'qr_image': qr_image,
             'barcode_image': qr_image,  # 동일하게 사용
-            'expires_in': 300
+            'expires_in': 300,
+            'timestamp': timestamp  # QR 스캔 상태 확인용
         }), 200
 
     except Exception as e:
@@ -1417,6 +1436,70 @@ def generate_qr():
             'error': 'QR 생성에 실패했습니다',
             'message': str(e)
         }), 500
+
+
+@app.route('/api/qr/scan-status', methods=['GET'])
+@login_required
+def get_qr_scan_status():
+    """
+    QR 스캔 상태 확인 API
+
+    Query Params:
+        timestamp: QR 생성 시간 (Unix timestamp)
+
+    Response:
+    {
+        "status": "waiting" | "scanned" | "processing" | "completed" | "failed" | "cancelled",
+        "merchant_name": "스타벅스" (if scanned),
+        "scanned_at": "2025-11-22T..." (if scanned)
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        timestamp = request.args.get('timestamp')
+
+        if not timestamp:
+            return jsonify({'error': 'timestamp is required'}), 400
+
+        db = get_db()
+
+        # QR 스캔 상태 조회
+        qr_status = db.scalars(
+            select(QRScanStatus).where(
+                QRScanStatus.user_id == user_id,
+                QRScanStatus.timestamp == int(timestamp)
+            ).order_by(QRScanStatus.created_at.desc())
+        ).first()
+
+        if not qr_status:
+            db.close()
+            return jsonify({'error': 'QR not found'}), 404
+
+        # 타임아웃 체크 (60초)
+        if qr_status.status in ['waiting', 'scanned'] and \
+           (datetime.utcnow() - qr_status.created_at).seconds > 60:
+            qr_status.status = 'failed'
+            db.commit()
+
+        response = {
+            'status': qr_status.status,
+        }
+
+        if qr_status.merchant_name:
+            response['merchant_name'] = qr_status.merchant_name
+
+        if qr_status.scanned_at:
+            response['scanned_at'] = qr_status.scanned_at.isoformat()
+
+        db.close()
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        print(f"[Error] QR 상태 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': 'QR 상태 조회에 실패했습니다', 'message': str(e)}), 500
 
 
 def require_admin_auth(f):
@@ -1434,6 +1517,75 @@ def require_admin_auth(f):
 
         return f(*args, **kwargs)
     return decorated_function
+
+
+@app.route('/api/qr/update-status', methods=['POST'])
+@require_admin_auth
+def update_qr_scan_status():
+    """
+    QR 스캔 상태 업데이트 API (관리자 백엔드가 호출)
+
+    Request:
+    {
+        "user_id": "hong_gildong",
+        "timestamp": 1234567890,
+        "status": "scanned" | "processing" | "completed" | "failed" | "cancelled",
+        "merchant_name": "스타벅스" (optional)
+    }
+
+    Response:
+    {
+        "success": true
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'Request body is required'}), 400
+
+        user_id = data.get('user_id')
+        timestamp = data.get('timestamp')
+        status = data.get('status')
+        merchant_name = data.get('merchant_name')
+
+        if not user_id or not timestamp or not status:
+            return jsonify({'error': 'user_id, timestamp, and status are required'}), 400
+
+        if status not in ['waiting', 'scanned', 'processing', 'completed', 'failed', 'cancelled']:
+            return jsonify({'error': 'Invalid status'}), 400
+
+        db = get_db()
+
+        # QR 스캔 상태 조회
+        qr_status = db.scalars(
+            select(QRScanStatus).where(
+                QRScanStatus.user_id == user_id,
+                QRScanStatus.timestamp == timestamp
+            )
+        ).first()
+
+        if not qr_status:
+            db.close()
+            return jsonify({'error': 'QR not found'}), 404
+
+        # 상태 업데이트
+        qr_status.status = status
+        if merchant_name:
+            qr_status.merchant_name = merchant_name
+        if status == 'scanned' and not qr_status.scanned_at:
+            qr_status.scanned_at = datetime.utcnow()
+
+        db.commit()
+        db.close()
+
+        return jsonify({'success': True}), 200
+
+    except Exception as e:
+        print(f"[Error] QR 상태 업데이트 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': 'QR 상태 업데이트에 실패했습니다', 'message': str(e)}), 500
 
 
 @app.route('/api/payment/webhook', methods=['POST'])
@@ -1476,6 +1628,12 @@ def payment_webhook():
 
         db = get_db()
 
+        # 사용자 정보 업데이트 (월간 소비, 절약)
+        user = db.scalars(select(User).where(User.user_id == user_id)).first()
+        if user:
+            user.monthly_spending += final_amount
+            user.monthly_savings += discount_amount
+
         # 카드 정보 업데이트
         card = db.scalars(select(MyCard).where(MyCard.cid == card_id)).first()
         if card:
@@ -1493,8 +1651,8 @@ def payment_webhook():
                 card.reset_date = today.replace(day=1)
 
             # 사용 금액 및 실적 업데이트
-            card.used_amount += discount_amount
-            card.monthly_performance += final_amount
+            card.used_amount += final_amount  # 실제 사용 금액 (할인 적용 후)
+            card.monthly_performance += payment_amount  # 실적 (할인 전 금액)
             card.daily_count += 1
             card.monthly_count += 1
             card.last_used_date = today

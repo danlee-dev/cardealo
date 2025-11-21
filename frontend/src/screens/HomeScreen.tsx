@@ -657,7 +657,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         user_lat: userLocation?.latitude || lat,
         user_lng: userLocation?.longitude || lng,
         radius,
-        cards: userCards.join(','),
+        cards: userCards.map(card => card.card_name).join(','),
       };
 
       // Force indoor mode for demo (발표용)

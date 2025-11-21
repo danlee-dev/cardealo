@@ -16,6 +16,7 @@ import { OnePayScreen } from './OnePayScreen';
 import { LocationDebugModal } from '../components/LocationDebugModal';
 import { calculateDistance } from '../constants/mapUtils';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Picker } from '@react-native-picker/picker';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -2013,18 +2014,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                     <TouchableOpacity
                       style={styles.backToListButton}
                       onPress={() => {
-                        // First trigger animation
-                        setIsCourseMode(false);
-                        setSelectedCategory(null);
-
-                        // Then update UI after animation completes
-                        setTimeout(() => {
-                          setShowCourseList(true);
-                          setCourseResult(null);
-                          setCourseRoute(null);
-                          setCourseQuery('');
-                          bottomSheetRef.current?.snapToIndex(2);
-                        }, 300); // Match animation duration
+                        // Go back to course list without exiting course mode
+                        setShowCourseList(true);
+                        setCourseResult(null);
+                        setCourseRoute(null);
+                        setCourseQuery('');
+                        bottomSheetRef.current?.snapToIndex(2);
                       }}
                       activeOpacity={0.7}
                     >
@@ -2443,38 +2438,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       <Modal
         visible={showPeoplePicker}
         transparent={true}
-        animationType="fade"
+        animationType="slide"
         onRequestClose={() => setShowPeoplePicker(false)}
       >
         <TouchableWithoutFeedback onPress={() => setShowPeoplePicker(false)}>
           <View style={styles.pickerModalOverlay}>
             <TouchableWithoutFeedback>
-              <View style={styles.pickerModalContent}>
-                <Text style={styles.pickerModalTitle}>인원 선택</Text>
-                <ScrollView style={styles.pickerScrollView}>
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
-                    <TouchableOpacity
-                      key={num}
-                      style={[
-                        styles.pickerOption,
-                        numPeople === num && styles.pickerOptionActive,
-                      ]}
-                      onPress={() => {
-                        setNumPeople(num);
-                        setShowPeoplePicker(false);
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.pickerOptionText,
-                          numPeople === num && styles.pickerOptionTextActive,
-                        ]}
-                      >
-                        {num}명
-                      </Text>
-                    </TouchableOpacity>
+              <View style={styles.wheelPickerModalContent}>
+                <View style={styles.wheelPickerHeader}>
+                  <TouchableOpacity onPress={() => setShowPeoplePicker(false)}>
+                    <Text style={styles.wheelPickerDone}>완료</Text>
+                  </TouchableOpacity>
+                </View>
+                <Picker
+                  selectedValue={numPeople}
+                  onValueChange={(itemValue) => setNumPeople(itemValue)}
+                  style={styles.wheelPicker}
+                  itemStyle={styles.wheelPickerItem}
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20].map((num) => (
+                    <Picker.Item key={num} label={`${num}명`} value={num} />
                   ))}
-                </ScrollView>
+                </Picker>
               </View>
             </TouchableWithoutFeedback>
           </View>
@@ -2485,38 +2470,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       <Modal
         visible={showBudgetPicker}
         transparent={true}
-        animationType="fade"
+        animationType="slide"
         onRequestClose={() => setShowBudgetPicker(false)}
       >
         <TouchableWithoutFeedback onPress={() => setShowBudgetPicker(false)}>
           <View style={styles.pickerModalOverlay}>
             <TouchableWithoutFeedback>
-              <View style={styles.pickerModalContent}>
-                <Text style={styles.pickerModalTitle}>예산 선택</Text>
-                <ScrollView style={styles.pickerScrollView}>
+              <View style={styles.wheelPickerModalContent}>
+                <View style={styles.wheelPickerHeader}>
+                  <TouchableOpacity onPress={() => setShowBudgetPicker(false)}>
+                    <Text style={styles.wheelPickerDone}>완료</Text>
+                  </TouchableOpacity>
+                </View>
+                <Picker
+                  selectedValue={budget}
+                  onValueChange={(itemValue) => setBudget(itemValue)}
+                  style={styles.wheelPicker}
+                  itemStyle={styles.wheelPickerItem}
+                >
                   {[5, 10, 15, 20, 25, 30, 35, 40, 45, 50].map((amount) => (
-                    <TouchableOpacity
-                      key={amount}
-                      style={[
-                        styles.pickerOption,
-                        budget === amount * 10000 && styles.pickerOptionActive,
-                      ]}
-                      onPress={() => {
-                        setBudget(amount * 10000);
-                        setShowBudgetPicker(false);
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.pickerOptionText,
-                          budget === amount * 10000 && styles.pickerOptionTextActive,
-                        ]}
-                      >
-                        {amount}만 원
-                      </Text>
-                    </TouchableOpacity>
+                    <Picker.Item key={amount} label={`${amount}만 원`} value={amount * 10000} />
                   ))}
-                </ScrollView>
+                </Picker>
               </View>
             </TouchableWithoutFeedback>
           </View>
@@ -2571,7 +2546,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    zIndex: 10,
   },
   filterButtonsLeft: {
     flexDirection: 'row',
@@ -3568,6 +3542,39 @@ const styles = StyleSheet.create({
   pickerOptionTextActive: {
     fontFamily: FONTS.bold,
     color: '#000000',
+  },
+  // Wheel Picker Styles
+  wheelPickerModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: 20,
+    width: '100%',
+    position: 'absolute',
+    bottom: 0,
+  },
+  wheelPickerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  wheelPickerDone: {
+    fontSize: 17,
+    fontFamily: FONTS.semiBold,
+    color: '#007AFF',
+  },
+  wheelPicker: {
+    width: '100%',
+    height: 216,
+  },
+  wheelPickerItem: {
+    fontSize: 20,
+    fontFamily: FONTS.medium,
+    color: '#000000',
+    height: 216,
   },
   // Course List Styles
   backToCourseListButton: {

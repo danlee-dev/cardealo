@@ -16,7 +16,7 @@ import { OnePayScreen } from './OnePayScreen';
 import { LocationDebugModal } from '../components/LocationDebugModal';
 import { calculateDistance } from '../constants/mapUtils';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Picker } from '@react-native-picker/picker';
+import WheelPicker from 'react-native-wheely';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -2441,29 +2441,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         animationType="slide"
         onRequestClose={() => setShowPeoplePicker(false)}
       >
-        <TouchableWithoutFeedback onPress={() => setShowPeoplePicker(false)}>
-          <View style={styles.pickerModalOverlay}>
-            <TouchableWithoutFeedback>
-              <View style={styles.wheelPickerModalContent}>
-                <View style={styles.wheelPickerHeader}>
-                  <TouchableOpacity onPress={() => setShowPeoplePicker(false)}>
-                    <Text style={styles.wheelPickerDone}>완료</Text>
-                  </TouchableOpacity>
-                </View>
-                <Picker
-                  selectedValue={numPeople}
-                  onValueChange={(itemValue) => setNumPeople(itemValue)}
-                  style={styles.wheelPicker}
-                  itemStyle={styles.wheelPickerItem}
-                >
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20].map((num) => (
-                    <Picker.Item key={num} label={`${num}명`} value={num} />
-                  ))}
-                </Picker>
-              </View>
-            </TouchableWithoutFeedback>
+        <View style={styles.pickerModalOverlay}>
+          <View style={styles.wheelPickerModalContent}>
+            <View style={styles.wheelPickerHeader}>
+              <TouchableOpacity onPress={() => setShowPeoplePicker(false)}>
+                <Text style={styles.wheelPickerDone}>완료</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.wheelPickerContainer}>
+              <WheelPicker
+                selectedIndex={[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20].indexOf(numPeople)}
+                options={[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20].map(num => `${num}명`)}
+                onChange={(index) => setNumPeople([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20][index])}
+                itemTextStyle={styles.wheelPickerItemText}
+                selectedIndicatorStyle={styles.wheelPickerIndicator}
+              />
+            </View>
           </View>
-        </TouchableWithoutFeedback>
+        </View>
       </Modal>
 
       {/* Budget Picker Modal */}
@@ -2473,29 +2468,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         animationType="slide"
         onRequestClose={() => setShowBudgetPicker(false)}
       >
-        <TouchableWithoutFeedback onPress={() => setShowBudgetPicker(false)}>
-          <View style={styles.pickerModalOverlay}>
-            <TouchableWithoutFeedback>
-              <View style={styles.wheelPickerModalContent}>
-                <View style={styles.wheelPickerHeader}>
-                  <TouchableOpacity onPress={() => setShowBudgetPicker(false)}>
-                    <Text style={styles.wheelPickerDone}>완료</Text>
-                  </TouchableOpacity>
-                </View>
-                <Picker
-                  selectedValue={budget}
-                  onValueChange={(itemValue) => setBudget(itemValue)}
-                  style={styles.wheelPicker}
-                  itemStyle={styles.wheelPickerItem}
-                >
-                  {[5, 10, 15, 20, 25, 30, 35, 40, 45, 50].map((amount) => (
-                    <Picker.Item key={amount} label={`${amount}만 원`} value={amount * 10000} />
-                  ))}
-                </Picker>
-              </View>
-            </TouchableWithoutFeedback>
+        <View style={styles.pickerModalOverlay}>
+          <View style={styles.wheelPickerModalContent}>
+            <View style={styles.wheelPickerHeader}>
+              <TouchableOpacity onPress={() => setShowBudgetPicker(false)}>
+                <Text style={styles.wheelPickerDone}>완료</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.wheelPickerContainer}>
+              <WheelPicker
+                selectedIndex={[5, 10, 15, 20, 25, 30, 35, 40, 45, 50].indexOf(budget / 10000)}
+                options={[5, 10, 15, 20, 25, 30, 35, 40, 45, 50].map(amount => `${amount}만 원`)}
+                onChange={(index) => setBudget([5, 10, 15, 20, 25, 30, 35, 40, 45, 50][index] * 10000)}
+                itemTextStyle={styles.wheelPickerItemText}
+                selectedIndicatorStyle={styles.wheelPickerIndicator}
+              />
+            </View>
           </View>
-        </TouchableWithoutFeedback>
+        </View>
       </Modal>
     </View>
   );
@@ -3566,15 +3556,18 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.semiBold,
     color: '#007AFF',
   },
-  wheelPicker: {
-    width: '100%',
-    height: 216,
+  wheelPickerContainer: {
+    height: 220,
+    paddingVertical: 10,
   },
-  wheelPickerItem: {
+  wheelPickerItemText: {
     fontSize: 20,
     fontFamily: FONTS.medium,
     color: '#000000',
-    height: 216,
+  },
+  wheelPickerIndicator: {
+    backgroundColor: 'rgba(0, 122, 255, 0.1)',
+    borderRadius: 8,
   },
   // Course List Styles
   backToCourseListButton: {

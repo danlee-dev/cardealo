@@ -2,6 +2,7 @@ import os
 from flask import Flask, jsonify, request
 from functools import wraps
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room, leave_room
 from dotenv import load_dotenv
 from sqlalchemy import select
 from services.geocoding_service import GeocodingService
@@ -11,6 +12,8 @@ from services.directions_service import DirectionsService
 from services.ocr_service import NaverOCRService
 from services.database import init_db, get_db
 from services.database import User, Card, MyCard, CardBenefit, SavedCourse, SavedCourseUser, PaymentHistory, QRScanStatus
+from services.database import CorporateCard, Department, CorporateCardMember, CorporatePaymentHistory
+import uuid
 from services.jwt_service import JwtService
 from utils.utils import parse_place_name
 from pprint import pprint
@@ -26,6 +29,7 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 geocoding_service = GeocodingService()
 benefit_service = BenefitLookupService()
@@ -181,6 +185,8 @@ def mypage():
             })
         return jsonify({'success':True, 'msg': 'mypage', 'user':user_data}), 200
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success':False, 'error': str(e)}), 500
     finally:
         db.close()
@@ -1820,8 +1826,947 @@ def get_recent_payment():
         }), 500
 
 
+# ============ 법인카드 API ============
+
+@app.route('/api/corporate/cards', methods=['GET'])
+@login_required
+def get_corporate_cards():
+    """
+    사용자가 소유한 법인카드 목록 조회
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        # 소유한 법인카드 조회
+        cards = db.scalars(
+            select(CorporateCard).where(CorporateCard.owner_user_id == user_id)
+        ).all()
+
+        cards_data = []
+        for card in cards:
+            # 부서 정보
+            departments = []
+            for dept in card.departments:
+                member_count = len([m for m in card.members if m.department_id == dept.id])
+                departments.append({
+                    'id': dept.id,
+                    'name': dept.name,
+                    'monthly_limit': dept.monthly_limit,
+                    'used_amount': dept.used_amount,
+                    'color': dept.color,
+                    'member_count': member_count
+                })
+
+            # 팀원 수
+            total_members = len(card.members)
+            active_members = len([m for m in card.members if m.status == 'active'])
+
+            cards_data.append({
+                'id': card.id,
+                'card_name': card.card_name,
+                'card_number': card.card_number,
+                'card_company': card.card_company,
+                'monthly_limit': card.monthly_limit,
+                'used_amount': card.used_amount,
+                'benefit_summary': card.benefit_summary,
+                'is_active': card.is_active,
+                'departments': departments,
+                'total_members': total_members,
+                'active_members': active_members
+            })
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'cards': cards_data
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 법인카드 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/corporate/cards', methods=['POST'])
+@login_required
+def create_corporate_card():
+    """
+    법인카드 등록
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+
+        card_name = data.get('card_name')
+        card_number = data.get('card_number')
+        card_company = data.get('card_company')
+        monthly_limit = data.get('monthly_limit', 10000000)
+        benefit_summary = data.get('benefit_summary', '')
+        benefits_json = data.get('benefits_json', '{}')
+
+        if not card_name:
+            return jsonify({'success': False, 'error': 'card_name is required'}), 400
+
+        db = get_db()
+
+        # 법인카드 생성
+        corporate_card = CorporateCard(
+            card_name=card_name,
+            card_number=card_number,
+            card_company=card_company,
+            owner_user_id=user_id,
+            monthly_limit=monthly_limit,
+            benefit_summary=benefit_summary,
+            benefits_json=json.dumps(benefits_json) if isinstance(benefits_json, dict) else benefits_json
+        )
+        db.add(corporate_card)
+        db.flush()
+
+        # 소유자를 관리자로 자동 등록
+        user = db.scalars(select(User).where(User.user_id == user_id)).first()
+        owner_member = CorporateCardMember(
+            corporate_card_id=corporate_card.id,
+            user_id=user_id,
+            invited_email=user.user_email,
+            role='admin',
+            monthly_limit=monthly_limit,
+            status='active',
+            joined_at=datetime.utcnow()
+        )
+        db.add(owner_member)
+        db.commit()
+
+        result = {
+            'id': corporate_card.id,
+            'card_name': corporate_card.card_name
+        }
+        db.close()
+
+        return jsonify({'success': True, 'card': result}), 201
+
+    except Exception as e:
+        print(f"[Error] 법인카드 등록 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/corporate/cards/<int:card_id>/check-admin', methods=['GET'])
+@login_required
+def check_corporate_admin():
+    """
+    법인카드 관리자 권한 확인
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        card_id = request.view_args.get('card_id')
+        db = get_db()
+
+        # 법인카드 조회
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not card:
+            db.close()
+            return jsonify({'success': False, 'error': 'Card not found'}), 404
+
+        is_admin = card.owner_user_id == user_id
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'is_admin': is_admin,
+            'card_name': card.card_name
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 관리자 권한 확인 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/corporate/is-admin', methods=['GET'])
+@login_required
+def check_is_corporate_admin():
+    """
+    현재 사용자가 법인카드 소유자인지 확인 (관리자 페이지 접근 권한)
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        # 소유한 법인카드가 있는지 확인
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.owner_user_id == user_id)
+        ).first()
+
+        is_admin = card is not None
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'is_admin': is_admin
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 관리자 확인 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============ 직원 초대 시스템 ============
+
+@app.route('/api/corporate/cards/<int:card_id>/members', methods=['GET'])
+@login_required
+def get_corporate_members(card_id):
+    """
+    법인카드 팀원 목록 조회
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        # 권한 확인
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not card or card.owner_user_id != user_id:
+            db.close()
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        members_data = []
+        for member in card.members:
+            user_info = None
+            if member.user:
+                user_info = {
+                    'user_id': member.user.user_id,
+                    'user_name': member.user.user_name
+                }
+
+            dept_info = None
+            if member.department:
+                dept_info = {
+                    'id': member.department.id,
+                    'name': member.department.name
+                }
+
+            members_data.append({
+                'id': member.id,
+                'invited_email': member.invited_email,
+                'role': member.role,
+                'monthly_limit': member.monthly_limit,
+                'used_amount': member.used_amount,
+                'status': member.status,
+                'invited_at': member.invited_at.isoformat() if member.invited_at else None,
+                'joined_at': member.joined_at.isoformat() if member.joined_at else None,
+                'user': user_info,
+                'department': dept_info
+            })
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'members': members_data
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 팀원 조회 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/corporate/cards/<int:card_id>/members', methods=['POST'])
+@login_required
+def invite_corporate_member(card_id):
+    """
+    이메일로 팀원 초대
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+
+        invited_email = data.get('email')
+        department_id = data.get('department_id')
+        role = data.get('role', 'member')
+        monthly_limit = data.get('monthly_limit', 500000)
+
+        if not invited_email:
+            return jsonify({'success': False, 'error': 'email is required'}), 400
+
+        db = get_db()
+
+        # 권한 확인
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not card or card.owner_user_id != user_id:
+            db.close()
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        # 이미 초대된 이메일인지 확인
+        existing_member = db.scalars(
+            select(CorporateCardMember).where(
+                CorporateCardMember.corporate_card_id == card_id,
+                CorporateCardMember.invited_email == invited_email
+            )
+        ).first()
+
+        if existing_member:
+            db.close()
+            return jsonify({'success': False, 'error': 'Already invited'}), 400
+
+        # 해당 이메일로 가입된 사용자 확인
+        invited_user = db.scalars(
+            select(User).where(User.user_email == invited_email)
+        ).first()
+
+        # 팀원 초대 생성
+        member = CorporateCardMember(
+            corporate_card_id=card_id,
+            user_id=invited_user.user_id if invited_user else None,
+            invited_email=invited_email,
+            department_id=department_id,
+            role=role,
+            monthly_limit=monthly_limit,
+            status='active' if invited_user else 'pending',
+            joined_at=datetime.utcnow() if invited_user else None
+        )
+        db.add(member)
+        db.commit()
+
+        result = {
+            'id': member.id,
+            'invited_email': member.invited_email,
+            'status': member.status
+        }
+        db.close()
+
+        return jsonify({'success': True, 'member': result}), 201
+
+    except Exception as e:
+        print(f"[Error] 팀원 초대 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/corporate/cards/<int:card_id>/members/<int:member_id>', methods=['DELETE'])
+@login_required
+def remove_corporate_member(card_id, member_id):
+    """
+    팀원 제거
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        # 권한 확인
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not card or card.owner_user_id != user_id:
+            db.close()
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        # 팀원 조회 및 삭제
+        member = db.scalars(
+            select(CorporateCardMember).where(
+                CorporateCardMember.id == member_id,
+                CorporateCardMember.corporate_card_id == card_id
+            )
+        ).first()
+
+        if not member:
+            db.close()
+            return jsonify({'success': False, 'error': 'Member not found'}), 404
+
+        # 관리자 자신은 삭제 불가
+        if member.role == 'admin' and member.user_id == user_id:
+            db.close()
+            return jsonify({'success': False, 'error': 'Cannot remove yourself'}), 400
+
+        db.delete(member)
+        db.commit()
+        db.close()
+
+        return jsonify({'success': True}), 200
+
+    except Exception as e:
+        print(f"[Error] 팀원 제거 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============ 부서 관리 ============
+
+@app.route('/api/corporate/cards/<int:card_id>/departments', methods=['GET'])
+@login_required
+def get_departments(card_id):
+    """
+    부서 목록 조회
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not card or card.owner_user_id != user_id:
+            db.close()
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        departments_data = []
+        for dept in card.departments:
+            members = [m for m in card.members if m.department_id == dept.id]
+            # Calculate benefit for this department's payments
+            dept_payments = [p for p in card.payments if p.department_id == dept.id]
+            dept_benefit = sum(p.benefit_amount for p in dept_payments)
+            departments_data.append({
+                'id': dept.id,
+                'name': dept.name,
+                'monthly_limit': dept.monthly_limit,
+                'used_amount': dept.used_amount,
+                'color': dept.color,
+                'card_count': len(members),
+                'member_count': len(members),
+                'benefit': dept_benefit,
+                'usage_percent': round((dept.used_amount / dept.monthly_limit) * 100, 1) if dept.monthly_limit > 0 else 0
+            })
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'departments': departments_data
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 부서 조회 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/corporate/cards/<int:card_id>/departments', methods=['POST'])
+@login_required
+def create_department(card_id):
+    """
+    부서 생성
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+
+        name = data.get('name')
+        monthly_limit = data.get('monthly_limit', 2000000)
+        color = data.get('color', '#4AA63C')
+
+        if not name:
+            return jsonify({'success': False, 'error': 'name is required'}), 400
+
+        db = get_db()
+
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not card or card.owner_user_id != user_id:
+            db.close()
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        department = Department(
+            corporate_card_id=card_id,
+            name=name,
+            monthly_limit=monthly_limit,
+            color=color
+        )
+        db.add(department)
+        db.commit()
+
+        result = {
+            'id': department.id,
+            'name': department.name,
+            'monthly_limit': department.monthly_limit,
+            'color': department.color
+        }
+        db.close()
+
+        return jsonify({'success': True, 'department': result}), 201
+
+    except Exception as e:
+        print(f"[Error] 부서 생성 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/corporate/cards/<int:card_id>/departments/<int:dept_id>', methods=['PUT'])
+@login_required
+def update_department(card_id, dept_id):
+    """
+    부서 수정
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+
+        db = get_db()
+
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not card or card.owner_user_id != user_id:
+            db.close()
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        dept = db.scalars(
+            select(Department).where(Department.id == dept_id, Department.corporate_card_id == card_id)
+        ).first()
+
+        if not dept:
+            db.close()
+            return jsonify({'success': False, 'error': 'Department not found'}), 404
+
+        if 'name' in data:
+            dept.name = data['name']
+        if 'monthly_limit' in data:
+            dept.monthly_limit = data['monthly_limit']
+        if 'color' in data:
+            dept.color = data['color']
+
+        db.commit()
+        db.close()
+
+        return jsonify({'success': True}), 200
+
+    except Exception as e:
+        print(f"[Error] 부서 수정 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============ 법인카드 결제 내역 동기화 ============
+
+@app.route('/api/corporate/cards/<int:card_id>/payments', methods=['GET'])
+@login_required
+def get_corporate_payments(card_id):
+    """
+    법인카드 결제 내역 조회
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not card or card.owner_user_id != user_id:
+            db.close()
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        payments_data = []
+        for payment in card.payments:
+            member_info = None
+            if payment.member:
+                member_info = {
+                    'id': payment.member.id,
+                    'email': payment.member.invited_email
+                }
+
+            user_info = None
+            if payment.user:
+                user_info = {
+                    'user_id': payment.user.user_id,
+                    'user_name': payment.user.user_name
+                }
+
+            payments_data.append({
+                'id': payment.id,
+                'transaction_id': payment.transaction_id,
+                'merchant_name': payment.merchant_name,
+                'merchant_category': payment.merchant_category,
+                'payment_amount': payment.payment_amount,
+                'discount_amount': payment.discount_amount,
+                'final_amount': payment.final_amount,
+                'benefit_text': payment.benefit_text,
+                'payment_date': payment.payment_date.isoformat() if payment.payment_date else None,
+                'member': member_info,
+                'user': user_info
+            })
+
+        # 최신순 정렬
+        payments_data.sort(key=lambda x: x['payment_date'] or '', reverse=True)
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'payments': payments_data
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 결제 내역 조회 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/corporate/payment/sync', methods=['POST'])
+@login_required
+def sync_corporate_payment():
+    """
+    직원 결제 시 법인카드 결제 내역 동기화
+    개인 결제 시 법인카드 멤버십 확인 후 동기화
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+
+        merchant_name = data.get('merchant_name')
+        merchant_category = data.get('merchant_category', '')
+        payment_amount = data.get('payment_amount')
+        discount_amount = data.get('discount_amount', 0)
+        final_amount = data.get('final_amount')
+        benefit_text = data.get('benefit_text', '')
+
+        if not merchant_name or not payment_amount:
+            return jsonify({'success': False, 'error': 'merchant_name and payment_amount are required'}), 400
+
+        db = get_db()
+
+        # 사용자가 속한 법인카드 멤버십 확인
+        memberships = db.scalars(
+            select(CorporateCardMember).where(
+                CorporateCardMember.user_id == user_id,
+                CorporateCardMember.status == 'active'
+            )
+        ).all()
+
+        if not memberships:
+            db.close()
+            return jsonify({'success': True, 'synced': False, 'message': 'No corporate membership'}), 200
+
+        synced_count = 0
+        for membership in memberships:
+            # 법인카드 결제 내역 생성
+            transaction_id = str(uuid.uuid4())
+            payment = CorporatePaymentHistory(
+                transaction_id=transaction_id,
+                corporate_card_id=membership.corporate_card_id,
+                member_id=membership.id,
+                user_id=user_id,
+                merchant_name=merchant_name,
+                merchant_category=merchant_category,
+                payment_amount=payment_amount,
+                discount_amount=discount_amount,
+                final_amount=final_amount,
+                benefit_text=benefit_text,
+                synced_at=datetime.utcnow()
+            )
+            db.add(payment)
+
+            # 멤버 사용 금액 업데이트
+            membership.used_amount += final_amount
+
+            # 법인카드 사용 금액 업데이트
+            corporate_card = db.scalars(
+                select(CorporateCard).where(CorporateCard.id == membership.corporate_card_id)
+            ).first()
+            if corporate_card:
+                corporate_card.used_amount += final_amount
+
+            # 부서 사용 금액 업데이트 및 한도 경고 확인
+            dept_name = None
+            dept_usage_percent = 0
+            if membership.department_id:
+                dept = db.scalars(
+                    select(Department).where(Department.id == membership.department_id)
+                ).first()
+                if dept:
+                    dept.used_amount += final_amount
+                    dept_name = dept.name
+                    dept_usage_percent = (dept.used_amount / dept.monthly_limit) * 100 if dept.monthly_limit > 0 else 0
+
+            synced_count += 1
+
+            # WebSocket 브로드캐스트 - 결제 업데이트
+            payment_data = {
+                'merchant_name': merchant_name,
+                'merchant_category': merchant_category,
+                'payment_amount': payment_amount,
+                'final_amount': final_amount,
+                'discount_amount': discount_amount,
+                'department': dept_name,
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            broadcast_payment_update(membership.corporate_card_id, payment_data)
+
+            # 한도 경고 알림 (85% 이상)
+            if dept_name and dept_usage_percent >= 85:
+                broadcast_limit_alert(membership.corporate_card_id, dept_name, dept_usage_percent)
+
+            # 대시보드 새로고침 요청
+            broadcast_dashboard_refresh(membership.corporate_card_id)
+
+        db.commit()
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'synced': True,
+            'synced_count': synced_count
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 결제 동기화 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============ 관리자 대시보드 데이터 ============
+
+@app.route('/api/corporate/dashboard/<int:card_id>', methods=['GET'])
+@login_required
+def get_corporate_dashboard(card_id):
+    """
+    법인카드 대시보드 데이터 조회 (실제 데이터)
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not card or card.owner_user_id != user_id:
+            db.close()
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        # 통계 계산
+        total_spent = card.used_amount
+        total_benefit = sum(p.discount_amount or 0 for p in card.payments)
+        active_cards = len([m for m in card.members if m.status == 'active'])
+        total_departments = len(card.departments)
+
+        # 혜택 발굴률 계산 (할인 받은 결제 / 전체 결제)
+        total_payments = len(card.payments)
+        discounted_payments = len([p for p in card.payments if p.discount_amount and p.discount_amount > 0])
+        benefit_rate = round((discounted_payments / total_payments) * 100, 1) if total_payments > 0 else 0
+
+        # 부서별 통계
+        departments_stats = []
+        for dept in card.departments:
+            dept_members = [m for m in card.members if m.department_id == dept.id]
+            dept_payments = [p for p in card.payments if p.member and p.member.department_id == dept.id]
+            dept_benefit = sum(p.discount_amount or 0 for p in dept_payments)
+
+            departments_stats.append({
+                'id': dept.id,
+                'name': dept.name,
+                'card_count': len(dept_members),
+                'monthly_limit': dept.monthly_limit,
+                'used_amount': dept.used_amount,
+                'usage_percent': round((dept.used_amount / dept.monthly_limit) * 100, 1) if dept.monthly_limit > 0 else 0,
+                'benefit': dept_benefit,
+                'color': dept.color
+            })
+
+        # 최근 알림 (한도 경고 등)
+        alerts = []
+        for dept in card.departments:
+            usage_percent = (dept.used_amount / dept.monthly_limit) * 100 if dept.monthly_limit > 0 else 0
+            if usage_percent >= 85:
+                alerts.append({
+                    'id': f'dept_{dept.id}',
+                    'department': dept.name,
+                    'message': f'법인카드 한도 {int(usage_percent)}% 사용',
+                    'type': 'warning',
+                    'time': '방금 전'
+                })
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'stats': {
+                'total_spent': total_spent,
+                'total_benefit': total_benefit,
+                'active_cards': active_cards,
+                'total_departments': total_departments,
+                'benefit_rate': benefit_rate
+            },
+            'departments': departments_stats,
+            'alerts': alerts[:5]  # 최근 5개만
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 대시보드 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============ 영수증 OCR ============
+
+@app.route('/api/ocr/receipt', methods=['POST'])
+@login_required
+def ocr_receipt():
+    """
+    영수증 OCR 처리
+    """
+    try:
+        data = request.get_json()
+        image_base64 = data.get('image')
+        image_format = data.get('image_format', 'jpg')
+
+        if not image_base64:
+            return jsonify({'success': False, 'error': 'image is required'}), 400
+
+        # OCR 서비스 호출 (기존 서비스 확장)
+        ocr_result = ocr_service.extract_receipt_info(image_base64, image_format)
+
+        return jsonify({
+            'success': True,
+            'receipt': ocr_result
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 영수증 OCR 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============ WebSocket 이벤트 핸들러 ============
+
+# 연결된 사용자들을 법인카드별로 관리
+connected_users = {}
+
+@socketio.on('connect')
+def handle_connect():
+    """
+    클라이언트 연결 시 처리
+    """
+    print(f"[WebSocket] Client connected: {request.sid}")
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """
+    클라이언트 연결 해제 시 처리
+    """
+    print(f"[WebSocket] Client disconnected: {request.sid}")
+    # 모든 룸에서 사용자 제거
+    for card_id in list(connected_users.keys()):
+        if request.sid in connected_users.get(card_id, []):
+            connected_users[card_id].remove(request.sid)
+            leave_room(f'corporate_card_{card_id}')
+
+
+@socketio.on('join_dashboard')
+def handle_join_dashboard(data):
+    """
+    대시보드 룸 참가 (법인카드별)
+    """
+    card_id = data.get('card_id')
+    token = data.get('token')
+
+    if not card_id or not token:
+        emit('error', {'message': 'card_id and token are required'})
+        return
+
+    try:
+        # 토큰 검증
+        user_data = jwt_service.verify_token(token)
+        user_id = user_data.get('user_id')
+
+        # 법인카드 접근 권한 확인
+        db = get_db()
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not card or card.owner_user_id != user_id:
+            db.close()
+            emit('error', {'message': 'Unauthorized'})
+            return
+
+        db.close()
+
+        # 룸 참가
+        room = f'corporate_card_{card_id}'
+        join_room(room)
+
+        if card_id not in connected_users:
+            connected_users[card_id] = []
+        connected_users[card_id].append(request.sid)
+
+        emit('joined', {'card_id': card_id, 'message': 'Successfully joined dashboard'})
+        print(f"[WebSocket] User {user_id} joined room {room}")
+
+    except Exception as e:
+        print(f"[WebSocket] Join error: {e}")
+        emit('error', {'message': str(e)})
+
+
+@socketio.on('leave_dashboard')
+def handle_leave_dashboard(data):
+    """
+    대시보드 룸 떠나기
+    """
+    card_id = data.get('card_id')
+    if card_id:
+        room = f'corporate_card_{card_id}'
+        leave_room(room)
+        if card_id in connected_users and request.sid in connected_users[card_id]:
+            connected_users[card_id].remove(request.sid)
+        emit('left', {'card_id': card_id})
+
+
+def broadcast_payment_update(card_id: int, payment_data: dict):
+    """
+    결제 업데이트를 해당 법인카드 룸에 브로드캐스트
+    """
+    room = f'corporate_card_{card_id}'
+    socketio.emit('payment_update', {
+        'type': 'new_payment',
+        'card_id': card_id,
+        'payment': payment_data
+    }, room=room)
+
+
+def broadcast_limit_alert(card_id: int, department_name: str, usage_percent: float):
+    """
+    한도 경고 알림을 해당 법인카드 룸에 브로드캐스트
+    """
+    room = f'corporate_card_{card_id}'
+    alert_type = 'danger' if usage_percent >= 95 else 'warning'
+    socketio.emit('limit_alert', {
+        'type': alert_type,
+        'card_id': card_id,
+        'department': department_name,
+        'usage_percent': usage_percent,
+        'message': f'{department_name} 부서 한도 {int(usage_percent)}% 사용'
+    }, room=room)
+
+
+def broadcast_dashboard_refresh(card_id: int):
+    """
+    대시보드 데이터 새로고침 요청을 브로드캐스트
+    """
+    room = f'corporate_card_{card_id}'
+    socketio.emit('dashboard_refresh', {
+        'card_id': card_id,
+        'message': 'Dashboard data updated'
+    }, room=room)
+
+
 if __name__ == '__main__':
     port = int(os.getenv('FLASK_PORT', 5001))
     debug = os.getenv('FLASK_ENV') == 'development'
 
-    app.run(host='0.0.0.0', port=port, debug=debug)
+    # SocketIO로 실행
+    socketio.run(app, host='0.0.0.0', port=port, debug=debug)

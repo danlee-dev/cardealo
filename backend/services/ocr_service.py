@@ -199,6 +199,151 @@ class NaverOCRService:
 
         return card_info
 
+    def extract_receipt_info(self, image_base64: str, image_format: str = "jpg") -> Dict[str, Any]:
+        """
+        영수증 이미지에서 OCR을 통해 정보 추출
+
+        Args:
+            image_base64: Base64로 인코딩된 이미지 데이터
+            image_format: 이미지 포맷 (jpg, png, pdf, tiff)
+
+        Returns:
+            영수증 정보 딕셔너리
+        """
+        try:
+            # OCR API 호출
+            ocr_result = self._call_ocr_api(image_base64, image_format)
+
+            # OCR 결과에서 텍스트 추출
+            raw_text = self._extract_text_from_ocr(ocr_result)
+
+            # 영수증 정보 파싱
+            receipt_info = self._parse_receipt_info(raw_text)
+            receipt_info['raw_text'] = raw_text
+            receipt_info['success'] = True
+
+            print(f"[OCR Success] Receipt extracted: {receipt_info.get('merchant_name', 'Unknown')}")
+            return receipt_info
+
+        except Exception as e:
+            print(f"[OCR Error] {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'merchant_name': None,
+                'total_amount': None,
+                'payment_date': None,
+                'items': [],
+                'raw_text': None
+            }
+
+    def _parse_receipt_info(self, text: str) -> Dict[str, Any]:
+        """
+        OCR 텍스트에서 영수증 정보 파싱
+        """
+        receipt_info = {
+            'merchant_name': None,
+            'merchant_category': None,
+            'total_amount': None,
+            'payment_date': None,
+            'payment_time': None,
+            'card_number': None,
+            'approval_number': None,
+            'items': []
+        }
+
+        lines = text.split()
+
+        # 가맹점명 추출 (보통 첫 줄이나 상호명 다음에 위치)
+        merchant_keywords = ['상호', '가맹점', '매장', '점포']
+        for i, line in enumerate(lines):
+            for keyword in merchant_keywords:
+                if keyword in line:
+                    # 키워드 다음 단어를 가맹점명으로
+                    if i + 1 < len(lines):
+                        receipt_info['merchant_name'] = lines[i + 1]
+                        break
+
+        # 첫 몇 단어에서 가맹점명 추론 (키워드 없는 경우)
+        if not receipt_info['merchant_name'] and len(lines) > 0:
+            # 흔한 가맹점 패턴
+            known_merchants = [
+                '스타벅스', 'STARBUCKS', '투썸', 'TWOSOME', '이디야', 'EDIYA',
+                'CU', 'GS25', '세븐일레븐', '7-ELEVEN', '미니스톱',
+                '맥도날드', 'McDonald', '버거킹', 'BURGERKING', 'KFC',
+                '이마트', 'EMART', '홈플러스', 'HOMEPLUS', '롯데마트',
+                '배달의민족', '쿠팡이츠', '요기요', '배민',
+                'SK주유소', 'GS칼텍스', 'S-OIL', '현대오일뱅크'
+            ]
+            for word in lines[:5]:
+                for merchant in known_merchants:
+                    if merchant.lower() in word.lower():
+                        receipt_info['merchant_name'] = merchant
+                        break
+                if receipt_info['merchant_name']:
+                    break
+
+        # 가맹점 카테고리 추론
+        category_mapping = {
+            '스타벅스': '카페', 'STARBUCKS': '카페', '투썸': '카페', '이디야': '카페',
+            'CU': '편의점', 'GS25': '편의점', '세븐일레븐': '편의점',
+            '맥도날드': '패스트푸드', '버거킹': '패스트푸드', 'KFC': '패스트푸드',
+            '이마트': '대형마트', '홈플러스': '대형마트', '롯데마트': '대형마트',
+            '주유소': '주유', 'SK주유소': '주유', 'GS칼텍스': '주유', 'S-OIL': '주유',
+            '배달의민족': '배달', '쿠팡이츠': '배달', '요기요': '배달'
+        }
+        if receipt_info['merchant_name']:
+            for keyword, category in category_mapping.items():
+                if keyword in receipt_info['merchant_name']:
+                    receipt_info['merchant_category'] = category
+                    break
+
+        # 금액 추출 (숫자 + 원)
+        amount_pattern = r'(\d{1,3}(?:,\d{3})*)\s*원'
+        amount_matches = re.findall(amount_pattern, text)
+        if amount_matches:
+            # 가장 큰 금액을 총액으로 가정
+            amounts = [int(a.replace(',', '')) for a in amount_matches]
+            receipt_info['total_amount'] = max(amounts)
+
+        # 결제 금액 키워드 근처의 금액 우선
+        total_keywords = ['합계', '총액', '결제금액', '총금액', 'TOTAL', '청구금액']
+        for i, word in enumerate(lines):
+            for keyword in total_keywords:
+                if keyword in word:
+                    # 근처에서 금액 찾기
+                    for j in range(max(0, i-2), min(len(lines), i+3)):
+                        match = re.search(r'(\d{1,3}(?:,\d{3})*)', lines[j])
+                        if match:
+                            receipt_info['total_amount'] = int(match.group(1).replace(',', ''))
+                            break
+
+        # 날짜 추출 (YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD 형식)
+        date_pattern = r'(\d{4})[.\-/](\d{2})[.\-/](\d{2})'
+        date_match = re.search(date_pattern, text)
+        if date_match:
+            receipt_info['payment_date'] = f"{date_match.group(1)}-{date_match.group(2)}-{date_match.group(3)}"
+
+        # 시간 추출 (HH:MM 또는 HH:MM:SS 형식)
+        time_pattern = r'(\d{2}):(\d{2})(?::(\d{2}))?'
+        time_match = re.search(time_pattern, text)
+        if time_match:
+            receipt_info['payment_time'] = f"{time_match.group(1)}:{time_match.group(2)}"
+
+        # 카드번호 추출 (마스킹된 형식)
+        card_pattern = r'(\d{4}[\s\-*]+\d{4}[\s\-*]+\d{4}[\s\-*]+\d{4}|\d{4}[\s\-*]+\*+[\s\-*]+\*+[\s\-*]+\d{4})'
+        card_match = re.search(card_pattern, text)
+        if card_match:
+            receipt_info['card_number'] = card_match.group(1)
+
+        # 승인번호 추출
+        approval_pattern = r'승인\s*(?:번호|No)?[:\s]*(\d{6,10})'
+        approval_match = re.search(approval_pattern, text)
+        if approval_match:
+            receipt_info['approval_number'] = approval_match.group(1)
+
+        return receipt_info
+
 
 def extract_card_info_from_image(image_base64: str, image_format: str = "jpg") -> Dict[str, Any]:
     """

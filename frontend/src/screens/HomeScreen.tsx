@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ScrollView, Platform, Alert, TextInput, Keyboard, TouchableWithoutFeedback, Image, StatusBar, FlatList, Animated, Modal } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NaverMapView, NaverMapMarkerOverlay, NaverMapPolylineOverlay } from '@mj-studio/react-native-naver-map';
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { SearchIcon, StarsIcon, CafeIcon, CoffeeIcon, FoodIcon, CartIcon, CardsIcon, LocationMarkerIcon, StorePinIcon, StarIcon, MyLocationIcon, SearchPinIcon, RefreshIcon, CourseIcon, SavedCourseIcon, BackIcon } from '../components/svg';
@@ -151,7 +152,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const [showOnePay, setShowOnePay] = useState(false);
   const [isInsideBuilding, setIsInsideBuilding] = useState(false);
   const [filterSort, setFilterSort] = useState<'benefit' | 'distance' | 'recommend'>('recommend');
-  const [filterOrder, setFilterOrder] = useState<'asc' | 'desc'>('desc');
   const [filterOpenOnly, setFilterOpenOnly] = useState(false);
   const [searchResultLocation, setSearchResultLocation] = useState<{ latitude: number; longitude: number; name: string } | null>(null);
   const [debugLocation, setDebugLocation] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -418,6 +418,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   useEffect(() => {
     requestLocationPermission();
     fetchUserCards();
+    loadFavorites();
   }, []);
 
   // Animate course mode transition
@@ -447,6 +448,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }
   }, [userCards]);
 
+  // 즐겨찾기 불러오기
+  const loadFavorites = async () => {
+    try {
+      const stored = await AsyncStorage.getItem('favoriteStores');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setFavoriteStores(new Set(parsed));
+      }
+    } catch (error) {
+      console.error('Failed to load favorites:', error);
+    }
+  };
+
+  // 즐겨찾기 저장하기
+  const saveFavorites = async (favorites: Set<string>) => {
+    try {
+      await AsyncStorage.setItem('favoriteStores', JSON.stringify([...favorites]));
+    } catch (error) {
+      console.error('Failed to save favorites:', error);
+    }
+  };
+
   const toggleFavorite = (storeName: string) => {
     const newFavorites = new Set(favoriteStores);
     if (newFavorites.has(storeName)) {
@@ -454,6 +477,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     } else {
       newFavorites.add(storeName);
     }
+    saveFavorites(newFavorites);
     setFavoriteStores(newFavorites);
     // TODO: 백엔드 API 준비되면 서버에 저장
   };
@@ -522,42 +546,98 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }).start();
   }, [selectedCardIndex]);
 
+  // 기본 fallback 위치 (고려대학교 근처)
+  const DEFAULT_LOCATION = {
+    latitude: 37.5898,
+    longitude: 127.0323,
+  };
+
   const requestLocationPermission = async () => {
+    // 5초 타임아웃 설정
+    const locationTimeout = 5000;
+    let timeoutId: NodeJS.Timeout | null = null;
+
+    const useDefaultLocation = () => {
+      console.log('[Location] 기본 위치 사용 (fallback)');
+      setUserLocation(DEFAULT_LOCATION);
+      fetchNearbyStores(DEFAULT_LOCATION.latitude, DEFAULT_LOCATION.longitude, currentSearchRadius);
+    };
+
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('위치 권한 필요', '앱을 사용하려면 위치 권한이 필요합니다. 설정에서 권한을 허용해주세요.');
+        Alert.alert(
+          '위치 권한 필요',
+          '위치 권한이 없어 기본 위치로 설정됩니다.',
+          [{ text: '확인', onPress: useDefaultLocation }]
+        );
         return;
       }
+
+      // 타임아웃 Promise 생성
+      const timeoutPromise = new Promise<null>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error('Location timeout'));
+        }, locationTimeout);
+      });
 
       // Try to get last known position first (faster)
-      const lastKnown = await Location.getLastKnownPositionAsync();
-      if (lastKnown) {
-        const coords = {
-          latitude: lastKnown.coords.latitude,
-          longitude: lastKnown.coords.longitude,
-        };
-        const accuracy = lastKnown.coords.accuracy || null;
+      try {
+        const lastKnown = await Promise.race([
+          Location.getLastKnownPositionAsync(),
+          timeoutPromise,
+        ]);
 
-        console.log(`[Location] Last known position - accuracy: ${accuracy}m`);
-        setGpsAccuracy(accuracy);
+        if (timeoutId) clearTimeout(timeoutId);
 
-        // Check if location is in USA (emulator default)
-        if (coords.latitude > 36 && coords.latitude < 38 && coords.longitude > -123 && coords.longitude < -121) {
-          console.log('[Location] 에뮬레이터 기본 위치 감지 (미국)');
-          Alert.alert('위치 오류', '올바른 위치를 가져올 수 없습니다. 실제 기기에서 사용해주세요.');
+        if (lastKnown) {
+          const coords = {
+            latitude: lastKnown.coords.latitude,
+            longitude: lastKnown.coords.longitude,
+          };
+          const accuracy = lastKnown.coords.accuracy || null;
+
+          console.log(`[Location] Last known position - accuracy: ${accuracy}m`);
+          setGpsAccuracy(accuracy);
+
+          // Check if location is in USA (emulator default)
+          if (coords.latitude > 36 && coords.latitude < 38 && coords.longitude > -123 && coords.longitude < -121) {
+            console.log('[Location] 에뮬레이터 기본 위치 감지 (미국), 기본 위치 사용');
+            useDefaultLocation();
+            return;
+          }
+          setRealUserLocation(coords);
+          setUserLocation(coords);
+          fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
           return;
         }
-        setRealUserLocation(coords);
-        setUserLocation(coords);
-        fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
+      } catch (e) {
+        console.log('[Location] Last known position failed or timeout');
+      }
+
+      // Reset timeout for getCurrentPosition
+      if (timeoutId) clearTimeout(timeoutId);
+      const currentTimeoutPromise = new Promise<null>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error('Location timeout'));
+        }, locationTimeout);
+      });
+
+      // If no last known position, get current position
+      const location = await Promise.race([
+        Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        }),
+        currentTimeoutPromise,
+      ]);
+
+      if (timeoutId) clearTimeout(timeoutId);
+
+      if (!location) {
+        useDefaultLocation();
         return;
       }
 
-      // If no last known position, get current position
-      const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
       const coords = {
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
@@ -569,16 +649,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
       // Check if location is in USA (emulator default)
       if (coords.latitude > 36 && coords.latitude < 38 && coords.longitude > -123 && coords.longitude < -121) {
-        console.log('[Location] 에뮬레이터 기본 위치 감지 (미국)');
-        Alert.alert('위치 오류', '올바른 위치를 가져올 수 없습니다. 실제 기기에서 사용해주세요.');
+        console.log('[Location] 에뮬레이터 기본 위치 감지 (미국), 기본 위치 사용');
+        useDefaultLocation();
         return;
       }
       setRealUserLocation(coords);
       setUserLocation(coords);
       fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
     } catch (error) {
+      if (timeoutId) clearTimeout(timeoutId);
       console.error('위치 가져오기 실패:', error);
-      Alert.alert('위치 오류', '위치를 가져올 수 없습니다. 위치 서비스를 확인해주세요.');
+      console.log('[Location] 위치 가져오기 실패, 기본 위치 사용');
+      useDefaultLocation();
     }
   };
 
@@ -1234,13 +1316,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
             .filter(score => score > 0);
 
           return filteredStores.map((store, index) => {
-            // 줌 레벨에 따라 마커 표시 여부 결정 (간단한 클러스터링)
-            const showMarker = currentZoom >= 14 || index % 3 === 0;
-
-            if (!showMarker) return null;
+            // 모든 마커 표시 (성능을 위해 최대 50개로 제한됨 - fetchNearbyStores에서)
+            // 줌 레벨이 낮을 때도 모든 마커 표시
 
             const score = store.top_card?.score || 0;
-            const benefitLevel = score > 0 ? getBenefitLevel(score, allScores) : 'medium';
+            const benefitLevel = score > 0 ? getBenefitLevel(score, allScores) : 'none';
 
             return (
               <NaverMapMarkerOverlay
@@ -1588,7 +1668,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         index={2}
         snapPoints={snapPoints}
         enablePanDownToClose={false}
-        enableContentPanningGesture={true}
+        enableContentPanningGesture={false}
         enableHandlePanningGesture={true}
         enableOverDrag={false}
         overDragResistanceFactor={0}
@@ -1613,15 +1693,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         topInset={StatusBar.currentHeight || 0}
       >
         <View style={styles.bottomSheetContainer}>
-          <TouchableOpacity
-            style={styles.onePayButton}
-            onPress={() => {
-              Keyboard.dismiss();
-              setShowOnePay(true);
-            }}
-          >
-            <Text style={styles.onePayText}>ONE PAY</Text>
-          </TouchableOpacity>
+          {!isCourseMode && (
+            <TouchableOpacity
+              style={styles.onePayButton}
+              onPress={() => {
+                Keyboard.dismiss();
+                setShowOnePay(true);
+              }}
+            >
+              <Text style={styles.onePayText}>ONE PAY</Text>
+            </TouchableOpacity>
+          )}
 
           {selectedStore ? (
             <>
@@ -1698,52 +1780,31 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
                   <TouchableOpacity
                     style={[styles.filterButton, filterSort === 'benefit' && styles.filterButtonActive]}
-                    onPress={() => {
-                      if (filterSort === 'benefit') {
-                        setFilterOrder(filterOrder === 'desc' ? 'asc' : 'desc');
-                      } else {
-                        setFilterSort('benefit');
-                        setFilterOrder('desc');
-                      }
-                    }}
+                    onPress={() => setFilterSort('benefit')}
                     activeOpacity={0.7}
                   >
                     <Text style={[styles.filterButtonText, filterSort === 'benefit' && styles.filterButtonTextActive]}>
-                      혜택순 {filterSort === 'benefit' && (filterOrder === 'desc' ? '▼' : '▲')}
+                      혜택순
                     </Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
                     style={[styles.filterButton, filterSort === 'distance' && styles.filterButtonActive]}
-                    onPress={() => {
-                      if (filterSort === 'distance') {
-                        setFilterOrder(filterOrder === 'desc' ? 'asc' : 'desc');
-                      } else {
-                        setFilterSort('distance');
-                        setFilterOrder('asc');
-                      }
-                    }}
+                    onPress={() => setFilterSort('distance')}
                     activeOpacity={0.7}
                   >
                     <Text style={[styles.filterButtonText, filterSort === 'distance' && styles.filterButtonTextActive]}>
-                      거리순 {filterSort === 'distance' && (filterOrder === 'asc' ? '▲' : '▼')}
+                      거리순
                     </Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
                     style={[styles.filterButton, filterSort === 'recommend' && styles.filterButtonActive]}
-                    onPress={() => {
-                      if (filterSort === 'recommend') {
-                        setFilterOrder(filterOrder === 'desc' ? 'asc' : 'desc');
-                      } else {
-                        setFilterSort('recommend');
-                        setFilterOrder('desc');
-                      }
-                    }}
+                    onPress={() => setFilterSort('recommend')}
                     activeOpacity={0.7}
                   >
                     <Text style={[styles.filterButtonText, filterSort === 'recommend' && styles.filterButtonTextActive]}>
-                      추천순 {filterSort === 'recommend' && (filterOrder === 'desc' ? '▼' : '▲')}
+                      추천순
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -1753,7 +1814,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
           <BottomSheetScrollView
             contentContainerStyle={{
-              paddingBottom: insets.bottom + 100,
+              paddingBottom: insets.bottom + 160,
               paddingHorizontal: 10,
               backgroundColor: COLORS.background,
             }}
@@ -2028,7 +2089,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                     </TouchableOpacity>
 
                     <View style={styles.courseTitleRow}>
-                      <Text style={styles.recommendationsTitle}>{courseResult.course.title}</Text>
+                      <Text style={[styles.recommendationsTitle, { flex: 1, marginHorizontal: 0, marginRight: 8 }]}>
+                        {courseResult.course.title}
+                      </Text>
                       <TouchableOpacity
                         style={styles.saveCourseIconButton}
                         onPress={handleSaveCourse}
@@ -2324,22 +2387,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                   .sort((a, b) => {
                     // 정렬
                     if (filterSort === 'distance') {
-                      return filterOrder === 'asc'
-                        ? a.distance - b.distance
-                        : b.distance - a.distance;
+                      // 거리순: 항상 가까운 순
+                      return a.distance - b.distance;
                     } else if (filterSort === 'benefit') {
+                      // 혜택순: 항상 높은 순
                       const scoreA = a.top_card?.score || 0;
                       const scoreB = b.top_card?.score || 0;
-                      return filterOrder === 'desc'
-                        ? scoreB - scoreA
-                        : scoreA - scoreB;
+                      return scoreB - scoreA;
                     } else if (filterSort === 'recommend') {
-                      // 추천순은 기본적으로 top_card의 score 기준
+                      // 추천순: 혜택과 거리의 가중치 합산 (혜택 70%, 거리 30%)
                       const scoreA = a.top_card?.score || 0;
                       const scoreB = b.top_card?.score || 0;
-                      return filterOrder === 'desc'
-                        ? scoreB - scoreA
-                        : scoreA - scoreB;
+                      // 거리 점수: 1km 이내 100점, 멀수록 감소 (최대 10km 기준)
+                      const distanceScoreA = Math.max(0, 100 - (a.distance / 100));
+                      const distanceScoreB = Math.max(0, 100 - (b.distance / 100));
+                      // 가중치 합산 점수
+                      const weightedA = (scoreA * 0.7) + (distanceScoreA * 0.3);
+                      const weightedB = (scoreB * 0.7) + (distanceScoreB * 0.3);
+                      return weightedB - weightedA;
                     }
                     return 0;
                   })
@@ -2417,7 +2482,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       </TouchableWithoutFeedback>
       {showProfile && (
         <View style={styles.profileOverlay}>
-          <ProfileScreen onBack={() => setShowProfile(false)} onLogout={onLogout} />
+          <ProfileScreen onBack={() => {
+            setShowProfile(false);
+            // 카드 등록 후 지도에도 반영되도록 새로고침
+            fetchUserCards();
+          }} onLogout={onLogout} />
         </View>
       )}
       {showOnePay && (
@@ -2534,8 +2603,9 @@ const styles = StyleSheet.create({
     right: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     paddingHorizontal: 20,
+    gap: 8,
   },
   filterButtonsLeft: {
     flexDirection: 'row',
@@ -2543,32 +2613,37 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   courseFilterButton: {
-    backgroundColor: '#E5EDF4',
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
   },
   courseFilterButtonText: {
-    fontSize: 14,
-    fontFamily: FONTS.regular,
-    color: '#212121',
+    fontSize: 13,
+    fontFamily: FONTS.medium,
+    color: '#666666',
   },
   courseFilterButtonTextBold: {
     fontFamily: FONTS.bold,
+    color: '#212121',
   },
   myCoursesButton: {
-    backgroundColor: '#FFF0B3',
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
   },
   myCoursesButtonText: {
-    fontSize: 14,
-    fontFamily: FONTS.regular,
-    color: '#212121',
+    fontSize: 13,
+    fontFamily: FONTS.medium,
+    color: '#666666',
   },
   myPageButton: {
     width: 48,
@@ -2709,19 +2784,19 @@ const styles = StyleSheet.create({
     color: COLORS.gray,
   },
   loadingText: {
-    fontSize: 14,
-    fontFamily: FONTS.regular,
-    color: COLORS.gray,
+    fontSize: 15,
+    fontFamily: FONTS.medium,
+    color: '#666666',
     textAlign: 'center',
-    marginTop: 20,
+    marginTop: 16,
   },
   recommendationsTitle: {
-    fontSize: 15,
-    fontFamily: FONTS.semiBold,
-    color: '#333333',
-    marginHorizontal: 12,
-    marginTop: 8,
-    marginBottom: 12,
+    fontSize: 18,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginHorizontal: 10,
+    marginTop: 4,
+    marginBottom: 8,
   },
   cardSelectorWrapper: {
     height: 120,
@@ -3022,15 +3097,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 20,
+    gap: 10,
+    paddingVertical: 48,
     marginHorizontal: 20,
   },
   loadingDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#333333',
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#212121',
   },
   profileOverlay: {
     position: 'absolute',
@@ -3160,32 +3235,33 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginBottom: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    marginBottom: 8,
   },
   backToListButtonText: {
-    fontSize: 15,
+    fontSize: 14,
     fontFamily: FONTS.medium,
     color: '#666666',
   },
   courseTitleRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    marginBottom: 8,
+    paddingLeft: 10,
+    paddingRight: 10,
+    marginBottom: 6,
   },
   saveCourseIconButton: {
     padding: 8,
   },
   courseSummary: {
-    fontSize: 15,
+    fontSize: 14,
     fontFamily: FONTS.regular,
     color: '#666666',
-    marginBottom: 16,
-    paddingHorizontal: 12,
-    lineHeight: 22,
+    marginBottom: 20,
+    paddingHorizontal: 10,
+    lineHeight: 21,
   },
   routeInfo: {
     backgroundColor: '#F8F8F8',
@@ -3201,28 +3277,17 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   naverRouteContainer: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    marginHorizontal: 12,
-    marginBottom: 16,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-      },
-      android: {
-        elevation: 3,
-      },
-    }),
+    backgroundColor: '#F8F9FA',
+    borderRadius: 14,
+    marginHorizontal: 8,
+    marginBottom: 20,
   },
   naverRouteSummary: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    paddingVertical: 16,
-    paddingHorizontal: 8,
+    paddingVertical: 18,
+    paddingHorizontal: 12,
   },
   naverRouteSummaryItem: {
     flex: 1,
@@ -3230,21 +3295,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   naverRouteSummaryLabel: {
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: FONTS.regular,
     color: '#999999',
-    marginBottom: 4,
+    marginBottom: 6,
   },
   naverRouteSummaryValue: {
-    fontSize: 16,
+    fontSize: 17,
     fontFamily: FONTS.bold,
-    color: '#333333',
+    color: '#212121',
   },
   naverRouteDivider: {
     width: 1,
-    height: 28,
+    height: 32,
     backgroundColor: '#E0E0E0',
-    marginHorizontal: 4,
+    marginHorizontal: 8,
   },
   coursePlaceCard: {
     backgroundColor: '#FFFFFF',
@@ -3342,78 +3407,79 @@ const styles = StyleSheet.create({
     color: '#666666',
   },
   emptyState: {
-    padding: 40,
+    padding: 48,
     alignItems: 'center',
   },
   emptyStateText: {
-    fontSize: 16,
-    fontFamily: FONTS.medium,
-    color: '#666666',
-    marginBottom: 8,
+    fontSize: 17,
+    fontFamily: FONTS.semiBold,
+    color: '#212121',
+    marginBottom: 10,
   },
   emptyStateHint: {
-    fontSize: 13,
+    fontSize: 14,
     fontFamily: FONTS.regular,
     color: '#999999',
     textAlign: 'center',
+    lineHeight: 20,
   },
   // Naver-style Course Place Cards
   naverPlaceCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    marginHorizontal: 12,
-    marginBottom: 8,
+    borderRadius: 16,
+    marginHorizontal: 8,
+    marginBottom: 6,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
+        shadowOpacity: 0.06,
+        shadowRadius: 6,
       },
       android: {
-        elevation: 3,
+        elevation: 2,
       },
     }),
   },
   naverPlaceNumber: {
     position: 'absolute',
-    top: 16,
-    left: 16,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#4AA63C',
+    top: 18,
+    left: 18,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#212121',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 10,
   },
   naverPlaceNumberText: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FONTS.bold,
     color: '#FFFFFF',
   },
   naverPlaceContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
-    paddingLeft: 52,
-    gap: 12,
+    padding: 18,
+    paddingLeft: 56,
+    gap: 14,
   },
   naverPlaceMerchant: {
-    marginRight: 4,
+    marginRight: 2,
   },
   naverMerchantPlaceholder: {
-    width: 56,
-    height: 56,
-    borderRadius: 12,
+    width: 52,
+    height: 52,
+    borderRadius: 14,
     backgroundColor: '#F5F5F5',
     justifyContent: 'center',
     alignItems: 'center',
   },
   naverMerchantPlaceholderText: {
-    fontSize: 24,
+    fontSize: 20,
     fontFamily: FONTS.bold,
-    color: '#999999',
+    color: '#BDBDBD',
   },
   naverPlaceInfo: {
     flex: 1,
@@ -3428,13 +3494,14 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: FONTS.regular,
     color: '#999999',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   naverBenefitInfo: {
-    backgroundColor: '#F0F8EE',
+    backgroundColor: '#F8FBF7',
     paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 6,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
   },
   naverBenefitCard: {
     fontSize: 12,
@@ -3448,45 +3515,45 @@ const styles = StyleSheet.create({
     color: '#666666',
   },
   naverCardImage: {
-    width: 70,
-    height: 44,
+    width: 64,
+    height: 40,
     borderRadius: 6,
   },
   // Naver-style Route Segment
   naverRouteSegment: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingLeft: 40,
+    paddingLeft: 36,
     paddingRight: 20,
-    paddingVertical: 8,
-    marginHorizontal: 12,
+    paddingVertical: 6,
+    marginHorizontal: 8,
   },
   naverRouteDots: {
     width: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 3,
-    marginRight: 12,
+    gap: 4,
+    marginRight: 14,
   },
   naverRouteDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
     backgroundColor: '#D0D0D0',
   },
   naverRouteDetails: {
     flex: 1,
   },
   naverRouteMode: {
-    marginBottom: 4,
+    marginBottom: 2,
   },
   naverRouteModeText: {
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: FONTS.semiBold,
     color: '#666666',
   },
   naverRouteSegmentText: {
-    fontSize: 12,
+    fontSize: 11,
     fontFamily: FONTS.regular,
     color: '#999999',
   },
@@ -3571,145 +3638,138 @@ const styles = StyleSheet.create({
   },
   // Course List Styles
   backToCourseListButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    marginBottom: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    marginBottom: 8,
   },
   backToCourseListText: {
-    fontSize: 15,
-    fontFamily: FONTS.semiBold,
-    color: '#4AA63C',
+    fontSize: 14,
+    fontFamily: FONTS.medium,
+    color: '#666666',
   },
   courseListContainer: {
-    paddingTop: 8,
+    paddingTop: 4,
+    paddingHorizontal: 2,
   },
   courseListTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontFamily: FONTS.bold,
     color: '#212121',
-    marginBottom: 16,
-    paddingHorizontal: 4,
+    marginBottom: 20,
+    paddingHorizontal: 2,
   },
   courseCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 14,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.1,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
         shadowRadius: 8,
       },
       android: {
-        elevation: 4,
+        elevation: 2,
       },
     }),
   },
   courseCardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
+    alignItems: 'flex-start',
+    marginBottom: 20,
   },
   courseCardTitle: {
     flex: 1,
     fontSize: 17,
     fontFamily: FONTS.bold,
     color: '#212121',
-    marginRight: 8,
+    marginRight: 12,
+    lineHeight: 24,
   },
   courseCardBadge: {
-    backgroundColor: '#E8F5E9',
+    backgroundColor: '#F0F8EE',
     paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
+    paddingVertical: 5,
+    borderRadius: 6,
   },
   courseCardBadgeSaved: {
-    backgroundColor: '#FFF0B3',
+    backgroundColor: '#FFF8E7',
   },
   courseCardBadgePopular: {
-    backgroundColor: '#FFE5E5',
+    backgroundColor: '#FFF0F0',
   },
   courseCardBadgeText: {
-    fontSize: 12,
+    fontSize: 11,
     fontFamily: FONTS.semiBold,
     color: '#4AA63C',
   },
   courseCardPlaces: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
-    marginBottom: 16,
+    marginBottom: 20,
+    paddingHorizontal: 4,
   },
   coursePlaceImageContainer: {
     alignItems: 'center',
     flex: 1,
   },
   coursePlacePlaceholder: {
-    width: 80,
-    height: 80,
-    borderRadius: 6,
+    width: 64,
+    height: 64,
+    borderRadius: 16,
     backgroundColor: '#F5F5F5',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: 8,
   },
   coursePlacePlaceholderText: {
-    fontSize: 28,
+    fontSize: 22,
     fontFamily: FONTS.bold,
-    color: '#999999',
+    color: '#BDBDBD',
   },
   courseListPlaceName: {
     fontSize: 12,
-    fontFamily: FONTS.regular,
+    fontFamily: FONTS.medium,
     color: '#666666',
     textAlign: 'center',
+    maxWidth: 70,
   },
   courseArrow: {
-    fontSize: 20,
-    color: '#CCCCCC',
-    marginHorizontal: 4,
+    fontSize: 14,
+    color: '#D0D0D0',
+    marginTop: 24,
+    marginHorizontal: 2,
   },
   courseCardFooter: {
     borderTopWidth: 1,
-    borderTopColor: '#F0F0F0',
-    paddingTop: 12,
+    borderTopColor: '#F5F5F5',
+    paddingTop: 14,
   },
   courseSavingsText: {
     fontSize: 14,
     fontFamily: FONTS.semiBold,
-    color: '#22B573',
+    color: '#4AA63C',
   },
   saveCourseButton: {
-    backgroundColor: '#22B573',
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    borderRadius: 12,
+    backgroundColor: '#212121',
+    paddingVertical: 18,
+    borderRadius: 14,
     alignItems: 'center',
-    marginVertical: 16,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-      },
-      android: {
-        elevation: 3,
-      },
-    }),
+    marginTop: 24,
+    marginBottom: 20,
+    marginHorizontal: 2,
   },
   saveCourseButtonDisabled: {
-    backgroundColor: '#B0B0B0',
-    opacity: 0.6,
+    backgroundColor: '#E0E0E0',
   },
   saveCourseButtonText: {
     fontSize: 16,
     fontFamily: FONTS.bold,
     color: '#FFFFFF',
-    letterSpacing: -0.3,
   },
   backFromCourseButton: {
     width: 40,

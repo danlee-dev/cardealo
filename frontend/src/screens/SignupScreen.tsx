@@ -115,6 +115,16 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onB
       return false;
     }
 
+    // 영문, 숫자, 특수문자 포함 검사
+    const hasLetter = /[a-zA-Z]/.test(password);
+    const hasNumber = /[0-9]/.test(password);
+    const hasSpecial = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password);
+
+    if (!hasLetter || !hasNumber || !hasSpecial) {
+      Alert.alert('오류', '비밀번호는 영문, 숫자, 특수문자를 모두 포함해야 합니다.');
+      return false;
+    }
+
     if (password !== confirmPassword) {
       Alert.alert('오류', '비밀번호가 일치하지 않습니다.');
       return false;

@@ -88,9 +88,11 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
       const data = await response.json();
       console.log('User cards data:', data);
       if (data.success && data.user.cards) {
-        console.log('Cards:', data.user.cards);
-        setUserCards(data.user.cards);
-        cardScaleAnims.current = data.user.cards.map(() => new Animated.Value(1));
+        // 최근 등록 순으로 정렬 (cid 내림차순)
+        const sortedCards = [...data.user.cards].sort((a, b) => b.cid - a.cid);
+        console.log('Cards (sorted by recent):', sortedCards);
+        setUserCards(sortedCards);
+        cardScaleAnims.current = sortedCards.map(() => new Animated.Value(1));
       }
     } catch (error) {
       console.error('Failed to fetch user cards:', error);

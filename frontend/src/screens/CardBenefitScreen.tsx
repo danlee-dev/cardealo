@@ -128,21 +128,29 @@ export const CardBenefitScreen: React.FC<CardBenefitScreenProps> = ({ onBack }) 
                 {cardBenefits.map((benefit, index) => (
                   <View key={index} style={styles.benefitItem}>
                     <View style={styles.benefitHeader}>
-                      <Text style={styles.benefitPlaces}>{benefit.places_display}</Text>
+                      <Text style={styles.benefitPlaces} numberOfLines={0}>
+                        {benefit.places_display}
+                      </Text>
                       <Text style={styles.benefitDiscount}>
                         {benefit.discount_display}
                       </Text>
                     </View>
                     <View style={styles.benefitDetails}>
                       {benefit.max_discount_display && (
-                        <Text style={styles.benefitDetailText}>
-                          {benefit.max_discount_display}
-                        </Text>
+                        <View style={styles.benefitDetailRow}>
+                          <Text style={styles.benefitBullet}>-</Text>
+                          <Text style={styles.benefitDetailText} numberOfLines={0}>
+                            {benefit.max_discount_display}
+                          </Text>
+                        </View>
                       )}
                       {benefit.limit_display && (
-                        <Text style={styles.benefitDetailText}>
-                          {benefit.limit_display}
-                        </Text>
+                        <View style={styles.benefitDetailRow}>
+                          <Text style={styles.benefitBullet}>-</Text>
+                          <Text style={styles.benefitDetailText} numberOfLines={0}>
+                            {benefit.limit_display}
+                          </Text>
+                        </View>
                       )}
                     </View>
                   </View>
@@ -231,11 +239,25 @@ const styles = StyleSheet.create({
     color: '#4AA63C',
   },
   benefitDetails: {
-    gap: 4,
+    gap: 8,
+    marginTop: 4,
+  },
+  benefitDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  benefitBullet: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+    marginRight: 8,
+    marginTop: 1,
   },
   benefitDetailText: {
     fontSize: 14,
     fontFamily: FONTS.regular,
     color: '#666666',
+    flex: 1,
+    lineHeight: 20,
   },
 });

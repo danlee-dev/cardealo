@@ -17,9 +17,11 @@ import { BackIcon, BellIcon, SettingsIcon, CardAddIcon } from '../components/svg
 import { FONTS } from '../constants/theme';
 import { CARD_IMAGES } from '../constants/userCards';
 import { CardRegistrationScreen } from './CardRegistrationScreen';
+import { ReceiptScanScreen } from './ReceiptScanScreen';
 import { AdminAuthScreen } from './AdminAuthScreen';
 import { AdminDashboardScreen } from './AdminDashboardScreen';
 import { AdminDepartmentScreen } from './AdminDepartmentScreen';
+import { AdminMembersScreen } from './AdminMembersScreen';
 import { CardBenefitScreen } from './CardBenefitScreen';
 import { AuthAPI, AuthStorage } from '../utils/auth';
 import { CardEditModal } from '../components/CardEditModal';
@@ -40,10 +42,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
   const insets = useSafeAreaInsets();
   const [hasNotification] = useState(true);
   const [showCardRegistration, setShowCardRegistration] = useState(false);
+  const [showReceiptScan, setShowReceiptScan] = useState(false);
   const [showCardBenefit, setShowCardBenefit] = useState(false);
   const [showAdminAuth, setShowAdminAuth] = useState(false);
   const [showAdminDashboard, setShowAdminDashboard] = useState(false);
   const [showAdminDepartment, setShowAdminDepartment] = useState(false);
+  const [showAdminMembers, setShowAdminMembers] = useState(false);
+  const [corporateCards, setCorporateCards] = useState<any[]>([]);
+  const [selectedCardId, setSelectedCardId] = useState<number | null>(null);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
 
   const [userData, setUserData] = useState<{
@@ -69,8 +75,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
   const [isLoading, setIsLoading] = useState(true);
   const [editingCard, setEditingCard] = useState<string | null>(null);
 
-  const handleAdminAuthenticated = () => {
+  const handleAdminAuthenticated = (cards: any[]) => {
     setShowAdminAuth(false);
+    setCorporateCards(cards);
+    if (cards.length > 0) {
+      setSelectedCardId(cards[0].id);
+    }
     setShowAdminDashboard(true);
   };
 
@@ -79,14 +89,21 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     setShowAdminDepartment(true);
   };
 
+  const handleViewMembers = () => {
+    setShowAdminDashboard(false);
+    setShowAdminMembers(true);
+  };
+
   const handleBackToDashboard = () => {
     setShowAdminDepartment(false);
+    setShowAdminMembers(false);
     setShowAdminDashboard(true);
   };
 
   const handleCloseAdmin = () => {
     setShowAdminDashboard(false);
     setShowAdminDepartment(false);
+    setShowAdminMembers(false);
   };
 
   const handleLogout = () => {
@@ -372,20 +389,32 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           </View>
         </View>
 
-        {/* Card Registration Section */}
-        <TouchableOpacity
-          style={styles.registrationSection}
-          activeOpacity={0.8}
-          onPress={() => setShowCardRegistration(true)}
-        >
-          <View style={styles.registrationHeader}>
-            <CardAddIcon width={24} height={24} />
-            <Text style={styles.registrationTitle}>카드 등록하기</Text>
-          </View>
-          <Text style={styles.registrationSubtitle}>
-            새로운 카드를 등록하고 더 많은 혜택을 받아보세요
-          </Text>
-        </TouchableOpacity>
+        {/* Quick Actions */}
+        <View style={styles.quickActionsContainer}>
+          <TouchableOpacity
+            style={styles.quickActionCard}
+            activeOpacity={0.8}
+            onPress={() => setShowCardRegistration(true)}
+          >
+            <View style={styles.quickActionIcon}>
+              <CardAddIcon width={22} height={22} />
+            </View>
+            <Text style={styles.quickActionTitle}>카드 등록</Text>
+            <Text style={styles.quickActionSubtitle}>새 카드 추가</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.quickActionCard}
+            activeOpacity={0.8}
+            onPress={() => setShowReceiptScan(true)}
+          >
+            <View style={styles.quickActionIcon}>
+              <Text style={styles.quickActionIconText}>R</Text>
+            </View>
+            <Text style={styles.quickActionTitle}>영수증 스캔</Text>
+            <Text style={styles.quickActionSubtitle}>소비 내역 기록</Text>
+          </TouchableOpacity>
+        </View>
 
         {/* Advertisement Section */}
         <View style={styles.adSection}>
@@ -440,7 +469,19 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
       </Animated.View>
       {showCardRegistration && (
         <View style={styles.overlay}>
-          <CardRegistrationScreen onBack={() => setShowCardRegistration(false)} />
+          <CardRegistrationScreen onBack={() => {
+            setShowCardRegistration(false);
+            // 카드 등록 후 데이터 새로고침
+            fetchUserData();
+          }} />
+        </View>
+      )}
+      {showReceiptScan && (
+        <View style={styles.overlay}>
+          <ReceiptScanScreen
+            onBack={() => setShowReceiptScan(false)}
+            onSaved={() => fetchUserData()}
+          />
         </View>
       )}
       {showAdminAuth && (
@@ -451,17 +492,29 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           />
         </View>
       )}
-      {showAdminDashboard && (
+      {showAdminDashboard && selectedCardId && (
         <View style={styles.overlay}>
           <AdminDashboardScreen
+            cardId={selectedCardId}
+            cards={corporateCards}
             onClose={handleCloseAdmin}
             onViewDepartments={handleViewDepartments}
+            onViewMembers={handleViewMembers}
           />
         </View>
       )}
-      {showAdminDepartment && (
+      {showAdminDepartment && selectedCardId && (
         <View style={styles.overlay}>
-          <AdminDepartmentScreen onBack={handleBackToDashboard} />
+          <AdminDepartmentScreen cardId={selectedCardId} onBack={handleBackToDashboard} />
+        </View>
+      )}
+      {showAdminMembers && selectedCardId && (
+        <View style={styles.overlay}>
+          <AdminMembersScreen
+            cardId={selectedCardId}
+            departments={corporateCards.find(c => c.id === selectedCardId)?.departments || []}
+            onBack={handleBackToDashboard}
+          />
         </View>
       )}
       {editingCard && (
@@ -699,6 +752,55 @@ const styles = StyleSheet.create({
   progressBar: {
     height: '100%',
     borderRadius: 4,
+  },
+  quickActionsContainer: {
+    flexDirection: 'row',
+    marginHorizontal: 20,
+    marginBottom: 20,
+    gap: 12,
+  },
+  quickActionCard: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 18,
+    alignItems: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 2,
+      },
+    }),
+  },
+  quickActionIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  quickActionIconText: {
+    fontSize: 20,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+  },
+  quickActionTitle: {
+    fontSize: 15,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginBottom: 4,
+  },
+  quickActionSubtitle: {
+    fontSize: 12,
+    fontFamily: FONTS.regular,
+    color: '#999999',
   },
   registrationSection: {
     marginHorizontal: 20,

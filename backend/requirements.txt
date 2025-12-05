@@ -15,15 +15,18 @@ requests==2.31.0
 # Database
 SQLAlchemy>=2.0.35
 SQLAlchemy-Utils==0.42.0
+Flask-Migrate==4.0.5
+psycopg2-binary==2.9.9
 
 # Authentication & Security
 passlib==1.7.4
 PyJWT==2.8.0
 cryptography>=41.0.0
 
-# QR Code
+# QR Code & Barcode
 qrcode[pil]==7.4.2
 Pillow>=10.0.0
+python-barcode==0.15.1
 
 # Web Scraping (for scripts only)
 beautifulsoup4==4.12.2

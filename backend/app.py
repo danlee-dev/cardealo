@@ -3,22 +3,28 @@ from flask import Flask, jsonify, request
 from functools import wraps
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
+from flask_migrate import Migrate
 from dotenv import load_dotenv
-from sqlalchemy import select
+from sqlalchemy import select, cast, String
 from services.geocoding_service import GeocodingService
 from services.benefit_lookup_service import BenefitLookupService
 from services.location_service import LocationService
 from services.directions_service import DirectionsService
+from services.tmap_service import tmap_service
 from services.ocr_service import NaverOCRService
-from services.database import init_db, get_db
-from services.database import User, Card, MyCard, CardBenefit, SavedCourse, SavedCourseUser, PaymentHistory, QRScanStatus, Friendship
+from services.database import init_db, get_db, Base, DATABASE_URL
+from services.database import User, Card, MyCard, CardBenefit, SavedCourse, SavedCourseUser, SharedCourse, PaymentHistory, QRScanStatus, Friendship, Notification
 from services.database import CorporateCard, Department, CorporateCardMember, CorporatePaymentHistory
+from services.database import Conversation, Message
+from sqlalchemy import or_, and_, func, desc
 import uuid
 from services.jwt_service import JwtService
 from utils.utils import parse_place_name
 from pprint import pprint
 import json
 import qrcode
+import barcode
+from barcode.writer import ImageWriter
 from io import BytesIO
 import base64
 import hmac
@@ -28,8 +34,13 @@ from datetime import datetime, date
 load_dotenv()
 
 app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# Flask-Migrate 설정
+migrate = Migrate(app, Base, render_as_batch=True)
 
 geocoding_service = GeocodingService()
 benefit_service = BenefitLookupService()
@@ -37,7 +48,7 @@ location_service = LocationService()
 directions_service = DirectionsService()
 ocr_service = NaverOCRService()
 jwt_service = JwtService()
-# 데이터베이스 초기화
+# 데이터베이스 초기화 (마이그레이션 후 초기 데이터 시딩)
 init_db()
 
 def login_required(f):
@@ -146,6 +157,36 @@ def login():
     finally:
         db.close()
 
+@app.route('/api/user/me', methods=['GET'])
+@login_required
+def get_current_user():
+    """Get current user info"""
+    token = request.headers['Authorization'].split(' ')[1]
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
+    user_id = user_info.get('user_id')
+    try:
+        db = get_db()
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+
+        return jsonify({
+            'success': True,
+            'user': {
+                'id': user.user_id,
+                'name': user.user_name,
+                'email': user.user_email,
+            }
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+
 @app.route('/api/mypage', methods=['GET'])
 @login_required
 def mypage():
@@ -183,6 +224,16 @@ def mypage():
                 'last_used_date': card.last_used_date.isoformat() if card.last_used_date else None,
                 'reset_date': card.reset_date.isoformat() if card.reset_date else None
             })
+
+        # 법인카드 멤버 여부 확인
+        corporate_memberships = db.scalars(
+            select(CorporateCardMember).where(
+                CorporateCardMember.user_id == user_id,
+                CorporateCardMember.status == 'active'
+            )
+        ).all()
+        user_data['is_corporate_user'] = len(corporate_memberships) > 0
+
         return jsonify({'success':True, 'msg': 'mypage', 'user':user_data}), 200
     except Exception as e:
         import traceback
@@ -713,6 +764,74 @@ def search_place():
         return jsonify({'error': 'Search failed'}), 500
 
 
+@app.route('/api/search-autocomplete', methods=['GET'])
+def search_autocomplete():
+    """
+    Search autocomplete using Google Places API
+    Returns multiple results for user selection
+    """
+    query = request.args.get('query')
+    latitude = request.args.get('latitude', type=float)
+    longitude = request.args.get('longitude', type=float)
+    limit = request.args.get('limit', 10, type=int)
+
+    if not query or len(query) < 2:
+        return jsonify({'results': []}), 200
+
+    try:
+        import requests as req
+
+        # Use Google Places Autocomplete API
+        params = {
+            'input': query,
+            'key': os.getenv('GOOGLE_MAPS_API_KEY'),
+            'language': 'ko',
+            'components': 'country:kr',
+        }
+
+        # Add location bias if available
+        if latitude is not None and longitude is not None:
+            params['location'] = f'{latitude},{longitude}'
+            params['radius'] = 50000  # 50km bias
+
+        response = req.get('https://maps.googleapis.com/maps/api/place/autocomplete/json', params=params)
+        response.raise_for_status()
+        data = response.json()
+        predictions = data.get('predictions', [])[:limit]
+
+        results = []
+        for pred in predictions:
+            # Get place details for coordinates
+            place_id = pred.get('place_id')
+            if place_id:
+                detail_params = {
+                    'place_id': place_id,
+                    'fields': 'geometry,name,formatted_address,types',
+                    'key': os.getenv('GOOGLE_MAPS_API_KEY'),
+                    'language': 'ko',
+                }
+                detail_response = req.get('https://maps.googleapis.com/maps/api/place/details/json', params=detail_params)
+                detail_data = detail_response.json()
+                place = detail_data.get('result', {})
+
+                if place.get('geometry'):
+                    location = place['geometry']['location']
+                    results.append({
+                        'place_id': place_id,
+                        'name': place.get('name', pred.get('structured_formatting', {}).get('main_text', '')),
+                        'address': place.get('formatted_address', pred.get('description', '')),
+                        'latitude': location['lat'],
+                        'longitude': location['lng'],
+                        'types': place.get('types', []),
+                    })
+
+        return jsonify({'results': results}), 200
+
+    except Exception as e:
+        print(f"Autocomplete error: {e}")
+        return jsonify({'error': 'Autocomplete failed', 'results': []}), 500
+
+
 @app.route('/api/stores', methods=['GET'])
 def get_stores():
     """
@@ -748,6 +867,45 @@ def get_stores():
             store['distance'] = 'N/A'  # Will be calculated based on user location
 
     return jsonify({'stores': stores}), 200
+
+
+@app.route('/api/place/details', methods=['GET'])
+def get_place_details():
+    """
+    Get detailed information about a place
+
+    Query params:
+        place_id: Google Place ID
+
+    Response:
+    {
+        'place_id': str,
+        'name': str,
+        'address': str,
+        'phone': str,
+        'website': str,
+        'rating': float,
+        'user_ratings_total': int,
+        'opening_hours': {
+            'open_now': bool,
+            'weekday_text': List[str]
+        },
+        'photos': List[str],
+        'price_level': int,
+        'types': List[str]
+    }
+    """
+    place_id = request.args.get('place_id')
+
+    if not place_id:
+        return jsonify({'error': 'place_id is required'}), 400
+
+    details = location_service.get_place_details(place_id)
+
+    if not details:
+        return jsonify({'error': 'Failed to get place details'}), 404
+
+    return jsonify(details), 200
 
 
 def format_benefit(benefit: dict) -> str:
@@ -946,6 +1104,96 @@ def save_course():
         db.close()
 
 
+@app.route('/api/course/<int:course_id>', methods=['GET'])
+@login_required
+def get_course_by_id(course_id):
+    """
+    단일 코스 조회 API
+
+    Path params:
+        - course_id: 코스 ID
+
+    Response:
+    {
+        "success": true,
+        "course": {
+            "id": 1,
+            "title": "...",
+            "description": "...",
+            "stops": [...],
+            ...
+        }
+    }
+    """
+    user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+
+    try:
+        db = get_db()
+
+        course = db.scalar(
+            select(SavedCourse)
+            .where(SavedCourse.id == course_id)
+        )
+
+        if not course:
+            return jsonify({
+                'success': False,
+                'error': '코스를 찾을 수 없습니다'
+            }), 404
+
+        # Check if user has access to this course (owner, saved, or shared)
+        is_owner = course.user_id == user_id
+        is_saved = db.scalar(
+            select(SavedCourseUser)
+            .where(SavedCourseUser.course_id == course_id)
+            .where(SavedCourseUser.user_id == user_id)
+        ) is not None
+        is_shared = db.scalar(
+            select(SharedCourse)
+            .where(SharedCourse.course_id == course_id)
+            .where(SharedCourse.shared_to == user_id)
+        ) is not None
+
+        if not (is_owner or is_saved or is_shared):
+            return jsonify({
+                'success': False,
+                'error': '이 코스에 접근할 권한이 없습니다'
+            }), 403
+
+        course_data = {
+            'id': str(course.id),
+            'title': course.title,
+            'description': course.description,
+            'stops': json.loads(course.stops) if course.stops else [],
+            'route_info': json.loads(course.route_info) if course.route_info else None,
+            'total_distance': course.total_distance,
+            'total_duration': course.total_duration,
+            'total_benefit_score': course.total_benefit_score,
+            'num_people': course.num_people,
+            'budget': course.budget,
+            'created_at': course.created_at.isoformat() if course.created_at else None,
+            'user_id': course.user_id,
+            'is_saved_by_user': is_saved or is_owner
+        }
+
+        return jsonify({
+            'success': True,
+            'course': course_data
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 코스 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': '코스 조회에 실패했습니다',
+            'message': str(e)
+        }), 500
+    finally:
+        db.close()
+
+
 @app.route('/api/course/saved', methods=['GET'])
 @login_required
 def get_saved_courses():
@@ -1114,6 +1362,180 @@ def get_popular_courses():
         }), 500
     finally:
         db.close()
+
+
+@app.route('/api/course/share', methods=['POST'])
+@login_required
+def share_course():
+    """
+    코스 공유 API
+
+    Request:
+    {
+        "course_id": "1",
+        "friend_ids": ["friend1", "friend2"]
+    }
+
+    Response:
+    {
+        "success": true,
+        "message": "코스를 공유했습니다"
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+
+        course_id = data.get('course_id')
+        friend_ids = data.get('friend_ids', [])
+
+        if not course_id:
+            return jsonify({'success': False, 'error': 'course_id is required'}), 400
+
+        if not friend_ids:
+            return jsonify({'success': False, 'error': 'friend_ids is required'}), 400
+
+        db = get_db()
+
+        # 코스 존재 확인
+        course = db.scalars(select(SavedCourse).where(SavedCourse.id == course_id)).first()
+        if not course:
+            db.close()
+            return jsonify({'success': False, 'error': '코스를 찾을 수 없습니다'}), 404
+
+        # 본인 코스인지 확인
+        if course.user_id != user_id:
+            db.close()
+            return jsonify({'success': False, 'error': '본인의 코스만 공유할 수 있습니다'}), 403
+
+        shared_count = 0
+        for friend_id in friend_ids:
+            # 친구 관계 확인
+            friendship = db.scalars(
+                select(Friendship).where(
+                    ((Friendship.user_id == user_id) & (Friendship.friend_id == friend_id)) |
+                    ((Friendship.user_id == friend_id) & (Friendship.friend_id == user_id)),
+                    Friendship.status == 'accepted'
+                )
+            ).first()
+
+            if not friendship:
+                continue  # 친구가 아니면 건너뛰기
+
+            # 이미 공유했는지 확인
+            existing = db.scalars(
+                select(SharedCourse).where(
+                    SharedCourse.course_id == course_id,
+                    SharedCourse.shared_by == user_id,
+                    SharedCourse.shared_to == friend_id
+                )
+            ).first()
+
+            if existing:
+                continue  # 이미 공유했으면 건너뛰기
+
+            # 공유 생성
+            shared = SharedCourse(
+                course_id=course_id,
+                shared_by=user_id,
+                shared_to=friend_id
+            )
+            db.add(shared)
+            shared_count += 1
+
+        db.commit()
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'{shared_count}명에게 코스를 공유했습니다'
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 코스 공유 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/course/shared', methods=['GET'])
+@login_required
+def get_shared_courses():
+    """
+    공유받은 코스 조회 API
+
+    Query params:
+        - limit: 최대 결과 개수 (기본: 10)
+
+    Response:
+    {
+        "success": true,
+        "courses": [
+            {
+                "id": 1,
+                "title": "코스 제목",
+                "description": "코스 설명",
+                "stops": [...],
+                "shared_by": {
+                    "user_id": "friend1",
+                    "user_name": "친구이름"
+                },
+                "shared_at": "2024-01-01T12:00:00"
+            }
+        ]
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        limit = request.args.get('limit', 10, type=int)
+
+        db = get_db()
+
+        # 공유받은 코스 가져오기
+        shared_courses = db.scalars(
+            select(SharedCourse)
+            .where(SharedCourse.shared_to == user_id)
+            .order_by(SharedCourse.shared_at.desc())
+            .limit(limit)
+        ).all()
+
+        courses_data = []
+        for shared in shared_courses:
+            course = shared.course
+            sender = shared.sender
+
+            if course:
+                courses_data.append({
+                    'id': course.id,
+                    'title': course.title,
+                    'description': course.description,
+                    'stops': json.loads(course.stops) if course.stops else [],
+                    'route_info': json.loads(course.route_info) if course.route_info else None,
+                    'total_distance': course.total_distance,
+                    'total_duration': course.total_duration,
+                    'total_benefit_score': course.total_benefit_score,
+                    'num_people': course.num_people,
+                    'budget': course.budget,
+                    'created_at': course.created_at.isoformat() if course.created_at else None,
+                    'shared_by': {
+                        'user_id': sender.user_id if sender else None,
+                        'user_name': sender.user_name if sender else None
+                    },
+                    'shared_at': shared.shared_at.isoformat() if shared.shared_at else None
+                })
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'courses': courses_data
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 공유받은 코스 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/directions', methods=['POST'])
@@ -1338,6 +1760,73 @@ def get_course_directions_mixed():
         }), 500
 
 
+@app.route('/api/route/detail', methods=['POST'])
+def get_route_detail():
+    """
+    Get detailed route with turn-by-turn navigation and transit info
+
+    Request:
+    {
+        "start": {"latitude": 37.xxx, "longitude": 127.xxx},
+        "end": {"latitude": 37.xxx, "longitude": 127.xxx},
+        "mode": "driving" | "walking" | "transit"
+    }
+
+    Response:
+    {
+        "success": true,
+        "route": {
+            "summary": {...},
+            "steps": [...],
+            "polyline": str,
+            "itineraries": [...]  // for transit
+        }
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'error': 'Request body required'}), 400
+
+        start = data.get('start')
+        end = data.get('end')
+        mode = data.get('mode', 'driving')
+
+        if not start or not end:
+            return jsonify({'success': False, 'error': 'start and end required'}), 400
+
+        print(f"[Route Detail] Mode: {mode}")
+
+        if mode == 'driving':
+            result = tmap_service.get_driving_route(start, end)
+        elif mode == 'walking':
+            result = tmap_service.get_pedestrian_route(start, end)
+        elif mode == 'transit':
+            result = tmap_service.get_transit_route(start, end)
+        else:
+            return jsonify({'success': False, 'error': f'Invalid mode: {mode}'}), 400
+
+        if not result:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to get route'
+            }), 500
+
+        return jsonify({
+            'success': True,
+            'route': result
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] Route Detail API: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/qr/generate', methods=['POST'])
 @login_required
 def generate_qr():
@@ -1423,12 +1912,29 @@ def generate_qr():
         img_str = base64.b64encode(buffered.getvalue()).decode()
         qr_image = f"data:image/png;base64,{img_str}"
 
+        # 바코드 이미지 생성 (Code128 포맷)
+        # 바코드 데이터: 짧은 숫자 기반 코드 (12자리) - 스캔 용이성을 위해
+        # timestamp 마지막 8자리 + card_id 4자리 (0패딩)
+        barcode_data = f"{str(timestamp)[-8:]}{str(card_id).zfill(4)}"
+        code128 = barcode.get('code128', barcode_data, writer=ImageWriter())
+        barcode_buffered = BytesIO()
+        code128.write(barcode_buffered, options={
+            'module_width': 0.4,
+            'module_height': 15,
+            'font_size': 10,
+            'text_distance': 5,
+            'quiet_zone': 6.5
+        })
+        barcode_buffered.seek(0)
+        barcode_str = base64.b64encode(barcode_buffered.getvalue()).decode()
+        barcode_image = f"data:image/png;base64,{barcode_str}"
+
         db.close()
 
         return jsonify({
             'success': True,
             'qr_image': qr_image,
-            'barcode_image': qr_image,  # 동일하게 사용
+            'barcode_image': barcode_image,
             'expires_in': 300,
             'timestamp': timestamp  # QR 스캔 상태 확인용
         }), 200
@@ -1529,6 +2035,89 @@ def require_admin_auth(f):
 
         return f(*args, **kwargs)
     return decorated_function
+
+
+@app.route('/api/barcode/lookup', methods=['POST'])
+@require_admin_auth
+def lookup_barcode():
+    """
+    바코드로 결제 정보 조회 API (관리자 백엔드가 호출)
+
+    Request:
+    {
+        "barcode_data": "649477060002"  // 12자리 숫자
+    }
+
+    Response:
+    {
+        "success": true,
+        "qr_data": "{...}"  // QR과 동일한 JSON 문자열
+    }
+    """
+    try:
+        data = request.get_json()
+        barcode_data = data.get('barcode_data', '')
+
+        # 바코드 파싱 (12자리: timestamp 마지막 8자리 + card_id 4자리)
+        if len(barcode_data) != 12 or not barcode_data.isdigit():
+            return jsonify({'success': False, 'error': 'Invalid barcode format'}), 400
+
+        timestamp_suffix = barcode_data[:8]  # 처음 8자리 = timestamp 마지막 8자리
+        card_id = int(barcode_data[8:])  # 마지막 4자리 = card_id
+
+        db = get_db()
+
+        # QRScanStatus에서 매칭되는 레코드 찾기
+        qr_status = db.scalars(
+            select(QRScanStatus).where(
+                cast(QRScanStatus.timestamp, String).like(f'%{timestamp_suffix}'),
+                QRScanStatus.card_id == card_id,
+                QRScanStatus.status == 'waiting'  # 대기 중인 QR만
+            ).order_by(QRScanStatus.created_at.desc())
+        ).first()
+
+        if not qr_status:
+            db.close()
+            return jsonify({'success': False, 'error': 'Barcode not found or expired'}), 404
+
+        # 사용자 및 카드 정보 조회
+        user = db.scalars(select(User).where(User.user_id == qr_status.user_id)).first()
+        card = db.scalars(select(MyCard).where(MyCard.cid == qr_status.card_id)).first()
+
+        if not user or not card:
+            db.close()
+            return jsonify({'success': False, 'error': 'User or card not found'}), 404
+
+        # QR 데이터 재생성 (QR과 동일한 형식)
+        qr_data = {
+            "user_id": qr_status.user_id,
+            "user_name": user.user_name,
+            "card_id": qr_status.card_id,
+            "card_name": card.mycard_name,
+            "timestamp": qr_status.timestamp
+        }
+
+        # 서명 생성
+        jwt_secret = os.getenv('JWT_SECRET', 'default-secret')
+        signature = hmac.new(
+            jwt_secret.encode(),
+            json.dumps(qr_data, sort_keys=True).encode(),
+            hashlib.sha256
+        ).hexdigest()
+        qr_data["signature"] = signature
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'qr_data': json.dumps(qr_data)
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 바코드 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/api/qr/update-status', methods=['POST'])
@@ -1682,6 +2271,40 @@ def payment_webhook():
         )
         db.add(payment)
         db.commit()
+
+        # 결제 알림 생성
+        card_name = card.mycard_name if card else '카드'
+        notification = Notification(
+            user_id=user_id,
+            type='payment',
+            title='결제 완료',
+            message=f'{merchant_name}에서 {final_amount:,}원 결제 완료' + (f' ({discount_amount:,}원 할인)' if discount_amount > 0 else ''),
+            data=json.dumps({
+                'transaction_id': transaction_id,
+                'merchant_name': merchant_name,
+                'payment_amount': payment_amount,
+                'discount_amount': discount_amount,
+                'final_amount': final_amount,
+                'card_name': card_name,
+                'benefit_text': benefit_text
+            }, ensure_ascii=False)
+        )
+        db.add(notification)
+        db.commit()
+        db.refresh(notification)
+
+        # 실시간 알림 전송
+        notification_data = {
+            'id': notification.id,
+            'type': notification.type,
+            'title': notification.title,
+            'message': notification.message,
+            'data': json.loads(notification.data),
+            'is_read': notification.is_read,
+            'created_at': notification.created_at.isoformat()
+        }
+        broadcast_notification(user_id, notification_data)
+
         db.close()
 
         return jsonify({'status': 'success'}), 200
@@ -1977,13 +2600,49 @@ def send_friend_request():
         )
         db.add(friendship)
         db.commit()
+        db.refresh(friendship)
+
+        # 요청 보낸 사람 정보
+        sender = db.scalars(select(User).where(User.user_id == user_id)).first()
+        sender_name = sender.user_name if sender else user_id
+
+        # 친구 요청 알림 생성
+        notification = Notification(
+            user_id=friend_id,
+            type='friend_request',
+            title='친구 요청',
+            message=f'{sender_name}님이 친구 요청을 보냈습니다',
+            data=json.dumps({
+                'request_id': friendship.id,
+                'sender_id': user_id,
+                'sender_name': sender_name,
+                'action_type': 'friend_request',
+                'action_target': friendship.id
+            }, ensure_ascii=False)
+        )
+        db.add(notification)
+        db.commit()
+        db.refresh(notification)
+
+        # 실시간 알림 전송
+        notification_data = {
+            'id': notification.id,
+            'type': notification.type,
+            'title': notification.title,
+            'message': notification.message,
+            'data': json.loads(notification.data),
+            'is_read': notification.is_read,
+            'created_at': notification.created_at.isoformat()
+        }
+        broadcast_notification(friend_id, notification_data)
+
         db.close()
-        
+
         return jsonify({
             'success': True,
             'message': '친구 요청을 보냈습니다'
         }), 200
-        
+
     except Exception as e:
         print(f"[Error] 친구 요청 실패: {e}")
         import traceback
@@ -2094,13 +2753,45 @@ def accept_friend_request():
         friendship.status = 'accepted'
         friendship.updated_at = datetime.utcnow()
         db.commit()
+
+        # 수락한 사람 정보 (알림 보낼 때 필요)
+        accepter = db.scalars(select(User).where(User.user_id == user_id)).first()
+        accepter_name = accepter.user_name if accepter else user_id
+
+        # 친구 요청 수락 알림 생성 (원래 요청 보낸 사람에게)
+        notification = Notification(
+            user_id=friendship.user_id,  # 원래 요청 보낸 사람
+            type='friend_accepted',
+            title='친구 요청 수락',
+            message=f'{accepter_name}님이 친구 요청을 수락했습니다',
+            data=json.dumps({
+                'friend_id': user_id,
+                'friend_name': accepter_name
+            }, ensure_ascii=False)
+        )
+        db.add(notification)
+        db.commit()
+        db.refresh(notification)
+
+        # 실시간 알림 전송
+        notification_data = {
+            'id': notification.id,
+            'type': notification.type,
+            'title': notification.title,
+            'message': notification.message,
+            'data': json.loads(notification.data),
+            'is_read': notification.is_read,
+            'created_at': notification.created_at.isoformat()
+        }
+        broadcast_notification(friendship.user_id, notification_data)
+
         db.close()
-        
+
         return jsonify({
             'success': True,
             'message': '친구 요청을 수락했습니다'
         }), 200
-        
+
     except Exception as e:
         print(f"[Error] 친구 요청 수락 실패: {e}")
         import traceback
@@ -2833,7 +3524,228 @@ def check_is_corporate_admin():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/corporate/is-employee', methods=['GET'])
+@login_required
+def check_is_corporate_employee():
+    """
+    현재 사용자가 법인카드 직원인지 확인 (직원 대시보드 접근 권한)
+    관리자가 아닌 활성 직원만 해당
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        # 먼저 관리자인지 확인 (관리자는 직원 대시보드 대신 관리자 대시보드 사용)
+        owned_card = db.scalars(
+            select(CorporateCard).where(CorporateCard.owner_user_id == user_id)
+        ).first()
+
+        if owned_card:
+            db.close()
+            return jsonify({
+                'success': True,
+                'is_employee': False,
+                'is_admin': True
+            }), 200
+
+        # 활성 직원 멤버십 확인
+        member = db.scalars(
+            select(CorporateCardMember).where(
+                CorporateCardMember.user_id == user_id,
+                CorporateCardMember.status == 'active'
+            )
+        ).first()
+
+        if not member:
+            db.close()
+            return jsonify({
+                'success': True,
+                'is_employee': False,
+                'is_admin': False
+            }), 200
+
+        # 직원 정보와 함께 반환
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == member.corporate_card_id)
+        ).first()
+
+        department = None
+        if member.department_id:
+            dept = db.scalars(
+                select(Department).where(Department.id == member.department_id)
+            ).first()
+            if dept:
+                department = {
+                    'id': dept.id,
+                    'name': dept.name,
+                    'monthly_limit': dept.monthly_limit,
+                    'used_amount': dept.used_amount,
+                    'color': dept.color
+                }
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'is_employee': True,
+            'is_admin': False,
+            'membership': {
+                'id': member.id,
+                'card_id': member.corporate_card_id,
+                'card_name': card.card_name if card else None,
+                'card_company': card.card_company if card else None,
+                'role': member.role,
+                'monthly_limit': member.monthly_limit,
+                'used_amount': member.used_amount,
+                'department': department
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 직원 확인 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/corporate/employee/dashboard', methods=['GET'])
+@login_required
+def get_employee_dashboard():
+    """
+    직원용 대시보드 데이터 반환
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        # 활성 직원 멤버십 확인
+        member = db.scalars(
+            select(CorporateCardMember).where(
+                CorporateCardMember.user_id == user_id,
+                CorporateCardMember.status == 'active'
+            )
+        ).first()
+
+        if not member:
+            db.close()
+            return jsonify({'success': False, 'error': '직원 권한이 없습니다'}), 403
+
+        # 법인카드 정보
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == member.corporate_card_id)
+        ).first()
+
+        if not card:
+            db.close()
+            return jsonify({'success': False, 'error': '법인카드를 찾을 수 없습니다'}), 404
+
+        # 부서 정보
+        my_department = None
+        if member.department_id:
+            dept = db.scalars(
+                select(Department).where(Department.id == member.department_id)
+            ).first()
+            if dept:
+                my_department = {
+                    'id': dept.id,
+                    'name': dept.name,
+                    'monthly_limit': dept.monthly_limit,
+                    'used_amount': dept.used_amount,
+                    'color': dept.color,
+                    'usage_percent': round((dept.used_amount / dept.monthly_limit) * 100) if dept.monthly_limit > 0 else 0
+                }
+
+        # 전체 부서 사용량 (간략 정보만)
+        all_departments = db.scalars(
+            select(Department).where(Department.corporate_card_id == card.id)
+        ).all()
+
+        departments_overview = []
+        for dept in all_departments:
+            departments_overview.append({
+                'id': dept.id,
+                'name': dept.name,
+                'used_amount': dept.used_amount,
+                'monthly_limit': dept.monthly_limit,
+                'usage_percent': round((dept.used_amount / dept.monthly_limit) * 100) if dept.monthly_limit > 0 else 0,
+                'color': dept.color,
+                'is_my_department': dept.id == member.department_id
+            })
+
+        # 개인 사용률 계산
+        my_usage_percent = round((member.used_amount / member.monthly_limit) * 100) if member.monthly_limit > 0 else 0
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'card': {
+                'id': card.id,
+                'name': card.card_name,
+                'company': card.card_company,
+                'total_limit': card.monthly_limit,
+                'total_used': card.used_amount
+            },
+            'my_info': {
+                'role': member.role,
+                'monthly_limit': member.monthly_limit,
+                'used_amount': member.used_amount,
+                'remaining': member.monthly_limit - member.used_amount,
+                'usage_percent': my_usage_percent,
+                'department': my_department
+            },
+            'departments_overview': departments_overview
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 직원 대시보드 조회 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 # ============ 직원 초대 시스템 ============
+
+@app.route('/api/corporate/users/search', methods=['GET'])
+@login_required
+def search_users_for_invite():
+    """
+    직원 초대용 사용자 검색 (이메일로 검색)
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        query = request.args.get('q', '').strip()
+
+        if not query or len(query) < 2:
+            return jsonify({'success': True, 'users': []}), 200
+
+        db = get_db()
+
+        # 이메일에 검색어가 포함된 사용자 검색 (최대 10명)
+        users = db.scalars(
+            select(User).where(
+                User.user_email.ilike(f'%{query}%')
+            ).limit(10)
+        ).all()
+
+        users_data = []
+        for user in users:
+            # 본인은 제외
+            if user.user_id == user_id:
+                continue
+            users_data.append({
+                'user_id': user.user_id,
+                'user_name': user.user_name,
+                'user_email': user.user_email
+            })
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'users': users_data
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 사용자 검색 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/corporate/cards/<int:card_id>/members', methods=['GET'])
 @login_required
@@ -3015,6 +3927,73 @@ def remove_corporate_member(card_id, member_id):
 
     except Exception as e:
         print(f"[Error] 팀원 제거 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/corporate/cards/<int:card_id>/members/<int:member_id>', methods=['PATCH'])
+@login_required
+def update_corporate_member(card_id, member_id):
+    """
+    팀원 월 한도 수정
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+
+        # 권한 확인
+        card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not card or card.owner_user_id != user_id:
+            db.close()
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 403
+
+        # 팀원 조회
+        member = db.scalars(
+            select(CorporateCardMember).where(
+                CorporateCardMember.id == member_id,
+                CorporateCardMember.corporate_card_id == card_id
+            )
+        ).first()
+
+        if not member:
+            db.close()
+            return jsonify({'success': False, 'error': 'Member not found'}), 404
+
+        data = request.get_json()
+        new_limit = data.get('monthly_limit')
+
+        if new_limit is None:
+            db.close()
+            return jsonify({'success': False, 'error': 'monthly_limit is required'}), 400
+
+        # 현재 사용량 이상이어야 함
+        if new_limit < member.used_amount:
+            db.close()
+            return jsonify({
+                'success': False,
+                'error': f'한도는 현재 사용량({member.used_amount:,}원) 이상이어야 합니다.'
+            }), 400
+
+        member.monthly_limit = new_limit
+        db.commit()
+
+        # 세션 닫기 전에 데이터 복사
+        result_data = {
+            'id': member.id,
+            'monthly_limit': member.monthly_limit,
+            'used_amount': member.used_amount
+        }
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'member': result_data
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 팀원 한도 수정 실패: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -3457,6 +4436,350 @@ def ocr_receipt():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/corporate/receipt/save', methods=['POST'])
+@login_required
+def save_corporate_receipt():
+    """
+    영수증 스캔 결과를 법인카드 결제 내역에 저장하고 사용액 업데이트
+
+    Request:
+    {
+        "merchant_name": "스타벅스",
+        "merchant_category": "카페",
+        "total_amount": 5500,
+        "payment_date": "2024-03-15",
+        "payment_time": "14:30",
+        "card_number": "1234-****-****-5678",
+        "approval_number": "12345678",
+        "receipt_image": "base64...",  // optional
+        "raw_text": "영수증 원본 텍스트"  // optional
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+
+        db = get_db()
+
+        # 사용자가 법인카드 멤버인지 확인
+        member = db.query(CorporateCardMember).filter(
+            CorporateCardMember.user_id == user_id,
+            CorporateCardMember.status == 'active'
+        ).first()
+
+        if not member:
+            db.close()
+            return jsonify({
+                'success': False,
+                'error': '법인카드 멤버가 아닙니다'
+            }), 400
+
+        # 결제 금액
+        payment_amount = data.get('total_amount', 0)
+        if not payment_amount or payment_amount <= 0:
+            db.close()
+            return jsonify({
+                'success': False,
+                'error': '유효한 결제 금액이 필요합니다'
+            }), 400
+
+        # 한도 체크
+        if member.used_amount + payment_amount > member.monthly_limit:
+            remaining = member.monthly_limit - member.used_amount
+            db.close()
+            return jsonify({
+                'success': False,
+                'error': f'개인 월 한도를 초과합니다 (잔여: {remaining:,}원)'
+            }), 400
+
+        # 부서 한도 체크
+        if member.department:
+            if member.department.used_amount + payment_amount > member.department.monthly_limit:
+                remaining = member.department.monthly_limit - member.department.used_amount
+                db.close()
+                return jsonify({
+                    'success': False,
+                    'error': f'부서 월 한도를 초과합니다 (잔여: {remaining:,}원)'
+                }), 400
+
+        # 결제일시 파싱
+        payment_datetime = datetime.utcnow()
+        if data.get('payment_date'):
+            try:
+                date_str = data['payment_date']
+                time_str = data.get('payment_time', '00:00')
+                payment_datetime = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+            except:
+                pass
+
+        # 결제 내역 저장
+        import uuid
+        payment = CorporatePaymentHistory(
+            transaction_id=str(uuid.uuid4()),
+            corporate_card_id=member.corporate_card_id,
+            member_id=member.id,
+            user_id=user_id,
+            merchant_name=data.get('merchant_name'),
+            merchant_category=data.get('merchant_category'),
+            payment_amount=payment_amount,
+            discount_amount=0,
+            final_amount=payment_amount,
+            benefit_text=None,
+            receipt_image=data.get('receipt_image'),
+            receipt_ocr_data=json.dumps(data, ensure_ascii=False) if data else None,
+            payment_date=payment_datetime,
+            synced_at=datetime.utcnow()
+        )
+        db.add(payment)
+
+        # 멤버 사용액 업데이트
+        member.used_amount += payment_amount
+
+        # 부서 사용액 업데이트
+        if member.department:
+            member.department.used_amount += payment_amount
+
+        # 카드 전체 사용액 업데이트
+        card = db.query(CorporateCard).filter(CorporateCard.id == member.corporate_card_id).first()
+        if card:
+            card.used_amount += payment_amount
+
+        db.commit()
+
+        # 응답 데이터
+        result = {
+            'success': True,
+            'payment_id': payment.id,
+            'updated_usage': {
+                'personal': {
+                    'used': member.used_amount,
+                    'limit': member.monthly_limit,
+                    'remaining': member.monthly_limit - member.used_amount
+                }
+            }
+        }
+
+        if member.department:
+            result['updated_usage']['department'] = {
+                'name': member.department.name,
+                'used': member.department.used_amount,
+                'limit': member.department.monthly_limit,
+                'remaining': member.department.monthly_limit - member.department.used_amount
+            }
+
+        db.close()
+        return jsonify(result), 200
+
+    except Exception as e:
+        print(f"[Error] 영수증 저장 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============ 알림 시스템 ============
+
+# 사용자별 WebSocket 연결 관리
+user_sockets = {}  # user_id -> [socket_ids]
+
+
+@app.route('/api/notifications', methods=['GET'])
+@login_required
+def get_notifications():
+    """
+    알림 목록 조회
+
+    Query params:
+        - limit: 최대 결과 개수 (기본: 20)
+        - offset: 오프셋 (기본: 0)
+        - unread_only: 읽지 않은 알림만 (기본: false)
+
+    Response:
+    {
+        "success": true,
+        "notifications": [...],
+        "unread_count": 5
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        limit = request.args.get('limit', 20, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        unread_only = request.args.get('unread_only', 'false').lower() == 'true'
+
+        db = get_db()
+
+        # 읽지 않은 알림 개수
+        unread_count = db.query(Notification).filter(
+            Notification.user_id == user_id,
+            Notification.is_read == False
+        ).count()
+
+        # 알림 목록 조회
+        query = db.query(Notification).filter(Notification.user_id == user_id)
+
+        if unread_only:
+            query = query.filter(Notification.is_read == False)
+
+        notifications = query.order_by(Notification.created_at.desc()).limit(limit).offset(offset).all()
+
+        notifications_data = []
+        for notif in notifications:
+            notifications_data.append({
+                'id': notif.id,
+                'type': notif.type,
+                'title': notif.title,
+                'message': notif.message,
+                'data': json.loads(notif.data) if notif.data else None,
+                'is_read': notif.is_read,
+                'created_at': notif.created_at.isoformat() if notif.created_at else None
+            })
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'notifications': notifications_data,
+            'unread_count': unread_count
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 알림 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/notifications/read', methods=['POST'])
+@login_required
+def mark_notifications_read():
+    """
+    알림 읽음 처리
+
+    Request:
+    {
+        "notification_ids": [1, 2, 3]  // 비어있으면 전체 읽음 처리
+    }
+
+    Response:
+    {
+        "success": true,
+        "updated_count": 3
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json() or {}
+        notification_ids = data.get('notification_ids', [])
+
+        db = get_db()
+
+        if notification_ids:
+            # 특정 알림만 읽음 처리
+            updated = db.query(Notification).filter(
+                Notification.user_id == user_id,
+                Notification.id.in_(notification_ids),
+                Notification.is_read == False
+            ).update({Notification.is_read: True}, synchronize_session=False)
+        else:
+            # 전체 읽음 처리
+            updated = db.query(Notification).filter(
+                Notification.user_id == user_id,
+                Notification.is_read == False
+            ).update({Notification.is_read: True}, synchronize_session=False)
+
+        db.commit()
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'updated_count': updated
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 알림 읽음 처리 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/notifications/unread-count', methods=['GET'])
+@login_required
+def get_unread_count():
+    """
+    읽지 않은 알림 개수 조회
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+
+        db = get_db()
+
+        unread_count = db.query(Notification).filter(
+            Notification.user_id == user_id,
+            Notification.is_read == False
+        ).count()
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'unread_count': unread_count
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 읽지 않은 알림 개수 조회 실패: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def create_notification(user_id: str, notification_type: str, title: str, message: str, data: dict = None):
+    """
+    알림 생성 및 실시간 전송 헬퍼 함수
+    """
+    try:
+        db = get_db()
+
+        notification = Notification(
+            user_id=user_id,
+            type=notification_type,
+            title=title,
+            message=message,
+            data=json.dumps(data, ensure_ascii=False) if data else None
+        )
+        db.add(notification)
+        db.commit()
+        db.refresh(notification)
+
+        notification_data = {
+            'id': notification.id,
+            'type': notification.type,
+            'title': notification.title,
+            'message': notification.message,
+            'data': data,
+            'is_read': notification.is_read,
+            'created_at': notification.created_at.isoformat() if notification.created_at else None
+        }
+
+        db.close()
+
+        # 실시간 알림 전송
+        broadcast_notification(user_id, notification_data)
+
+        return notification_data
+
+    except Exception as e:
+        print(f"[Error] 알림 생성 실패: {e}")
+        return None
+
+
+def broadcast_notification(user_id: str, notification_data: dict):
+    """
+    특정 사용자에게 실시간 알림 전송
+    """
+    room = f'user_{user_id}'
+    socketio.emit('new_notification', notification_data, room=room)
+    print(f"[WebSocket] Notification sent to user {user_id}")
+
+
 # ============ WebSocket 이벤트 핸들러 ============
 
 # 연결된 사용자들을 법인카드별로 관리
@@ -3481,6 +4804,69 @@ def handle_disconnect():
         if request.sid in connected_users.get(card_id, []):
             connected_users[card_id].remove(request.sid)
             leave_room(f'corporate_card_{card_id}')
+    # 사용자 알림 룸에서 제거
+    for user_id in list(user_sockets.keys()):
+        if request.sid in user_sockets.get(user_id, []):
+            user_sockets[user_id].remove(request.sid)
+            leave_room(f'user_{user_id}')
+
+
+@socketio.on('join_notifications')
+def handle_join_notifications(data):
+    """
+    사용자 알림 룸 참가
+    """
+    token = data.get('token')
+
+    if not token:
+        emit('error', {'message': 'token is required'})
+        return
+
+    try:
+        # 토큰 검증
+        user_data = jwt_service.verify_token(token)
+        user_id = user_data.get('user_id')
+
+        if not user_id:
+            emit('error', {'message': 'Invalid token'})
+            return
+
+        # 룸 참가
+        room = f'user_{user_id}'
+        join_room(room)
+
+        if user_id not in user_sockets:
+            user_sockets[user_id] = []
+        user_sockets[user_id].append(request.sid)
+
+        emit('notifications_joined', {'user_id': user_id, 'message': 'Successfully joined notifications'})
+        print(f"[WebSocket] User {user_id} joined notification room {room}")
+
+    except Exception as e:
+        print(f"[WebSocket] Join notifications error: {e}")
+        emit('error', {'message': str(e)})
+
+
+@socketio.on('leave_notifications')
+def handle_leave_notifications(data):
+    """
+    사용자 알림 룸 떠나기
+    """
+    token = data.get('token')
+
+    if token:
+        try:
+            user_data = jwt_service.verify_token(token)
+            user_id = user_data.get('user_id')
+
+            if user_id:
+                room = f'user_{user_id}'
+                leave_room(room)
+                if user_id in user_sockets and request.sid in user_sockets[user_id]:
+                    user_sockets[user_id].remove(request.sid)
+                emit('notifications_left', {'user_id': user_id})
+        except Exception as e:
+            print(f"[WebSocket] Leave notifications error: {e}")
 
 
 @socketio.on('join_dashboard')
@@ -3581,9 +4967,491 @@ def broadcast_dashboard_refresh(card_id: int):
     }, room=room)
 
 
+# ============================================================
+# Chat API Endpoints
+# ============================================================
+
+@app.route('/api/chat/conversations', methods=['GET'])
+@login_required
+def get_conversations():
+    """Get all conversations for the current user, including friends without conversations"""
+    token = request.headers['Authorization'].split(' ')[1]
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
+    user_id = user_info['user_id']
+    db = get_db()
+
+    try:
+        # Get all accepted friends
+        friendships = db.query(Friendship).filter(
+            or_(
+                and_(Friendship.user_id == user_id, Friendship.status == 'accepted'),
+                and_(Friendship.friend_id == user_id, Friendship.status == 'accepted')
+            )
+        ).all()
+
+        # Build a dict of friend_id -> friend info
+        friends_dict = {}
+        for friendship in friendships:
+            friend_id = friendship.friend_id if friendship.user_id == user_id else friendship.user_id
+            friend = db.query(User).filter(User.user_id == friend_id).first()
+            if friend:
+                friends_dict[friend_id] = {
+                    'friend_id': friend_id,
+                    'friend_name': friend.user_name,
+                    'friend_email': friend.user_email,
+                }
+
+        # Get all conversations where user is either user1 or user2
+        conversations = db.query(Conversation).filter(
+            or_(
+                Conversation.user1_id == user_id,
+                Conversation.user2_id == user_id
+            )
+        ).order_by(desc(Conversation.updated_at)).all()
+
+        result = []
+        total_unread = 0
+        friends_with_conv = set()
+
+        # First add conversations with messages
+        for conv in conversations:
+            # Determine the friend (the other user)
+            friend_id = conv.user2_id if conv.user1_id == user_id else conv.user1_id
+            friends_with_conv.add(friend_id)
+
+            friend = db.query(User).filter(User.user_id == friend_id).first()
+            if not friend:
+                continue
+
+            # Get unread count for this conversation
+            unread_count = db.query(func.count(Message.id)).filter(
+                Message.conversation_id == conv.id,
+                Message.sender_id != user_id,
+                Message.is_read == False
+            ).scalar()
+
+            total_unread += unread_count
+
+            # Get last message
+            last_message = db.query(Message).filter(
+                Message.conversation_id == conv.id
+            ).order_by(desc(Message.created_at)).first()
+
+            result.append({
+                'id': conv.id,
+                'friend_id': friend_id,
+                'friend_name': friend.user_name,
+                'friend_email': friend.user_email,
+                'last_message': last_message.content if last_message else None,
+                'last_message_time': last_message.created_at.isoformat() if last_message else None,
+                'unread_count': unread_count,
+            })
+
+        # Then add friends without conversations
+        for friend_id, friend_info in friends_dict.items():
+            if friend_id not in friends_with_conv:
+                result.append({
+                    'id': None,  # No conversation yet
+                    'friend_id': friend_id,
+                    'friend_name': friend_info['friend_name'],
+                    'friend_email': friend_info['friend_email'],
+                    'last_message': None,
+                    'last_message_time': None,
+                    'unread_count': 0,
+                })
+
+        return jsonify({
+            'success': True,
+            'conversations': result,
+            'total_unread': total_unread
+        })
+
+    except Exception as e:
+        print(f"Error getting conversations: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/chat/messages/<int:conversation_id>', methods=['GET'])
+@login_required
+def get_messages(conversation_id):
+    """Get messages for a conversation"""
+    token = request.headers['Authorization'].split(' ')[1]
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
+    user_id = user_info['user_id']
+    page = request.args.get('page', 1, type=int)
+    limit = request.args.get('limit', 30, type=int)
+    offset = (page - 1) * limit
+
+    db = get_db()
+
+    try:
+        # Verify user is part of this conversation
+        conv = db.query(Conversation).filter(
+            Conversation.id == conversation_id,
+            or_(
+                Conversation.user1_id == user_id,
+                Conversation.user2_id == user_id
+            )
+        ).first()
+
+        if not conv:
+            return jsonify({'success': False, 'error': 'Conversation not found'}), 404
+
+        # Get messages with pagination (newest first for pagination, then reverse)
+        total = db.query(func.count(Message.id)).filter(
+            Message.conversation_id == conversation_id
+        ).scalar()
+
+        messages = db.query(Message).filter(
+            Message.conversation_id == conversation_id
+        ).order_by(desc(Message.created_at)).offset(offset).limit(limit).all()
+
+        # Reverse to get chronological order
+        messages = list(reversed(messages))
+
+        result = []
+        for msg in messages:
+            sender = db.query(User).filter(User.user_id == msg.sender_id).first()
+            result.append({
+                'id': msg.id,
+                'conversation_id': msg.conversation_id,
+                'sender_id': msg.sender_id,
+                'sender_name': sender.user_name if sender else 'Unknown',
+                'content': msg.content,
+                'is_read': msg.is_read,
+                'created_at': msg.created_at.isoformat(),
+            })
+
+        return jsonify({
+            'success': True,
+            'messages': result,
+            'total': total,
+            'page': page,
+            'limit': limit,
+            'has_more': offset + limit < total
+        })
+
+    except Exception as e:
+        print(f"Error getting messages: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/chat/send', methods=['POST'])
+@login_required
+def send_message():
+    """Send a message to a conversation"""
+    token = request.headers['Authorization'].split(' ')[1]
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
+    user_id = user_info['user_id']
+    data = request.get_json()
+    conversation_id = data.get('conversation_id')
+    content = data.get('content', '').strip()
+
+    if not conversation_id or not content:
+        return jsonify({'success': False, 'error': 'conversation_id and content are required'}), 400
+
+    db = get_db()
+
+    try:
+        # Verify user is part of this conversation
+        conv = db.query(Conversation).filter(
+            Conversation.id == conversation_id,
+            or_(
+                Conversation.user1_id == user_id,
+                Conversation.user2_id == user_id
+            )
+        ).first()
+
+        if not conv:
+            return jsonify({'success': False, 'error': 'Conversation not found'}), 404
+
+        # Create message
+        message = Message(
+            conversation_id=conversation_id,
+            sender_id=user_id,
+            content=content
+        )
+        db.add(message)
+
+        # Update conversation timestamp
+        conv.updated_at = datetime.utcnow()
+
+        db.commit()
+
+        # Notify via WebSocket
+        friend_id = conv.user2_id if conv.user1_id == user_id else conv.user1_id
+        sender = db.query(User).filter(User.user_id == user_id).first()
+
+        socketio.emit('new_message', {
+            'id': message.id,
+            'conversation_id': conversation_id,
+            'sender_id': user_id,
+            'sender_name': sender.user_name if sender else 'Unknown',
+            'content': content,
+            'created_at': message.created_at.isoformat()
+        }, room=f'user_{friend_id}')
+
+        return jsonify({
+            'success': True,
+            'message': {
+                'id': message.id,
+                'conversation_id': conversation_id,
+                'sender_id': user_id,
+                'content': content,
+                'created_at': message.created_at.isoformat()
+            }
+        })
+
+    except Exception as e:
+        db.rollback()
+        print(f"Error sending message: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/chat/start', methods=['POST'])
+@login_required
+def start_conversation():
+    """Start a new conversation with a friend"""
+    token = request.headers['Authorization'].split(' ')[1]
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
+    user_id = user_info['user_id']
+    data = request.get_json()
+    friend_id = data.get('friend_id')
+
+    if not friend_id:
+        return jsonify({'success': False, 'error': 'friend_id is required'}), 400
+
+    db = get_db()
+
+    try:
+        # Check if they are friends
+        friendship = db.query(Friendship).filter(
+            Friendship.status == 'accepted',
+            or_(
+                and_(Friendship.user_id == user_id, Friendship.friend_id == friend_id),
+                and_(Friendship.user_id == friend_id, Friendship.friend_id == user_id)
+            )
+        ).first()
+
+        if not friendship:
+            return jsonify({'success': False, 'error': 'You are not friends with this user'}), 400
+
+        # Check if conversation already exists
+        conv = db.query(Conversation).filter(
+            or_(
+                and_(Conversation.user1_id == user_id, Conversation.user2_id == friend_id),
+                and_(Conversation.user1_id == friend_id, Conversation.user2_id == user_id)
+            )
+        ).first()
+
+        if conv:
+            # Return existing conversation
+            friend = db.query(User).filter(User.user_id == friend_id).first()
+            return jsonify({
+                'success': True,
+                'conversation': {
+                    'id': conv.id,
+                    'friend_id': friend_id,
+                    'friend_name': friend.user_name if friend else 'Unknown',
+                    'friend_email': friend.user_email if friend else '',
+                },
+                'existing': True
+            })
+
+        # Create new conversation
+        conv = Conversation(
+            user1_id=user_id,
+            user2_id=friend_id
+        )
+        db.add(conv)
+        db.commit()
+
+        friend = db.query(User).filter(User.user_id == friend_id).first()
+
+        return jsonify({
+            'success': True,
+            'conversation': {
+                'id': conv.id,
+                'friend_id': friend_id,
+                'friend_name': friend.user_name if friend else 'Unknown',
+                'friend_email': friend.user_email if friend else '',
+            },
+            'existing': False
+        })
+
+    except Exception as e:
+        db.rollback()
+        print(f"Error starting conversation: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/chat/read/<int:conversation_id>', methods=['POST'])
+@login_required
+def mark_messages_read(conversation_id):
+    """Mark all messages in a conversation as read"""
+    token = request.headers['Authorization'].split(' ')[1]
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
+    user_id = user_info['user_id']
+    db = get_db()
+
+    try:
+        # Verify user is part of this conversation
+        conv = db.query(Conversation).filter(
+            Conversation.id == conversation_id,
+            or_(
+                Conversation.user1_id == user_id,
+                Conversation.user2_id == user_id
+            )
+        ).first()
+
+        if not conv:
+            return jsonify({'success': False, 'error': 'Conversation not found'}), 404
+
+        # Mark messages from the other user as read
+        db.query(Message).filter(
+            Message.conversation_id == conversation_id,
+            Message.sender_id != user_id,
+            Message.is_read == False
+        ).update({'is_read': True})
+
+        db.commit()
+
+        # Notify the sender that messages were read
+        friend_id = conv.user2_id if conv.user1_id == user_id else conv.user1_id
+        socketio.emit('message_read', {
+            'conversation_id': conversation_id,
+            'reader_id': user_id
+        }, room=f'user_{friend_id}')
+
+        return jsonify({'success': True})
+
+    except Exception as e:
+        db.rollback()
+        print(f"Error marking messages as read: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+
+# ============================================================
+# User WebSocket Events (for chat and notifications)
+# ============================================================
+
+@socketio.on('join_user')
+def on_join_user(data):
+    """Join user's personal room for notifications and chat"""
+    token = data.get('token')
+    if not token:
+        return
+
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return
+
+    user_id = user_info['user_id']
+    room = f'user_{user_id}'
+    join_room(room)
+    print(f'User {user_id} joined room {room}')
+
+
+@socketio.on('leave_user')
+def on_leave_user(data):
+    """Leave user's personal room"""
+    token = data.get('token')
+    if not token:
+        return
+
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return
+
+    user_id = user_info['user_id']
+    room = f'user_{user_id}'
+    leave_room(room)
+    print(f'User {user_id} left room {room}')
+
+
+@socketio.on('join_conversation')
+def on_join_conversation(data):
+    """Join a conversation room for real-time messages"""
+    conversation_id = data.get('conversation_id')
+    if conversation_id:
+        room = f'conversation_{conversation_id}'
+        join_room(room)
+
+
+@socketio.on('leave_conversation')
+def on_leave_conversation(data):
+    """Leave a conversation room"""
+    conversation_id = data.get('conversation_id')
+    if conversation_id:
+        room = f'conversation_{conversation_id}'
+        leave_room(room)
+
+
+@socketio.on('typing')
+def on_typing(data):
+    """Broadcast typing indicator"""
+    conversation_id = data.get('conversation_id')
+    user_id = data.get('user_id')
+    is_typing = data.get('is_typing', False)
+
+    if conversation_id:
+        room = f'conversation_{conversation_id}'
+        emit('typing', {
+            'conversation_id': conversation_id,
+            'user_id': user_id,
+            'is_typing': is_typing
+        }, room=room, include_self=False)
+
+
+@socketio.on('friend_request_accepted')
+def on_friend_request_accepted(data):
+    """Broadcast friend request acceptance"""
+    request_id = data.get('request_id')
+    if request_id:
+        # Get the friendship to find the other user
+        db = get_db()
+        try:
+            friendship = db.query(Friendship).filter(Friendship.id == request_id).first()
+            if friendship:
+                # Notify both users
+                socketio.emit('friend_request_accepted', {
+                    'request_id': request_id
+                }, room=f'user_{friendship.user_id}')
+                socketio.emit('friend_request_accepted', {
+                    'request_id': request_id
+                }, room=f'user_{friendship.friend_id}')
+        finally:
+            db.close()
+
+
 if __name__ == '__main__':
     port = int(os.getenv('FLASK_PORT', 5001))
     debug = os.getenv('FLASK_ENV') == 'development'
 
     # SocketIO로 실행
-    socketio.run(app, host='0.0.0.0', port=port, debug=debug)
+    socketio.run(app, host='0.0.0.0', port=port, debug=debug, allow_unsafe_werkzeug=True)

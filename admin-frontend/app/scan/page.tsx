@@ -67,7 +67,7 @@ export default function ScanPage() {
         >
           ← 홈으로
         </button>
-        <h1 className="text-2xl font-bold text-text mt-2">QR 스캔</h1>
+        <h1 className="text-2xl font-bold text-text mt-2">QR/바코드 스캔</h1>
       </header>
 
       <main className="flex-1 p-6 flex flex-col items-center justify-center">
@@ -81,9 +81,9 @@ export default function ScanPage() {
           {!scanning && (
             <div className="bg-white rounded-subtle shadow-lg p-8 text-center">
               <div className="text-6xl mb-4">📷</div>
-              <h2 className="text-xl font-semibold mb-4">사용자 QR 코드 스캔</h2>
+              <h2 className="text-xl font-semibold mb-4">QR/바코드 스캔</h2>
               <p className="text-text-secondary mb-6">
-                사용자가 제시한 QR 코드를 스캔하세요
+                사용자가 제시한 QR 코드 또는 바코드를 스캔하세요
               </p>
               <button
                 onClick={startScanning}

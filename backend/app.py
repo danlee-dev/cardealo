@@ -11,7 +11,7 @@ from services.location_service import LocationService
 from services.directions_service import DirectionsService
 from services.ocr_service import NaverOCRService
 from services.database import init_db, get_db
-from services.database import User, Card, MyCard, CardBenefit, SavedCourse, SavedCourseUser, PaymentHistory, QRScanStatus
+from services.database import User, Card, MyCard, CardBenefit, SavedCourse, SavedCourseUser, PaymentHistory, QRScanStatus, Friendship
 from services.database import CorporateCard, Department, CorporateCardMember, CorporatePaymentHistory
 import uuid
 from services.jwt_service import JwtService
@@ -1824,6 +1824,823 @@ def get_recent_payment():
             'error': '최근 결제 조회에 실패했습니다',
             'message': str(e)
         }), 500
+
+
+# ============ 친구 관리 API ============
+
+@app.route('/api/friends/search', methods=['GET'])
+@login_required
+def search_friends():
+    """
+    친구 검색 API (이메일 또는 user_id로 검색)
+    
+    Query params:
+        - query: 검색어 (이메일 또는 user_id)
+    
+    Response:
+    {
+        "success": true,
+        "users": [
+            {
+                "user_id": "kim_chulsoo",
+                "user_name": "김철수",
+                "user_email": "kim@cardealo.com",
+                "is_friend": false,
+                "friendship_status": null  // null, "pending", "accepted", "sent_pending"
+            }
+        ]
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        query = request.args.get('query', '').strip()
+        
+        if not query:
+            return jsonify({'success': False, 'error': 'query parameter is required'}), 400
+        
+        if len(query) < 2:
+            return jsonify({'success': False, 'error': 'Query must be at least 2 characters'}), 400
+        
+        db = get_db()
+        
+        # 이메일 또는 user_id로 검색 (자기 자신 제외)
+        users = db.scalars(
+            select(User).where(
+                (User.user_email.like(f'%{query}%')) | (User.user_id.like(f'%{query}%')),
+                User.user_id != user_id
+            ).limit(20)
+        ).all()
+        
+        users_data = []
+        for user in users:
+            # 친구 상태 확인
+            friendship = db.scalars(
+                select(Friendship).where(
+                    ((Friendship.user_id == user_id) & (Friendship.friend_id == user.user_id)) |
+                    ((Friendship.user_id == user.user_id) & (Friendship.friend_id == user_id))
+                )
+            ).first()
+            
+            friendship_status = None
+            is_friend = False
+            
+            if friendship:
+                if friendship.status == 'accepted':
+                    is_friend = True
+                    friendship_status = 'accepted'
+                elif friendship.user_id == user_id:
+                    friendship_status = 'sent_pending'  # 내가 보낸 요청
+                else:
+                    friendship_status = 'pending'  # 받은 요청
+            
+            users_data.append({
+                'user_id': user.user_id,
+                'user_name': user.user_name,
+                'user_email': user.user_email,
+                'is_friend': is_friend,
+                'friendship_status': friendship_status
+            })
+        
+        db.close()
+        
+        return jsonify({
+            'success': True,
+            'users': users_data
+        }), 200
+        
+    except Exception as e:
+        print(f"[Error] 친구 검색 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/friends/request', methods=['POST'])
+@login_required
+def send_friend_request():
+    """
+    친구 요청 API
+    
+    Request:
+    {
+        "friend_id": "kim_chulsoo"
+    }
+    
+    Response:
+    {
+        "success": true,
+        "message": "친구 요청을 보냈습니다"
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+        
+        friend_id = data.get('friend_id')
+        
+        if not friend_id:
+            return jsonify({'success': False, 'error': 'friend_id is required'}), 400
+        
+        if friend_id == user_id:
+            return jsonify({'success': False, 'error': '자기 자신에게 친구 요청을 보낼 수 없습니다'}), 400
+        
+        db = get_db()
+        
+        # 상대방이 존재하는지 확인
+        friend = db.scalars(select(User).where(User.user_id == friend_id)).first()
+        if not friend:
+            db.close()
+            return jsonify({'success': False, 'error': '사용자를 찾을 수 없습니다'}), 404
+        
+        # 이미 친구 관계가 있는지 확인
+        existing = db.scalars(
+            select(Friendship).where(
+                ((Friendship.user_id == user_id) & (Friendship.friend_id == friend_id)) |
+                ((Friendship.user_id == friend_id) & (Friendship.friend_id == user_id))
+            )
+        ).first()
+        
+        if existing:
+            db.close()
+            if existing.status == 'accepted':
+                return jsonify({'success': False, 'error': '이미 친구입니다'}), 400
+            elif existing.status == 'pending':
+                return jsonify({'success': False, 'error': '이미 친구 요청이 대기 중입니다'}), 400
+            elif existing.status == 'blocked':
+                return jsonify({'success': False, 'error': '차단된 사용자입니다'}), 400
+        
+        # 친구 요청 생성
+        friendship = Friendship(
+            user_id=user_id,
+            friend_id=friend_id,
+            status='pending'
+        )
+        db.add(friendship)
+        db.commit()
+        db.close()
+        
+        return jsonify({
+            'success': True,
+            'message': '친구 요청을 보냈습니다'
+        }), 200
+        
+    except Exception as e:
+        print(f"[Error] 친구 요청 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/friends/requests', methods=['GET'])
+@login_required
+def get_friend_requests():
+    """
+    받은 친구 요청 목록 조회
+    
+    Response:
+    {
+        "success": true,
+        "requests": [
+            {
+                "id": 1,
+                "user_id": "hong_gildong",
+                "user_name": "홍길동",
+                "user_email": "hong@cardealo.com",
+                "created_at": "2024-01-01T12:00:00"
+            }
+        ]
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+        
+        # 받은 친구 요청 (status가 pending이고 내가 friend_id인 경우)
+        requests = db.scalars(
+            select(Friendship).where(
+                Friendship.friend_id == user_id,
+                Friendship.status == 'pending'
+            ).order_by(Friendship.created_at.desc())
+        ).all()
+        
+        requests_data = []
+        for req in requests:
+            requester = db.scalars(select(User).where(User.user_id == req.user_id)).first()
+            if requester:
+                requests_data.append({
+                    'id': req.id,
+                    'user_id': requester.user_id,
+                    'user_name': requester.user_name,
+                    'user_email': requester.user_email,
+                    'created_at': req.created_at.isoformat() if req.created_at else None
+                })
+        
+        db.close()
+        
+        return jsonify({
+            'success': True,
+            'requests': requests_data
+        }), 200
+        
+    except Exception as e:
+        print(f"[Error] 친구 요청 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/friends/accept', methods=['POST'])
+@login_required
+def accept_friend_request():
+    """
+    친구 요청 수락
+    
+    Request:
+    {
+        "request_id": 1
+    }
+    
+    Response:
+    {
+        "success": true,
+        "message": "친구 요청을 수락했습니다"
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+        
+        request_id = data.get('request_id')
+        
+        if not request_id:
+            return jsonify({'success': False, 'error': 'request_id is required'}), 400
+        
+        db = get_db()
+        
+        # 친구 요청 조회 (내가 받은 요청만)
+        friendship = db.scalars(
+            select(Friendship).where(
+                Friendship.id == request_id,
+                Friendship.friend_id == user_id,
+                Friendship.status == 'pending'
+            )
+        ).first()
+        
+        if not friendship:
+            db.close()
+            return jsonify({'success': False, 'error': '친구 요청을 찾을 수 없습니다'}), 404
+        
+        # 상태를 accepted로 변경
+        friendship.status = 'accepted'
+        friendship.updated_at = datetime.utcnow()
+        db.commit()
+        db.close()
+        
+        return jsonify({
+            'success': True,
+            'message': '친구 요청을 수락했습니다'
+        }), 200
+        
+    except Exception as e:
+        print(f"[Error] 친구 요청 수락 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/friends/reject', methods=['POST'])
+@login_required
+def reject_friend_request():
+    """
+    친구 요청 거절
+    
+    Request:
+    {
+        "request_id": 1
+    }
+    
+    Response:
+    {
+        "success": true,
+        "message": "친구 요청을 거절했습니다"
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+        
+        request_id = data.get('request_id')
+        
+        if not request_id:
+            return jsonify({'success': False, 'error': 'request_id is required'}), 400
+        
+        db = get_db()
+        
+        # 친구 요청 조회 (내가 받은 요청만)
+        friendship = db.scalars(
+            select(Friendship).where(
+                Friendship.id == request_id,
+                Friendship.friend_id == user_id,
+                Friendship.status == 'pending'
+            )
+        ).first()
+        
+        if not friendship:
+            db.close()
+            return jsonify({'success': False, 'error': '친구 요청을 찾을 수 없습니다'}), 404
+        
+        # 요청 삭제
+        db.delete(friendship)
+        db.commit()
+        db.close()
+        
+        return jsonify({
+            'success': True,
+            'message': '친구 요청을 거절했습니다'
+        }), 200
+        
+    except Exception as e:
+        print(f"[Error] 친구 요청 거절 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/friends', methods=['GET'])
+@login_required
+def get_friends():
+    """
+    친구 목록 조회
+    
+    Response:
+    {
+        "success": true,
+        "friends": [
+            {
+                "user_id": "kim_chulsoo",
+                "user_name": "김철수",
+                "user_email": "kim@cardealo.com",
+                "friendship_id": 1,
+                "became_friends_at": "2024-01-01T12:00:00"
+            }
+        ]
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+        
+        # 수락된 친구 관계 조회 (내가 요청했거나 받은 경우 모두)
+        friendships = db.scalars(
+            select(Friendship).where(
+                ((Friendship.user_id == user_id) | (Friendship.friend_id == user_id)),
+                Friendship.status == 'accepted'
+            ).order_by(Friendship.updated_at.desc())
+        ).all()
+        
+        friends_data = []
+        for friendship in friendships:
+            # 상대방 user_id 찾기
+            friend_user_id = friendship.friend_id if friendship.user_id == user_id else friendship.user_id
+            
+            friend = db.scalars(select(User).where(User.user_id == friend_user_id)).first()
+            if friend:
+                friends_data.append({
+                    'user_id': friend.user_id,
+                    'user_name': friend.user_name,
+                    'user_email': friend.user_email,
+                    'friendship_id': friendship.id,
+                    'became_friends_at': friendship.updated_at.isoformat() if friendship.updated_at else None
+                })
+        
+        db.close()
+        
+        return jsonify({
+            'success': True,
+            'friends': friends_data
+        }), 200
+        
+    except Exception as e:
+        print(f"[Error] 친구 목록 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/friends/<string:friend_user_id>', methods=['DELETE'])
+@login_required
+def delete_friend(friend_user_id):
+    """
+    친구 삭제
+    
+    Response:
+    {
+        "success": true,
+        "message": "친구를 삭제했습니다"
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+        
+        # 친구 관계 조회
+        friendship = db.scalars(
+            select(Friendship).where(
+                ((Friendship.user_id == user_id) & (Friendship.friend_id == friend_user_id)) |
+                ((Friendship.user_id == friend_user_id) & (Friendship.friend_id == user_id)),
+                Friendship.status == 'accepted'
+            )
+        ).first()
+        
+        if not friendship:
+            db.close()
+            return jsonify({'success': False, 'error': '친구 관계를 찾을 수 없습니다'}), 404
+        
+        # 친구 관계 삭제
+        db.delete(friendship)
+        db.commit()
+        db.close()
+        
+        return jsonify({
+            'success': True,
+            'message': '친구를 삭제했습니다'
+        }), 200
+        
+    except Exception as e:
+        print(f"[Error] 친구 삭제 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/friends/<string:friend_user_id>/courses', methods=['GET'])
+@login_required
+def get_friend_courses(friend_user_id):
+    """
+    친구의 데이트 코스 조회 API
+    
+    Query params:
+        - limit: 최대 결과 개수 (기본: 10)
+        - offset: 오프셋 (기본: 0)
+    
+    Response:
+    {
+        "success": true,
+        "friend": {
+            "user_id": "kim_chulsoo",
+            "user_name": "김철수",
+            "user_email": "kim@cardealo.com"
+        },
+        "courses": [
+            {
+                "id": 1,
+                "title": "잠실 석촌호수 산책 코스",
+                "description": "혜택까지 알뜰한 코스",
+                "stops": [...],
+                "route_info": {...},
+                "total_distance": 1234,
+                "total_duration": 45,
+                "total_benefit_score": 250,
+                "num_people": 2,
+                "budget": 100000,
+                "created_at": "2024-01-01T00:00:00",
+                "is_shared_with_me": true,
+                "member_count": 2,
+                "members": ["hong_gildong", "kim_chulsoo"]
+            }
+        ]
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        limit = request.args.get('limit', 10, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        
+        db = get_db()
+        
+        # 친구 관계 확인
+        friendship = db.scalars(
+            select(Friendship).where(
+                ((Friendship.user_id == user_id) & (Friendship.friend_id == friend_user_id)) |
+                ((Friendship.user_id == friend_user_id) & (Friendship.friend_id == user_id)),
+                Friendship.status == 'accepted'
+            )
+        ).first()
+        
+        if not friendship:
+            db.close()
+            return jsonify({
+                'success': False,
+                'error': '친구 관계가 아닙니다'
+            }), 403
+        
+        # 친구 정보 조회
+        friend = db.scalars(select(User).where(User.user_id == friend_user_id)).first()
+        if not friend:
+            db.close()
+            return jsonify({
+                'success': False,
+                'error': '사용자를 찾을 수 없습니다'
+            }), 404
+        
+        # 친구가 저장한 코스 ID 가져오기
+        friend_course_ids = db.scalars(
+            select(SavedCourseUser.course_id)
+            .where(SavedCourseUser.user_id == friend_user_id)
+        ).all()
+        
+        # 코스 정보 가져오기
+        courses = db.scalars(
+            select(SavedCourse)
+            .where(SavedCourse.id.in_(friend_course_ids))
+            .order_by(SavedCourse.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+        
+        courses_data = []
+        for course in courses:
+            # 해당 코스의 멤버 조회
+            course_members = db.scalars(
+                select(SavedCourseUser).where(SavedCourseUser.course_id == course.id)
+            ).all()
+            
+            member_ids = [cu.user_id for cu in course_members]
+            is_shared_with_me = user_id in member_ids
+            
+            courses_data.append({
+                'id': course.id,
+                'title': course.title,
+                'description': course.description,
+                'stops': json.loads(course.stops) if course.stops else [],
+                'route_info': json.loads(course.route_info) if course.route_info else None,
+                'total_distance': course.total_distance,
+                'total_duration': course.total_duration,
+                'total_benefit_score': course.total_benefit_score,
+                'num_people': course.num_people,
+                'budget': course.budget,
+                'created_at': course.created_at.isoformat() if course.created_at else None,
+                'creator_id': course.user_id,
+                'is_shared_with_me': is_shared_with_me,
+                'member_count': len(member_ids),
+                'members': member_ids
+            })
+        
+        db.close()
+        
+        return jsonify({
+            'success': True,
+            'friend': {
+                'user_id': friend.user_id,
+                'user_name': friend.user_name,
+                'user_email': friend.user_email
+            },
+            'courses': courses_data
+        }), 200
+        
+    except Exception as e:
+        print(f"[Error] 친구 코스 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': '친구 코스 조회에 실패했습니다',
+            'message': str(e)
+        }), 500
+
+
+
+@app.route('/api/course/<int:course_id>/invite', methods=['POST'])
+@login_required
+def invite_friend_to_course(course_id):
+    """
+    기존 코스에 친구 초대 (나중에 추가로 초대하는 기능)
+    
+    Request:
+    {
+        "friend_user_id": "kim_chulsoo"
+    }
+    
+    Response:
+    {
+        "success": true,
+        "message": "친구를 코스에 초대했습니다"
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        data = request.get_json()
+        
+        friend_user_id = data.get('friend_user_id')
+        
+        if not friend_user_id:
+            return jsonify({'success': False, 'error': 'friend_user_id is required'}), 400
+        
+        db = get_db()
+        
+        # 코스 존재 확인
+        course = db.scalars(select(SavedCourse).where(SavedCourse.id == course_id)).first()
+        if not course:
+            db.close()
+            return jsonify({'success': False, 'error': '코스를 찾을 수 없습니다'}), 404
+        
+        # 코스 참여 확인 (참여 중인 사람만 초대 가능)
+        course_user = db.scalars(
+            select(SavedCourseUser).where(
+                SavedCourseUser.course_id == course_id,
+                SavedCourseUser.user_id == user_id
+            )
+        ).first()
+        
+        if not course_user:
+            db.close()
+            return jsonify({'success': False, 'error': '코스에 접근 권한이 없습니다'}), 403
+        
+        # 친구 관계 확인
+        friendship = db.scalars(
+            select(Friendship).where(
+                ((Friendship.user_id == user_id) & (Friendship.friend_id == friend_user_id)) |
+                ((Friendship.user_id == friend_user_id) & (Friendship.friend_id == user_id)),
+                Friendship.status == 'accepted'
+            )
+        ).first()
+        
+        if not friendship:
+            db.close()
+            return jsonify({'success': False, 'error': '친구만 초대할 수 있습니다'}), 403
+        
+        # 이미 코스에 참여 중인지 확인
+        existing = db.scalars(
+            select(SavedCourseUser).where(
+                SavedCourseUser.course_id == course_id,
+                SavedCourseUser.user_id == friend_user_id
+            )
+        ).first()
+        
+        if existing:
+            db.close()
+            return jsonify({'success': False, 'error': '이미 코스에 참여 중입니다'}), 400
+        
+        # 친구를 코스에 추가
+        friend_course_user = SavedCourseUser(
+            course_id=course_id,
+            user_id=friend_user_id
+        )
+        db.add(friend_course_user)
+        
+        # 저장 횟수 증가
+        course.save_count += 1
+        
+        db.commit()
+        db.close()
+        
+        return jsonify({
+            'success': True,
+            'message': '친구를 코스에 초대했습니다'
+        }), 200
+        
+    except Exception as e:
+        print(f"[Error] 코스 초대 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/course/<int:course_id>/members', methods=['GET'])
+@login_required
+def get_course_members(course_id):
+    """
+    코스 참여 멤버 목록 조회
+    
+    Response:
+    {
+        "success": true,
+        "members": [
+            {
+                "user_id": "hong_gildong",
+                "user_name": "홍길동",
+                "user_email": "hong@cardealo.com",
+                "joined_at": "2024-01-01T12:00:00",
+                "is_creator": true
+            }
+        ],
+        "creator_id": "hong_gildong"
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+        
+        # 코스 존재 확인
+        course = db.scalars(select(SavedCourse).where(SavedCourse.id == course_id)).first()
+        if not course:
+            db.close()
+            return jsonify({'success': False, 'error': '코스를 찾을 수 없습니다'}), 404
+        
+        # 코스 참여 확인
+        course_user = db.scalars(
+            select(SavedCourseUser).where(
+                SavedCourseUser.course_id == course_id,
+                SavedCourseUser.user_id == user_id
+            )
+        ).first()
+        
+        if not course_user:
+            db.close()
+            return jsonify({'success': False, 'error': '코스에 접근 권한이 없습니다'}), 403
+        
+        # 멤버 목록 조회
+        course_users = db.scalars(
+            select(SavedCourseUser).where(SavedCourseUser.course_id == course_id)
+        ).all()
+        
+        members_data = []
+        for cu in course_users:
+            user = db.scalars(select(User).where(User.user_id == cu.user_id)).first()
+            if user:
+                members_data.append({
+                    'user_id': user.user_id,
+                    'user_name': user.user_name,
+                    'user_email': user.user_email,
+                    'joined_at': cu.saved_at.isoformat() if cu.saved_at else None,
+                    'is_creator': user.user_id == course.user_id
+                })
+        
+        db.close()
+        
+        return jsonify({
+            'success': True,
+            'members': members_data,
+            'creator_id': course.user_id
+        }), 200
+        
+    except Exception as e:
+        print(f"[Error] 코스 멤버 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/course/<int:course_id>/leave', methods=['POST'])
+@login_required
+def leave_course(course_id):
+    """
+    코스 나가기 (생성자가 아닌 경우만 가능)
+    
+    Response:
+    {
+        "success": true,
+        "message": "코스에서 나갔습니다"
+    }
+    """
+    try:
+        user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
+        db = get_db()
+        
+        # 코스 조회
+        course = db.scalars(select(SavedCourse).where(SavedCourse.id == course_id)).first()
+        if not course:
+            db.close()
+            return jsonify({'success': False, 'error': '코스를 찾을 수 없습니다'}), 404
+        
+        # 생성자는 나갈 수 없음
+        if course.user_id == user_id:
+            db.close()
+            return jsonify({'success': False, 'error': '코스 생성자는 나갈 수 없습니다'}), 400
+        
+        # 코스 참여 정보 조회
+        course_user = db.scalars(
+            select(SavedCourseUser).where(
+                SavedCourseUser.course_id == course_id,
+                SavedCourseUser.user_id == user_id
+            )
+        ).first()
+        
+        if not course_user:
+            db.close()
+            return jsonify({'success': False, 'error': '코스에 참여하고 있지 않습니다'}), 404
+        
+        # 참여 정보 삭제
+        db.delete(course_user)
+        
+        # 저장 횟수 감소
+        if course.save_count > 0:
+            course.save_count -= 1
+        
+        db.commit()
+        db.close()
+        
+        return jsonify({
+            'success': True,
+            'message': '코스에서 나갔습니다'
+        }), 200
+        
+    except Exception as e:
+        print(f"[Error] 코스 나가기 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 
 # ============ 법인카드 API ============

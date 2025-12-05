@@ -134,6 +134,22 @@ class SavedCourseUser(Base):
     saved_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Friendship(Base):
+    """친구 관계 테이블"""
+    __tablename__ = 'friendship'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey('user.user_id'), nullable=False)  # 요청한 사용자
+    friend_id = Column(String, ForeignKey('user.user_id'), nullable=False)  # 요청받은 사용자
+    status = Column(String, default='pending')  # pending, accepted, rejected, blocked
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", foreign_keys=[user_id], backref="friendships_sent")
+    friend = relationship("User", foreign_keys=[friend_id], backref="friendships_received")
+    
+
+
 class PaymentHistory(Base):
     """결제 내역 (관리자 시스템에서 전송받음)"""
     __tablename__ = 'payment_history'

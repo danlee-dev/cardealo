@@ -1,7 +1,5 @@
 import { AuthStorage } from './auth';
-
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
-const WS_URL = BACKEND_URL.replace('http', 'ws');
+import { WS_URL } from './api';
 
 type EventCallback = (data: any) => void;
 

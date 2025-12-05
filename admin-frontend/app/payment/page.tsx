@@ -11,6 +11,65 @@ const isBarcode = (data: string): boolean => {
   return /^\d{12}$/.test(data);
 };
 
+// Insufficient Balance Modal Component
+const InsufficientBalanceModal = ({
+  isOpen,
+  onClose,
+  currentBalance,
+  requiredAmount,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  currentBalance: number;
+  requiredAmount: number;
+}) => {
+  if (!isOpen) return null;
+
+  const shortage = requiredAmount - currentBalance;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+      <div className="bg-white rounded-2xl p-6 max-w-sm w-full mx-4 shadow-2xl">
+        <div className="flex justify-center mb-4">
+          <div className="w-14 h-14 rounded-full bg-red-100 flex items-center justify-center">
+            <span className="text-3xl font-bold text-red-500">!</span>
+          </div>
+        </div>
+
+        <h2 className="text-xl font-bold text-center text-gray-900 mb-2">
+          잔액이 부족합니다
+        </h2>
+        <p className="text-sm text-gray-500 text-center mb-6">
+          결제를 진행하려면 잔액을 충전해주세요.
+        </p>
+
+        <div className="bg-gray-50 rounded-xl p-4 mb-6">
+          <div className="flex justify-between mb-2">
+            <span className="text-gray-500">현재 잔액</span>
+            <span className="font-semibold">{currentBalance.toLocaleString()}원</span>
+          </div>
+          <div className="flex justify-between mb-2">
+            <span className="text-gray-500">결제 금액</span>
+            <span className="font-semibold">{requiredAmount.toLocaleString()}원</span>
+          </div>
+          <div className="border-t border-gray-200 my-2" />
+          <div className="flex justify-between">
+            <span className="text-red-500 font-semibold">부족 금액</span>
+            <span className="text-red-500 font-bold text-lg">{shortage.toLocaleString()}원</span>
+          </div>
+        </div>
+
+        <button
+          onClick={onClose}
+          className="w-full bg-gray-900 text-white py-3.5 rounded-xl font-semibold hover:bg-gray-800 transition-colors"
+        >
+          확인
+        </button>
+      </div>
+    </div>
+  );
+};
+
 export default function PaymentPage() {
   const router = useRouter();
   const [qrData, setQrData] = useState('');
@@ -23,6 +82,10 @@ export default function PaymentPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
   const hasLoadedData = useRef(false);
+
+  // Insufficient balance modal state
+  const [showInsufficientModal, setShowInsufficientModal] = useState(false);
+  const [balanceInfo, setBalanceInfo] = useState({ current: 0, required: 0 });
 
   useEffect(() => {
     if (hasLoadedData.current) return;
@@ -100,7 +163,17 @@ export default function PaymentPage() {
         router.push('/');
       }, 2000);
     } catch (err: any) {
-      setError(err.response?.data?.detail || '결제 처리에 실패했습니다');
+      const errorData = err.response?.data;
+      // Check for insufficient balance error
+      if (errorData?.error === 'insufficient_balance') {
+        setBalanceInfo({
+          current: errorData.balance || 0,
+          required: errorData.required || parseInt(amount),
+        });
+        setShowInsufficientModal(true);
+      } else {
+        setError(errorData?.detail || '결제 처리에 실패했습니다');
+      }
     } finally {
       setProcessing(false);
     }
@@ -215,6 +288,14 @@ export default function PaymentPage() {
           )}
         </div>
       </main>
+
+      {/* Insufficient Balance Modal */}
+      <InsufficientBalanceModal
+        isOpen={showInsufficientModal}
+        onClose={() => setShowInsufficientModal(false)}
+        currentBalance={balanceInfo.current}
+        requiredAmount={balanceInfo.required}
+      />
     </div>
   );
 }

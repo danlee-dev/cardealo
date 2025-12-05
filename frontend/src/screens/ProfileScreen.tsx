@@ -11,6 +11,9 @@ import {
   Platform,
   Animated,
   Pressable,
+  Modal,
+  TextInput,
+  Alert,
 } from 'react-native';
 import { BackIcon, BellIcon, SettingsIcon, CardAddIcon, ReceiptIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
@@ -105,6 +108,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     phoneNumber: string;
     monthlySpending: number;
     monthlySavings: number;
+    balance: number;
     isCorporateUser: boolean;
     isBusiness: boolean;
     cards: Array<{
@@ -122,6 +126,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
       reset_date?: string | null;
     }>;
   } | null>(null);
+  const [showChargeModal, setShowChargeModal] = useState(false);
+  const [chargeAmount, setChargeAmount] = useState('');
   const [showCorporateCardRegistration, setShowCorporateCardRegistration] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [editingCard, setEditingCard] = useState<string | null>(null);
@@ -181,6 +187,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           phoneNumber: data.user.user_phone || '010-****-****',
           monthlySpending: data.user.monthly_spending || 0,
           monthlySavings: data.user.monthly_savings || 0,
+          balance: data.user.balance || 0,
           isCorporateUser: data.user.is_corporate_user || false,
           isBusiness: data.user.isBusiness || false,
           cards: data.user.cards || [],
@@ -239,6 +246,44 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     }
   };
 
+  const handleChargeBalance = async () => {
+    const amount = parseInt(chargeAmount.replace(/,/g, ''), 10);
+    if (isNaN(amount) || amount <= 0) {
+      Alert.alert('오류', '올바른 금액을 입력해주세요.');
+      return;
+    }
+    if (amount > 10000000) {
+      Alert.alert('오류', '1회 최대 충전 금액은 1,000만원입니다.');
+      return;
+    }
+
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) return;
+
+      const response = await fetch(`${API_URL}/api/balance/charge`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ amount }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        Alert.alert('충전 완료', `${amount.toLocaleString()}원이 충전되었습니다.`);
+        setShowChargeModal(false);
+        setChargeAmount('');
+        fetchUserData();
+      } else {
+        Alert.alert('오류', data.error || '충전에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error('Failed to charge balance:', error);
+      Alert.alert('오류', '서버 연결에 실패했습니다.');
+    }
+  };
 
   useEffect(() => {
     Animated.timing(slideAnim, {
@@ -463,6 +508,23 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
                 {(userData?.monthlySavings || 0).toLocaleString()}<Text style={styles.statUnitGreen}>원</Text>
               </Text>
             </View>
+          </View>
+
+          {/* Balance Card */}
+          <View style={styles.balanceCard}>
+            <View style={styles.balanceInfo}>
+              <Text style={styles.balanceLabel}>내 잔액</Text>
+              <Text style={styles.balanceValue}>
+                {(userData?.balance || 0).toLocaleString()}<Text style={styles.balanceUnit}>원</Text>
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.chargeButton}
+              onPress={() => setShowChargeModal(true)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.chargeButtonText}>충전</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -731,6 +793,66 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           />
         </View>
       )}
+
+      {/* Charge Modal */}
+      <Modal
+        visible={showChargeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowChargeModal(false)}
+      >
+        <View style={styles.chargeModalOverlay}>
+          <View style={styles.chargeModalContent}>
+            <View style={styles.chargeModalHeader}>
+              <Text style={styles.chargeModalTitle}>잔액 충전</Text>
+              <TouchableOpacity
+                style={styles.chargeModalCloseButton}
+                onPress={() => {
+                  setShowChargeModal(false);
+                  setChargeAmount('');
+                }}
+              >
+                <Text style={styles.chargeModalCloseText}>X</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.chargeModalBalance}>
+              현재 잔액: {(userData?.balance || 0).toLocaleString()}원
+            </Text>
+            <TextInput
+              style={styles.chargeInput}
+              placeholder="충전할 금액을 입력하세요"
+              placeholderTextColor="#999999"
+              keyboardType="number-pad"
+              value={chargeAmount}
+              onChangeText={(text) => {
+                const numericValue = text.replace(/[^0-9]/g, '');
+                if (numericValue) {
+                  setChargeAmount(parseInt(numericValue, 10).toLocaleString());
+                } else {
+                  setChargeAmount('');
+                }
+              }}
+            />
+            <View style={styles.chargeQuickButtons}>
+              {[10000, 50000, 100000, 500000].map((amount) => (
+                <TouchableOpacity
+                  key={amount}
+                  style={styles.chargeQuickButton}
+                  onPress={() => setChargeAmount(amount.toLocaleString())}
+                >
+                  <Text style={styles.chargeQuickButtonText}>+{(amount / 10000).toFixed(0)}만</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity
+              style={styles.chargeConfirmButton}
+              onPress={handleChargeBalance}
+            >
+              <Text style={styles.chargeConfirmButtonText}>충전하기</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
     </View>
   );
@@ -1478,5 +1600,136 @@ const styles = StyleSheet.create({
     color: '#666666',
     textAlign: 'center',
     lineHeight: 18,
+  },
+  // Balance Card Styles
+  balanceCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1A1A1A',
+    borderRadius: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    marginTop: 12,
+  },
+  balanceInfo: {
+    flex: 1,
+  },
+  balanceLabel: {
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: 'rgba(255,255,255,0.7)',
+    marginBottom: 4,
+  },
+  balanceValue: {
+    fontSize: 22,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
+  },
+  balanceUnit: {
+    fontSize: 16,
+    fontFamily: FONTS.medium,
+    color: '#FFFFFF',
+  },
+  chargeButton: {
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    backgroundColor: '#2E7D32',
+    borderRadius: 8,
+  },
+  chargeButtonText: {
+    fontSize: 14,
+    fontFamily: FONTS.semiBold,
+    color: '#FFFFFF',
+  },
+  // Charge Modal Styles
+  chargeModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chargeModalContent: {
+    width: SCREEN_WIDTH - 48,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 24,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.3,
+        shadowRadius: 20,
+      },
+      android: {
+        elevation: 10,
+      },
+    }),
+  },
+  chargeModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  chargeModalTitle: {
+    fontSize: 20,
+    fontFamily: FONTS.bold,
+    color: '#1A1A1A',
+  },
+  chargeModalCloseButton: {
+    padding: 8,
+  },
+  chargeModalCloseText: {
+    fontSize: 20,
+    color: '#666666',
+    fontFamily: FONTS.medium,
+  },
+  chargeModalBalance: {
+    fontSize: 14,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+    marginBottom: 20,
+  },
+  chargeInput: {
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 18,
+    fontFamily: FONTS.semiBold,
+    color: '#1A1A1A',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  chargeQuickButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+    gap: 8,
+  },
+  chargeQuickButton: {
+    flex: 1,
+    paddingVertical: 10,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  chargeQuickButtonText: {
+    fontSize: 13,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+  },
+  chargeConfirmButton: {
+    backgroundColor: '#1A1A1A',
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  chargeConfirmButtonText: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
   },
 });

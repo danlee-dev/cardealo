@@ -3775,7 +3775,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 60,
     left: 20,
-    right: 20,
+    right: 12,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
@@ -3856,7 +3856,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-start',
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     gap: 8,
   },
   filterButtonsLeft: {
@@ -3900,7 +3900,7 @@ const styles = StyleSheet.create({
   rightButtonsContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   chatButton: {
     width: 44,
@@ -3962,7 +3962,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 107,
     left: 20,
-    right: 136,
+    right: 138,
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 0,
     borderTopRightRadius: 0,

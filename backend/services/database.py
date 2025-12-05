@@ -49,6 +49,7 @@ class User(Base):
     monthly_spending = Column(Integer, default=0)
     monthly_savings = Column(Integer, default=0)
     isBusiness = Column(Boolean, default=False)
+    balance = Column(Integer, default=0)  # 사용자 잔액 (원)
 
     mycards = relationship("MyCard", back_populates="user", cascade="all, delete-orphan")
 
@@ -501,6 +502,22 @@ def init_db():
     if missing_tables:
         print(f'[DB] Tables not yet created: {missing_tables}. Skipping data seeding (run migrations first).')
         return
+
+    # Auto-migration: Add balance column if not exists
+    try:
+        user_columns = [col['name'] for col in inspector.get_columns('user')]
+        if 'balance' not in user_columns:
+            from sqlalchemy import text
+            with engine.connect() as conn:
+                # PostgreSQL and SQLite compatible syntax
+                if 'postgresql' in DATABASE_URL:
+                    conn.execute(text('ALTER TABLE "user" ADD COLUMN balance INTEGER DEFAULT 0'))
+                else:
+                    conn.execute(text('ALTER TABLE user ADD COLUMN balance INTEGER DEFAULT 0'))
+                conn.commit()
+            print('[DB] Added balance column to user table')
+    except Exception as e:
+        print(f'[DB] Auto-migration check: {e}')
 
     with open(cards_path, 'r', encoding='utf-8') as f:
         cards_data = json.load(f)

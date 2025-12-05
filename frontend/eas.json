@@ -10,6 +10,11 @@
       "ios": {
         "resourceClass": "m-medium",
         "simulator": true
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://localhost:5001",
+        "EXPO_PUBLIC_ENABLE_LOCATION_DEBUG": "true",
+        "EXPO_PUBLIC_ENABLE_TEST_LOGIN": "true"
       }
     },
     "preview": {
@@ -17,12 +22,28 @@
       "channel": "preview",
       "ios": {
         "resourceClass": "m-medium"
+      },
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://cardealo-production.up.railway.app",
+        "EXPO_PUBLIC_ENABLE_LOCATION_DEBUG": "false",
+        "EXPO_PUBLIC_ENABLE_TEST_LOGIN": "false"
       }
     },
     "production": {
       "channel": "production",
       "ios": {
         "resourceClass": "m-medium"
+      },
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://cardealo-production.up.railway.app",
+        "EXPO_PUBLIC_ENABLE_LOCATION_DEBUG": "false",
+        "EXPO_PUBLIC_ENABLE_TEST_LOGIN": "false"
       }
     }
   },

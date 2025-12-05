@@ -205,6 +205,7 @@ def mypage():
             'monthly_savings': user.monthly_savings,
             'isBusiness': user.isBusiness,
             'user_email': user.user_email,
+            'balance': user.balance or 0,
             'cards': []
         }
         cards = db.scalars(select(MyCard).where(MyCard.user_id == user_id)).all()
@@ -241,6 +242,160 @@ def mypage():
         return jsonify({'success':False, 'error': str(e)}), 500
     finally:
         db.close()
+
+
+# ==================== 잔액 관리 API ====================
+
+@app.route('/api/balance', methods=['GET'])
+@login_required
+def get_balance():
+    """사용자 잔액 조회"""
+    token = request.headers['Authorization'].split(' ')[1]
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
+    user_id = user_info.get('user_id')
+    try:
+        db = get_db()
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+
+        return jsonify({
+            'success': True,
+            'balance': user.balance or 0
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/balance/charge', methods=['POST'])
+@login_required
+def charge_balance():
+    """잔액 충전 (가상)"""
+    token = request.headers['Authorization'].split(' ')[1]
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
+    user_id = user_info.get('user_id')
+    data = request.get_json()
+    amount = data.get('amount', 0)
+
+    if amount <= 0:
+        return jsonify({'success': False, 'error': 'Amount must be positive'}), 400
+
+    if amount > 10000000:  # 최대 1000만원 제한
+        return jsonify({'success': False, 'error': 'Maximum charge amount is 10,000,000 won'}), 400
+
+    try:
+        db = get_db()
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+
+        user.balance = (user.balance or 0) + amount
+        db.commit()
+
+        return jsonify({
+            'success': True,
+            'message': f'{amount:,}원이 충전되었습니다.',
+            'balance': user.balance
+        })
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/balance/check', methods=['POST'])
+@login_required
+def check_balance():
+    """결제 전 잔액 확인"""
+    token = request.headers['Authorization'].split(' ')[1]
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
+    user_id = user_info.get('user_id')
+    data = request.get_json()
+    amount = data.get('amount', 0)
+
+    try:
+        db = get_db()
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+
+        current_balance = user.balance or 0
+        has_sufficient = current_balance >= amount
+
+        return jsonify({
+            'success': True,
+            'sufficient': has_sufficient,
+            'balance': current_balance,
+            'required': amount,
+            'shortage': max(0, amount - current_balance)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/balance/deduct', methods=['POST'])
+@login_required
+def deduct_balance():
+    """잔액 차감 (결제 시)"""
+    token = request.headers['Authorization'].split(' ')[1]
+    user_info = jwt_service.verify_token(token)
+    if not user_info:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
+    user_id = user_info.get('user_id')
+    data = request.get_json()
+    amount = data.get('amount', 0)
+    description = data.get('description', '')
+
+    if amount <= 0:
+        return jsonify({'success': False, 'error': 'Amount must be positive'}), 400
+
+    try:
+        db = get_db()
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+
+        current_balance = user.balance or 0
+        if current_balance < amount:
+            return jsonify({
+                'success': False,
+                'error': 'insufficient_balance',
+                'message': '잔액이 부족합니다.',
+                'balance': current_balance,
+                'required': amount,
+                'shortage': amount - current_balance
+            }), 400
+
+        user.balance = current_balance - amount
+        db.commit()
+
+        return jsonify({
+            'success': True,
+            'message': f'{amount:,}원이 결제되었습니다.',
+            'balance': user.balance,
+            'deducted': amount
+        })
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
 
 @app.route('/api/ocr/card', methods=['POST'])
 def ocr_card():
@@ -2315,6 +2470,162 @@ def payment_webhook():
         traceback.print_exc()
         return jsonify({
             'error': 'Webhook 처리에 실패했습니다',
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/payment/process', methods=['POST'])
+def process_payment():
+    """
+    결제 처리 API (가맹점에서 호출)
+    잔액을 확인하고 부족하면 insufficient_balance 에러 반환
+
+    Request:
+    {
+        "transaction_id": "uuid",
+        "confirm": true
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'Request body is required'}), 400
+
+        transaction_id = data.get('transaction_id')
+        confirm = data.get('confirm', False)
+
+        if not transaction_id:
+            return jsonify({'error': 'transaction_id is required'}), 400
+
+        db = get_db()
+
+        # QR 스캔 데이터에서 트랜잭션 정보 조회
+        qr_status = db.scalars(
+            select(QRStatus).where(QRStatus.transaction_id == transaction_id)
+        ).first()
+
+        if not qr_status:
+            return jsonify({'error': '트랜잭션을 찾을 수 없습니다'}), 404
+
+        if qr_status.status != 'scanned':
+            return jsonify({'error': '처리할 수 없는 트랜잭션 상태입니다'}), 400
+
+        # 사용자 정보 조회
+        user = db.scalars(select(User).where(User.user_id == qr_status.user_id)).first()
+        if not user:
+            return jsonify({'error': '사용자를 찾을 수 없습니다'}), 404
+
+        # 결제 금액 (final_amount 사용 - 할인 적용 후 금액)
+        final_amount = qr_status.final_amount or qr_status.payment_amount
+
+        # 잔액 확인
+        user_balance = user.balance or 0
+        if user_balance < final_amount:
+            return jsonify({
+                'error': 'insufficient_balance',
+                'message': '잔액이 부족합니다',
+                'balance': user_balance,
+                'required': final_amount,
+                'shortage': final_amount - user_balance
+            }), 400
+
+        if confirm:
+            # 잔액 차감
+            user.balance = user_balance - final_amount
+
+            # 월간 소비 및 절약 업데이트
+            discount_amount = qr_status.discount_amount or 0
+            user.monthly_spending = (user.monthly_spending or 0) + final_amount
+            user.monthly_savings = (user.monthly_savings or 0) + discount_amount
+
+            # 카드 정보 업데이트
+            card = db.scalars(select(MyCard).where(MyCard.cid == qr_status.card_id)).first()
+            if card:
+                today = date.today()
+
+                # 일자가 바뀌면 daily_count 리셋
+                if card.last_used_date != today:
+                    card.daily_count = 0
+
+                # 월이 바뀌면 모든 카운터 리셋
+                if card.reset_date is None or (today.month != card.reset_date.month or today.year != card.reset_date.year):
+                    card.used_amount = 0
+                    card.monthly_performance = 0
+                    card.monthly_count = 0
+                    card.reset_date = today.replace(day=1)
+
+                # 사용 금액 및 실적 업데이트
+                card.used_amount = (card.used_amount or 0) + final_amount
+                card.monthly_performance = (card.monthly_performance or 0) + (qr_status.payment_amount or 0)
+                card.daily_count = (card.daily_count or 0) + 1
+                card.monthly_count = (card.monthly_count or 0) + 1
+                card.last_used_date = today
+
+            # 결제 내역 저장
+            payment = PaymentHistory(
+                transaction_id=transaction_id,
+                user_id=qr_status.user_id,
+                card_id=qr_status.card_id,
+                merchant_name=qr_status.merchant_name,
+                payment_amount=qr_status.payment_amount,
+                discount_amount=discount_amount,
+                final_amount=final_amount,
+                benefit_text=qr_status.benefit_text
+            )
+            db.add(payment)
+
+            # QR 상태 업데이트
+            qr_status.status = 'completed'
+
+            # 결제 알림 생성
+            card_name = card.mycard_name if card else '카드'
+            notification = Notification(
+                user_id=qr_status.user_id,
+                type='payment',
+                title='결제 완료',
+                message=f'{qr_status.merchant_name}에서 {final_amount:,}원 결제 완료' + (f' ({discount_amount:,}원 할인)' if discount_amount > 0 else ''),
+                data=json.dumps({
+                    'transaction_id': transaction_id,
+                    'merchant_name': qr_status.merchant_name,
+                    'payment_amount': qr_status.payment_amount,
+                    'discount_amount': discount_amount,
+                    'final_amount': final_amount,
+                    'card_name': card_name,
+                    'benefit_text': qr_status.benefit_text,
+                    'new_balance': user.balance
+                }, ensure_ascii=False)
+            )
+            db.add(notification)
+            db.commit()
+            db.refresh(notification)
+
+            # 실시간 알림 전송
+            notification_data = {
+                'id': notification.id,
+                'type': notification.type,
+                'title': notification.title,
+                'message': notification.message,
+                'data': json.loads(notification.data),
+                'is_read': notification.is_read,
+                'created_at': notification.created_at.isoformat()
+            }
+            broadcast_notification(qr_status.user_id, notification_data)
+
+        db.close()
+
+        return jsonify({
+            'success': True,
+            'message': '결제가 완료되었습니다' if confirm else '결제 가능합니다',
+            'new_balance': user.balance
+        }), 200
+
+    except Exception as e:
+        print(f"[Error] 결제 처리 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': '결제 처리에 실패했습니다',
             'message': str(e)
         }), 500
 

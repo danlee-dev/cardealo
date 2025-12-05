@@ -17,9 +17,9 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FONTS } from '../constants/theme';
 import { AuthStorage } from '../utils/auth';
-import { BackIcon } from '../components/svg';
+import { BackIcon, UserPlusIcon, ClockIcon, UserIcon, TrashIcon, PencilIcon } from '../components/svg';
+import { API_URL } from '../utils/api';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 interface AdminMembersScreenProps {
@@ -61,11 +61,19 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
   const [inviteLimit, setInviteLimit] = useState('50');
   const [selectedDeptId, setSelectedDeptId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [searchResults, setSearchResults] = useState<Array<{user_id: string; user_name: string; user_email: string}>>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [editModalVisible, setEditModalVisible] = useState(false);
+  const [editingMember, setEditingMember] = useState<Member | null>(null);
+  const [editLimit, setEditLimit] = useState('');
+  const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: 0,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start();
 
@@ -79,7 +87,7 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
       if (!token) return;
 
       const response = await fetch(
-        `${BACKEND_URL}/api/corporate/cards/${cardId}/members`,
+        `${API_URL}/api/corporate/cards/${cardId}/members`,
         {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -99,9 +107,10 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
   };
 
   const handleBack = () => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: SCREEN_WIDTH,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start(() => {
       onBack();
@@ -119,7 +128,98 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
     setInviteEmail('');
     setInviteLimit('50');
     setSelectedDeptId(departments.length > 0 ? departments[0].id : null);
+    setSearchResults([]);
     setModalVisible(true);
+  };
+
+  const searchUsers = async (query: string) => {
+    if (query.length < 2) {
+      setSearchResults([]);
+      return;
+    }
+
+    try {
+      setIsSearching(true);
+      const token = await AuthStorage.getToken();
+      if (!token) return;
+
+      const response = await fetch(
+        `${API_URL}/api/corporate/users/search?q=${encodeURIComponent(query)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      const data = await response.json();
+      if (data.success) {
+        setSearchResults(data.users || []);
+      }
+    } catch (error) {
+      console.error('Search failed:', error);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleEmailChange = (text: string) => {
+    setInviteEmail(text);
+
+    // Debounce search
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    searchTimeoutRef.current = setTimeout(() => {
+      searchUsers(text);
+    }, 300);
+  };
+
+  const selectUser = (user: {user_id: string; user_name: string; user_email: string}) => {
+    setInviteEmail(user.user_email);
+    setSearchResults([]);
+  };
+
+  const handleRemoveMember = async (memberId: number, memberName: string) => {
+    Alert.alert(
+      '직원 삭제',
+      `${memberName}님을 정말 삭제하시겠습니까?`,
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '삭제',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const token = await AuthStorage.getToken();
+              if (!token) return;
+
+              const response = await fetch(
+                `${API_URL}/api/corporate/cards/${cardId}/members/${memberId}`,
+                {
+                  method: 'DELETE',
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                  },
+                }
+              );
+
+              const data = await response.json();
+              if (data.success) {
+                fetchMembers();
+                Alert.alert('완료', '직원이 삭제되었습니다.');
+              } else {
+                Alert.alert('오류', data.error || '삭제에 실패했습니다.');
+              }
+            } catch (error) {
+              console.error('Remove failed:', error);
+              Alert.alert('오류', '삭제 중 오류가 발생했습니다.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleInvite = async () => {
@@ -146,7 +246,7 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
       if (!token) return;
 
       const response = await fetch(
-        `${BACKEND_URL}/api/corporate/cards/${cardId}/members`,
+        `${API_URL}/api/corporate/cards/${cardId}/members`,
         {
           method: 'POST',
           headers: {
@@ -178,6 +278,58 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
     }
   };
 
+  const openEditModal = (member: Member) => {
+    setEditingMember(member);
+    setEditLimit(String(Math.round(member.monthly_limit / 10000)));
+    setEditModalVisible(true);
+  };
+
+  const handleUpdateLimit = async () => {
+    if (!editingMember) return;
+
+    const limitValue = parseInt(editLimit) * 10000;
+    if (isNaN(limitValue) || limitValue <= 0) {
+      Alert.alert('오류', '유효한 한도를 입력해주세요.');
+      return;
+    }
+
+    try {
+      setUpdating(true);
+      const token = await AuthStorage.getToken();
+      if (!token) return;
+
+      const response = await fetch(
+        `${API_URL}/api/corporate/cards/${cardId}/members/${editingMember.id}`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            monthly_limit: limitValue,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (data.success) {
+        setEditModalVisible(false);
+        setEditingMember(null);
+        fetchMembers();
+        Alert.alert('완료', '한도가 수정되었습니다.');
+      } else {
+        Alert.alert('오류', data.error || '한도 수정에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error('Update limit failed:', error);
+      Alert.alert('오류', '한도 수정 중 오류가 발생했습니다.');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
   const activeMembers = members.filter((m) => m.status === 'active');
   const pendingMembers = members.filter((m) => m.status === 'pending');
 
@@ -203,10 +355,11 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
           <Text style={styles.headerTitle}>직원 관리</Text>
           <TouchableOpacity
             onPress={openInviteModal}
+            style={styles.headerAddButton}
             activeOpacity={0.7}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <Text style={styles.addText}>초대</Text>
+            <UserPlusIcon width={20} height={20} color="#212121" />
           </TouchableOpacity>
         </View>
 
@@ -248,7 +401,7 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
                   <View key={member.id} style={styles.memberCard}>
                     <View style={styles.memberLeft}>
                       <View style={styles.avatarPending}>
-                        <Text style={styles.avatarText}>?</Text>
+                        <ClockIcon width={20} height={20} color="#999999" />
                       </View>
                       <View style={styles.memberInfo}>
                         <Text style={styles.memberEmail}>{member.invited_email}</Text>
@@ -262,7 +415,24 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
                         </View>
                       </View>
                     </View>
-                    <Text style={styles.memberLimit}>{formatCurrency(member.monthly_limit)}</Text>
+                    <View style={styles.memberRightWithAction}>
+                      <TouchableOpacity
+                        style={styles.limitButton}
+                        onPress={() => openEditModal(member)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={styles.memberLimit}>{formatCurrency(member.monthly_limit)}</Text>
+                        <PencilIcon width={12} height={12} color="#999999" />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.deleteButton}
+                        onPress={() => handleRemoveMember(member.id, member.invited_email)}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      >
+                        <TrashIcon width={16} height={16} color="#EF4444" />
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 ))}
               </View>
@@ -296,9 +466,28 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
                         )}
                       </View>
                     </View>
-                    <View style={styles.memberRight}>
-                      <Text style={styles.memberUsed}>{formatCurrency(member.used_amount)}</Text>
-                      <Text style={styles.memberLimitSmall}>/ {formatCurrency(member.monthly_limit)}</Text>
+                    <View style={styles.memberRightWithAction}>
+                      <TouchableOpacity
+                        style={styles.limitButton}
+                        onPress={() => openEditModal(member)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.memberRight}>
+                          <Text style={styles.memberUsed}>{formatCurrency(member.used_amount)}</Text>
+                          <Text style={styles.memberLimitSmall}>/ {formatCurrency(member.monthly_limit)}</Text>
+                        </View>
+                        <PencilIcon width={12} height={12} color="#999999" />
+                      </TouchableOpacity>
+                      {member.role !== 'admin' && (
+                        <TouchableOpacity
+                          style={styles.deleteButton}
+                          onPress={() => handleRemoveMember(member.id, member.user?.user_name || member.invited_email)}
+                          activeOpacity={0.7}
+                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        >
+                          <TrashIcon width={16} height={16} color="#EF4444" />
+                        </TouchableOpacity>
+                      )}
                     </View>
                   </View>
                 ))}
@@ -307,8 +496,11 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
 
             {members.length === 0 && (
               <View style={styles.emptyContainer}>
+                <View style={styles.emptyIconContainer}>
+                  <UserIcon width={32} height={32} color="#CCCCCC" />
+                </View>
                 <Text style={styles.emptyText}>등록된 직원이 없습니다</Text>
-                <Text style={styles.emptySubText}>상단의 '초대' 버튼을 눌러 직원을 추가하세요</Text>
+                <Text style={styles.emptySubText}>상단의 버튼을 눌러 직원을 초대하세요</Text>
               </View>
             )}
           </ScrollView>
@@ -341,12 +533,39 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
               <TextInput
                 style={styles.formInput}
                 value={inviteEmail}
-                onChangeText={setInviteEmail}
-                placeholder="example@company.com"
+                onChangeText={handleEmailChange}
+                placeholder="이메일을 입력하세요"
                 placeholderTextColor="#CCCCCC"
                 keyboardType="email-address"
                 autoCapitalize="none"
               />
+              {isSearching && (
+                <View style={styles.searchingIndicator}>
+                  <ActivityIndicator size="small" color="#999999" />
+                </View>
+              )}
+              {searchResults.length > 0 && (
+                <View style={styles.searchResults}>
+                  {searchResults.map((user) => (
+                    <TouchableOpacity
+                      key={user.user_id}
+                      style={styles.searchResultItem}
+                      onPress={() => selectUser(user)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.searchResultAvatar}>
+                        <Text style={styles.searchResultAvatarText}>
+                          {user.user_name?.charAt(0) || 'U'}
+                        </Text>
+                      </View>
+                      <View style={styles.searchResultInfo}>
+                        <Text style={styles.searchResultName}>{user.user_name}</Text>
+                        <Text style={styles.searchResultEmail}>{user.user_email}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
             </View>
 
             <View style={styles.formGroup}>
@@ -432,6 +651,79 @@ export const AdminMembersScreen: React.FC<AdminMembersScreenProps> = ({
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Edit Limit Modal */}
+      <Modal
+        visible={editModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <TouchableOpacity
+            style={styles.modalBackdrop}
+            activeOpacity={1}
+            onPress={() => setEditModalVisible(false)}
+          />
+          <View style={[styles.modalContent, { paddingBottom: insets.bottom + 24 }]}>
+            <View style={styles.modalHandle} />
+
+            <Text style={styles.modalTitle}>한도 수정</Text>
+
+            {editingMember && (
+              <View style={styles.editMemberInfo}>
+                <Text style={styles.editMemberName}>
+                  {editingMember.user?.user_name || editingMember.invited_email}
+                </Text>
+                <Text style={styles.editMemberUsed}>
+                  현재 사용: {formatCurrency(editingMember.used_amount)}
+                </Text>
+              </View>
+            )}
+
+            <View style={styles.formGroup}>
+              <Text style={styles.formLabel}>월 한도 (만원)</Text>
+              <TextInput
+                style={styles.formInput}
+                value={editLimit}
+                onChangeText={setEditLimit}
+                placeholder="50"
+                placeholderTextColor="#CCCCCC"
+                keyboardType="numeric"
+              />
+              {editLimit && (
+                <Text style={styles.formHint}>
+                  = {((parseInt(editLimit) || 0) * 10000).toLocaleString()}원
+                </Text>
+              )}
+              {editingMember && parseInt(editLimit) * 10000 < editingMember.used_amount && (
+                <Text style={styles.formError}>
+                  현재 사용량보다 낮은 한도는 설정할 수 없습니다
+                </Text>
+              )}
+            </View>
+
+            <TouchableOpacity
+              style={[
+                styles.saveButton,
+                (updating || (editingMember && parseInt(editLimit) * 10000 < editingMember.used_amount)) && styles.saveButtonDisabled
+              ]}
+              onPress={handleUpdateLimit}
+              disabled={updating || (editingMember ? parseInt(editLimit) * 10000 < editingMember.used_amount : false)}
+              activeOpacity={0.8}
+            >
+              {updating ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.saveButtonText}>저장</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 };
@@ -467,6 +759,14 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: FONTS.semiBold,
     color: '#9C27B0',
+  },
+  headerAddButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#FAFAFA',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   scrollView: {
     flex: 1,
@@ -517,15 +817,17 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.06,
+        shadowOpacity: 0.04,
         shadowRadius: 6,
       },
       android: {
-        elevation: 2,
+        elevation: 1,
       },
     }),
   },
@@ -631,6 +933,15 @@ const styles = StyleSheet.create({
   emptyContainer: {
     alignItems: 'center',
     paddingVertical: 60,
+  },
+  emptyIconContainer: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
   },
   emptyText: {
     fontSize: 16,
@@ -743,5 +1054,100 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: FONTS.bold,
     color: '#FFFFFF',
+  },
+  // Search results
+  searchingIndicator: {
+    position: 'absolute',
+    right: 16,
+    top: 40,
+  },
+  searchResults: {
+    marginTop: 8,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#EEEEEE',
+    overflow: 'hidden',
+  },
+  searchResultItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F5F5',
+  },
+  searchResultAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#212121',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  searchResultAvatarText: {
+    fontSize: 14,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
+  },
+  searchResultInfo: {
+    flex: 1,
+  },
+  searchResultName: {
+    fontSize: 14,
+    fontFamily: FONTS.semiBold,
+    color: '#212121',
+    marginBottom: 2,
+  },
+  searchResultEmail: {
+    fontSize: 12,
+    fontFamily: FONTS.regular,
+    color: '#999999',
+  },
+  // Member actions
+  memberRightWithAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  deleteButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#FEF2F2',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  limitButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    backgroundColor: '#F8F8F8',
+  },
+  editMemberInfo: {
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 20,
+  },
+  editMemberName: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginBottom: 4,
+  },
+  editMemberUsed: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+  },
+  formError: {
+    fontSize: 13,
+    fontFamily: FONTS.regular,
+    color: '#EF4444',
+    marginTop: 6,
   },
 });

@@ -14,9 +14,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FONTS } from '../constants/theme';
 import { AuthStorage } from '../utils/auth';
-import { BackIcon } from '../components/svg';
+import { BackIcon, ChevronRightIcon, BuildingIcon, UsersIcon } from '../components/svg';
+import { API_URL } from '../utils/api';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 interface CorporateCard {
@@ -80,9 +80,10 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
   const [selectedCardId, setSelectedCardId] = useState(cardId);
 
   useEffect(() => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: 0,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start();
 
@@ -95,7 +96,7 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
       const token = await AuthStorage.getToken();
       if (!token) return;
 
-      const response = await fetch(`${BACKEND_URL}/api/corporate/dashboard/${selectedCardId}`, {
+      const response = await fetch(`${API_URL}/api/corporate/dashboard/${selectedCardId}`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -117,9 +118,10 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
   };
 
   const handleClose = () => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: SCREEN_WIDTH,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start(() => {
       onClose();
@@ -286,25 +288,31 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
               <TouchableOpacity
                 style={styles.actionButton}
                 onPress={onViewDepartments}
-                activeOpacity={0.8}
+                activeOpacity={0.7}
               >
+                <View style={styles.actionButtonIcon}>
+                  <BuildingIcon width={22} height={22} color="#212121" />
+                </View>
                 <View style={styles.actionButtonContent}>
                   <Text style={styles.actionButtonTitle}>부서별 지출 현황</Text>
                   <Text style={styles.actionButtonSubtitle}>부서 관리 및 한도 설정</Text>
                 </View>
-                <Text style={styles.actionButtonArrow}>{'>'}</Text>
+                <ChevronRightIcon width={8} height={14} color="#CCCCCC" />
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.actionButton}
                 onPress={onViewMembers}
-                activeOpacity={0.8}
+                activeOpacity={0.7}
               >
+                <View style={styles.actionButtonIcon}>
+                  <UsersIcon width={22} height={22} color="#212121" />
+                </View>
                 <View style={styles.actionButtonContent}>
                   <Text style={styles.actionButtonTitle}>직원 관리</Text>
                   <Text style={styles.actionButtonSubtitle}>직원 초대 및 권한 설정</Text>
                 </View>
-                <Text style={styles.actionButtonArrow}>{'>'}</Text>
+                <ChevronRightIcon width={8} height={14} color="#CCCCCC" />
               </TouchableOpacity>
             </View>
           </ScrollView>
@@ -348,7 +356,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   cardSelector: {
-    marginBottom: 24,
+    marginBottom: 16,
   },
   cardSelectorContent: {
     paddingHorizontal: 20,
@@ -373,7 +381,7 @@ const styles = StyleSheet.create({
   },
   statsSection: {
     paddingHorizontal: 20,
-    marginBottom: 24,
+    marginBottom: 16,
   },
   sectionLabel: {
     fontSize: 14,
@@ -413,8 +421,8 @@ const styles = StyleSheet.create({
   quickStats: {
     flexDirection: 'row',
     paddingHorizontal: 20,
-    marginBottom: 32,
-    gap: 12,
+    marginBottom: 20,
+    gap: 10,
   },
   quickStatCard: {
     flex: 1,
@@ -422,15 +430,17 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
+        shadowOpacity: 0.04,
+        shadowRadius: 6,
       },
       android: {
-        elevation: 3,
+        elevation: 1,
       },
     }),
   },
@@ -447,10 +457,10 @@ const styles = StyleSheet.create({
   },
   section: {
     paddingHorizontal: 20,
-    marginBottom: 24,
+    marginBottom: 16,
   },
   sectionHeader: {
-    marginBottom: 16,
+    marginBottom: 12,
   },
   sectionTitle: {
     fontSize: 18,
@@ -460,17 +470,19 @@ const styles = StyleSheet.create({
   deptCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
-    padding: 20,
-    marginBottom: 12,
+    padding: 16,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
+        shadowOpacity: 0.06,
+        shadowRadius: 6,
       },
       android: {
-        elevation: 3,
+        elevation: 2,
       },
     }),
   },
@@ -478,7 +490,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   deptNameRow: {
     flexDirection: 'row',
@@ -503,7 +515,7 @@ const styles = StyleSheet.create({
   deptProgressContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 10,
   },
   deptProgressBar: {
     flex: 1,
@@ -549,21 +561,31 @@ const styles = StyleSheet.create({
   actionButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     backgroundColor: '#FFFFFF',
-    padding: 20,
+    padding: 18,
     borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
+        shadowOpacity: 0.04,
+        shadowRadius: 6,
       },
       android: {
-        elevation: 3,
+        elevation: 1,
       },
     }),
+  },
+  actionButtonIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#FAFAFA',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
   },
   actionButtonContent: {
     flex: 1,

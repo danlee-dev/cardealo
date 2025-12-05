@@ -6,9 +6,15 @@ import axios from 'axios';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+// 바코드인지 확인 (12자리 숫자)
+const isBarcode = (data: string): boolean => {
+  return /^\d{12}$/.test(data);
+};
+
 export default function PaymentPage() {
   const router = useRouter();
   const [qrData, setQrData] = useState('');
+  const [scanType, setScanType] = useState<'qr' | 'barcode'>('qr');
   const [merchantId, setMerchantId] = useState(1); // 기본 가맹점 ID
   const [amount, setAmount] = useState('');
   const [benefit, setBenefit] = useState<any>(null);
@@ -22,13 +28,21 @@ export default function PaymentPage() {
     if (hasLoadedData.current) return;
 
     const savedQrData = sessionStorage.getItem('qr_data');
-    console.log('>>> Payment page loaded, QR data from storage:', savedQrData);
+    console.log('>>> Payment page loaded, scanned data from storage:', savedQrData);
     if (savedQrData) {
       setQrData(savedQrData);
+      // 바코드인지 QR인지 판단
+      if (isBarcode(savedQrData)) {
+        setScanType('barcode');
+        console.log('>>> Detected as barcode');
+      } else {
+        setScanType('qr');
+        console.log('>>> Detected as QR code');
+      }
       sessionStorage.removeItem('qr_data');
       hasLoadedData.current = true;
     } else {
-      console.log('>>> No QR data found, redirecting to /scan');
+      console.log('>>> No scan data found, redirecting to /scan');
       router.push('/scan');
     }
   }, [router]);
@@ -44,11 +58,22 @@ export default function PaymentPage() {
     setError('');
 
     try {
-      const response = await axios.post(`${API_URL}/api/qr/scan`, {
-        qr_data: qrData,
-        merchant_id: merchantId,
-        payment_amount: parseInt(amount)
-      });
+      let response;
+      if (scanType === 'barcode') {
+        // 바코드 스캔 API 호출
+        response = await axios.post(`${API_URL}/api/qr/scan-barcode`, {
+          barcode_data: qrData,
+          merchant_id: merchantId,
+          payment_amount: parseInt(amount)
+        });
+      } else {
+        // QR 스캔 API 호출
+        response = await axios.post(`${API_URL}/api/qr/scan`, {
+          qr_data: qrData,
+          merchant_id: merchantId,
+          payment_amount: parseInt(amount)
+        });
+      }
 
       setBenefit(response.data);
     } catch (err: any) {
@@ -81,13 +106,16 @@ export default function PaymentPage() {
     }
   };
 
+  // QR인 경우에만 파싱하여 사용자 정보 표시
   let userData = null;
-  try {
-    userData = qrData ? JSON.parse(qrData) : null;
-    console.log('>>> Parsed user data:', userData);
-  } catch (e) {
-    console.error('>>> QR 데이터 파싱 실패:', e);
-    console.log('>>> QR 데이터:', qrData);
+  if (scanType === 'qr') {
+    try {
+      userData = qrData ? JSON.parse(qrData) : null;
+      console.log('>>> Parsed user data:', userData);
+    } catch (e) {
+      console.error('>>> QR 데이터 파싱 실패:', e);
+      console.log('>>> QR 데이터:', qrData);
+    }
   }
 
   return (
@@ -100,6 +128,9 @@ export default function PaymentPage() {
           ← 홈으로
         </button>
         <h1 className="text-2xl font-bold text-text mt-2">결제 처리</h1>
+        {scanType === 'barcode' && (
+          <p className="text-sm text-text-secondary mt-1">바코드 스캔됨: {qrData}</p>
+        )}
       </header>
 
       <main className="flex-1 p-6">
@@ -114,15 +145,25 @@ export default function PaymentPage() {
             </div>
           ) : (
             <div className="bg-white rounded-subtle shadow-lg p-6">
-              <div className="mb-6">
-                <h3 className="text-sm font-semibold text-text-secondary mb-1">사용자</h3>
-                <p className="text-lg">{userData?.user_name}</p>
-              </div>
+              {scanType === 'qr' ? (
+                <>
+                  <div className="mb-6">
+                    <h3 className="text-sm font-semibold text-text-secondary mb-1">사용자</h3>
+                    <p className="text-lg">{userData?.user_name || '-'}</p>
+                  </div>
 
-              <div className="mb-6">
-                <h3 className="text-sm font-semibold text-text-secondary mb-1">카드</h3>
-                <p className="text-lg">{userData?.card_name}</p>
-              </div>
+                  <div className="mb-6">
+                    <h3 className="text-sm font-semibold text-text-secondary mb-1">카드</h3>
+                    <p className="text-lg">{userData?.card_name || '-'}</p>
+                  </div>
+                </>
+              ) : (
+                <div className="mb-6 bg-gray-50 rounded-subtle p-4">
+                  <p className="text-sm text-text-secondary">
+                    바코드 스캔됨 - 금액 입력 후 정보가 표시됩니다
+                  </p>
+                </div>
+              )}
 
               <div className="mb-6">
                 <h3 className="text-sm font-semibold text-text-secondary mb-1">결제 금액</h3>

@@ -13,9 +13,9 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FONTS } from '../constants/theme';
 import { AuthStorage } from '../utils/auth';
-import { BackIcon } from '../components/svg';
+import { BackIcon, CheckCircleIcon, AlertCircleIcon } from '../components/svg';
+import { API_URL } from '../utils/api';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 interface CorporateCard {
@@ -50,9 +50,10 @@ export const AdminAuthScreen: React.FC<AdminAuthScreenProps> = ({ onAuthenticate
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
 
   useEffect(() => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: 0,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start();
 
@@ -68,7 +69,7 @@ export const AdminAuthScreen: React.FC<AdminAuthScreenProps> = ({ onAuthenticate
         return;
       }
 
-      const response = await fetch(`${BACKEND_URL}/api/corporate/is-admin`, {
+      const response = await fetch(`${API_URL}/api/corporate/is-admin`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -79,7 +80,7 @@ export const AdminAuthScreen: React.FC<AdminAuthScreenProps> = ({ onAuthenticate
       const data = await response.json();
 
       if (data.success && data.is_admin) {
-        const cardsResponse = await fetch(`${BACKEND_URL}/api/corporate/cards`, {
+        const cardsResponse = await fetch(`${API_URL}/api/corporate/cards`, {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -113,9 +114,10 @@ export const AdminAuthScreen: React.FC<AdminAuthScreenProps> = ({ onAuthenticate
   };
 
   const handleCancel = () => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: SCREEN_WIDTH,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start(() => {
       onCancel();
@@ -150,7 +152,7 @@ export const AdminAuthScreen: React.FC<AdminAuthScreenProps> = ({ onAuthenticate
         ]}
       >
         {/* Header */}
-        <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, Platform.OS === 'android' ? 24 : 0) + 10 }]}>
           <TouchableOpacity
             onPress={handleCancel}
             activeOpacity={0.7}
@@ -161,8 +163,8 @@ export const AdminAuthScreen: React.FC<AdminAuthScreenProps> = ({ onAuthenticate
         </View>
 
         <View style={styles.content}>
-          <View style={styles.iconContainerDenied}>
-            <Text style={styles.iconText}>!</Text>
+          <View style={styles.iconContainerWrapper}>
+            <AlertCircleIcon width={80} height={80} color="#666666" backgroundColor="#E8E8E8" />
           </View>
 
           <Text style={styles.title}>접근 권한 없음</Text>
@@ -171,13 +173,15 @@ export const AdminAuthScreen: React.FC<AdminAuthScreenProps> = ({ onAuthenticate
             법인카드를 등록하면 관리자 기능을 사용할 수 있습니다.
           </Text>
 
-          <TouchableOpacity
-            style={styles.primaryButton}
-            onPress={handleCancel}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.primaryButtonText}>돌아가기</Text>
-          </TouchableOpacity>
+          <View style={styles.buttonContainerCentered}>
+            <TouchableOpacity
+              style={styles.primaryButton}
+              onPress={handleCancel}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.primaryButtonText}>돌아가기</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Animated.View>
     );
@@ -193,7 +197,7 @@ export const AdminAuthScreen: React.FC<AdminAuthScreenProps> = ({ onAuthenticate
       ]}
     >
       {/* Header */}
-      <View style={[styles.header, { paddingTop: insets.top + 10 }]}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, Platform.OS === 'android' ? 24 : 0) + 10 }]}>
         <TouchableOpacity
           onPress={handleCancel}
           activeOpacity={0.7}
@@ -211,8 +215,8 @@ export const AdminAuthScreen: React.FC<AdminAuthScreenProps> = ({ onAuthenticate
         ]}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.iconContainer}>
-          <Text style={styles.iconTextCheck}>O</Text>
+        <View style={styles.iconContainerWrapper}>
+          <CheckCircleIcon width={80} height={80} color="#FFFFFF" backgroundColor="#212121" />
         </View>
 
         <Text style={styles.title}>관리자 인증 완료</Text>
@@ -280,34 +284,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#212121',
-    justifyContent: 'center',
-    alignItems: 'center',
+  iconContainerWrapper: {
     alignSelf: 'center',
     marginBottom: 32,
-  },
-  iconContainerDenied: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#E0E0E0',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 32,
-  },
-  iconText: {
-    fontSize: 32,
-    fontFamily: FONTS.bold,
-    color: '#666666',
-  },
-  iconTextCheck: {
-    fontSize: 32,
-    fontFamily: FONTS.bold,
-    color: '#FFFFFF',
   },
   title: {
     fontSize: 24,
@@ -336,15 +315,17 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 18,
     marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.06,
+        shadowOpacity: 0.04,
         shadowRadius: 6,
       },
       android: {
-        elevation: 2,
+        elevation: 1,
       },
     }),
   },
@@ -370,6 +351,10 @@ const styles = StyleSheet.create({
   buttonContainer: {
     width: '100%',
     gap: 10,
+  },
+  buttonContainerCentered: {
+    width: '100%',
+    marginTop: 16,
   },
   primaryButton: {
     height: 52,

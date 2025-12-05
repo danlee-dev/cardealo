@@ -18,9 +18,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FONTS } from '../constants/theme';
 import { AuthStorage } from '../utils/auth';
-import { BackIcon } from '../components/svg';
+import { BackIcon, PlusIcon, BuildingIcon } from '../components/svg';
+import { API_URL } from '../utils/api';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 const DEPARTMENT_COLORS = [
@@ -57,9 +57,10 @@ export const AdminDepartmentScreen: React.FC<AdminDepartmentScreenProps> = ({ ca
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: 0,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start();
 
@@ -72,7 +73,7 @@ export const AdminDepartmentScreen: React.FC<AdminDepartmentScreenProps> = ({ ca
       const token = await AuthStorage.getToken();
       if (!token) return;
 
-      const response = await fetch(`${BACKEND_URL}/api/corporate/cards/${cardId}/departments`, {
+      const response = await fetch(`${API_URL}/api/corporate/cards/${cardId}/departments`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -93,9 +94,10 @@ export const AdminDepartmentScreen: React.FC<AdminDepartmentScreenProps> = ({ ca
   };
 
   const handleBack = () => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: SCREEN_WIDTH,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start(() => {
       onBack();
@@ -145,8 +147,8 @@ export const AdminDepartmentScreen: React.FC<AdminDepartmentScreenProps> = ({ ca
       if (!token) return;
 
       const url = editingDept
-        ? `${BACKEND_URL}/api/corporate/cards/${cardId}/departments/${editingDept.id}`
-        : `${BACKEND_URL}/api/corporate/cards/${cardId}/departments`;
+        ? `${API_URL}/api/corporate/cards/${cardId}/departments/${editingDept.id}`
+        : `${API_URL}/api/corporate/cards/${cardId}/departments`;
 
       const response = await fetch(url, {
         method: editingDept ? 'PUT' : 'POST',
@@ -202,10 +204,11 @@ export const AdminDepartmentScreen: React.FC<AdminDepartmentScreenProps> = ({ ca
           <Text style={styles.headerTitle}>부서 관리</Text>
           <TouchableOpacity
             onPress={openCreateModal}
+            style={styles.headerAddButton}
             activeOpacity={0.7}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <Text style={styles.addText}>추가</Text>
+            <PlusIcon width={16} height={16} color="#212121" />
           </TouchableOpacity>
         </View>
 
@@ -238,8 +241,11 @@ export const AdminDepartmentScreen: React.FC<AdminDepartmentScreenProps> = ({ ca
             <View style={styles.listSection}>
               {departments.length === 0 ? (
                 <View style={styles.emptyContainer}>
+                  <View style={styles.emptyIconContainer}>
+                    <BuildingIcon width={32} height={32} color="#CCCCCC" />
+                  </View>
                   <Text style={styles.emptyText}>등록된 부서가 없습니다</Text>
-                  <Text style={styles.emptySubText}>상단의 '추가' 버튼을 눌러 부서를 추가하세요</Text>
+                  <Text style={styles.emptySubText}>상단의 버튼을 눌러 부서를 추가하세요</Text>
                 </View>
               ) : (
                 departments.map((dept) => (
@@ -411,6 +417,14 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.semiBold,
     color: '#9C27B0',
   },
+  headerAddButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#FAFAFA',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   scrollView: {
     flex: 1,
   },
@@ -454,6 +468,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 60,
   },
+  emptyIconContainer: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
   emptyText: {
     fontSize: 16,
     fontFamily: FONTS.medium,
@@ -470,15 +493,17 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 20,
     marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 8,
+        shadowOpacity: 0.06,
+        shadowRadius: 6,
       },
       android: {
-        elevation: 3,
+        elevation: 2,
       },
     }),
   },

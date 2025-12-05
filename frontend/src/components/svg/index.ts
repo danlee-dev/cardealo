@@ -26,3 +26,34 @@ export { MyLocationIcon } from './MyLocationIcon';
 export { SearchPinIcon } from './SearchPinIcon';
 export { CourseIcon } from './CourseIcon';
 export { SavedCourseIcon } from './SavedCourseIcon';
+export { ReceiptIcon } from './ReceiptIcon';
+export { ChevronRightIcon } from './ChevronRightIcon';
+export { CheckCircleIcon } from './CheckCircleIcon';
+export { AlertCircleIcon } from './AlertCircleIcon';
+export { ClockIcon } from './ClockIcon';
+export { UserPlusIcon } from './UserPlusIcon';
+export { UsersIcon } from './UsersIcon';
+export { BuildingIcon } from './BuildingIcon';
+export { UserIcon } from './UserIcon';
+export { PlusIcon } from './PlusIcon';
+export { CloseIcon } from './CloseIcon';
+export { ChatIcon } from './ChatIcon';
+export { SendIcon } from './SendIcon';
+export { DoubleCheckIcon } from './DoubleCheckIcon';
+export { TrashIcon } from './TrashIcon';
+export { PencilIcon } from './PencilIcon';
+export {
+  TurnLeftIcon,
+  TurnRightIcon,
+  StraightIcon,
+  UTurnIcon,
+  StartIcon,
+  EndIcon,
+  CrosswalkIcon,
+  BusIcon,
+  SubwayIcon,
+  CarIcon,
+  WalkIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+} from './NavigationIcons';

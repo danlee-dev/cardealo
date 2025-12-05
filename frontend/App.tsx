@@ -10,6 +10,7 @@ import { SplashScreen } from './src/screens/SplashScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
 import { SignupScreen } from './src/screens/SignupScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
+import { NotificationProvider } from './src/contexts/NotificationContext';
 import { FONTS } from './src/constants/theme';
 import { AuthStorage } from './src/utils/auth';
 
@@ -84,10 +85,12 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
-          {renderScreen()}
-          <StatusBar style="dark" />
-        </View>
+        <NotificationProvider>
+          <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
+            {renderScreen()}
+            <StatusBar style="dark" />
+          </View>
+        </NotificationProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

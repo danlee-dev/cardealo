@@ -11,8 +11,7 @@ import {
 } from 'react-native';
 import { FONTS } from '../constants/theme';
 import { AuthStorage } from '../utils/auth';
-
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
+import { API_URL } from '../utils/api';
 
 interface CardEditModalProps {
   visible: boolean;
@@ -44,7 +43,7 @@ export const CardEditModal: React.FC<CardEditModalProps> = ({
         return;
       }
 
-      const response = await fetch(`${BACKEND_URL}/api/card/edit`, {
+      const response = await fetch(`${API_URL}/api/card/edit`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -96,7 +95,7 @@ export const CardEditModal: React.FC<CardEditModalProps> = ({
                 return;
               }
 
-              const response = await fetch(`${BACKEND_URL}/api/card/del`, {
+              const response = await fetch(`${API_URL}/api/card/del`, {
                 method: 'POST',
                 headers: {
                   'Authorization': `Bearer ${token}`,

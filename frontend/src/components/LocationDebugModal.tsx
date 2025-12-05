@@ -2,8 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, Modal, TouchableOpacity, TextInput, Alert } from 'react-native';
 import { FONTS, COLORS } from '../constants/theme';
 import axios from 'axios';
-
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://127.0.0.1:5001';
+import { API_URL } from '../utils/api';
 
 interface LocationDebugModalProps {
   visible: boolean;

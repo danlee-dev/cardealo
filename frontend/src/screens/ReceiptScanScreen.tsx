@@ -18,9 +18,9 @@ import { BackIcon, CameraIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import * as FileSystem from 'expo-file-system/legacy';
 import { AuthStorage } from '../utils/auth';
+import { API_URL } from '../utils/api';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 
 interface ReceiptScanScreenProps {
   onBack: () => void;
@@ -46,15 +46,41 @@ export const ReceiptScanScreen: React.FC<ReceiptScanScreenProps> = ({ onBack, on
   const [receiptResult, setReceiptResult] = useState<ReceiptResult | null>(null);
   const [showResult, setShowResult] = useState(false);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     requestPermissions();
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: 0,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start();
   }, []);
+
+  useEffect(() => {
+    if (isProcessing) {
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.03,
+            duration: 400,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 400,
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      pulse.start();
+      return () => pulse.stop();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [isProcessing]);
 
   const requestPermissions = async () => {
     const { status: cameraStatus } = await ImagePicker.requestCameraPermissionsAsync();
@@ -66,13 +92,32 @@ export const ReceiptScanScreen: React.FC<ReceiptScanScreenProps> = ({ onBack, on
   };
 
   const handleBack = () => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: SCREEN_WIDTH,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start(() => {
       onBack();
     });
+  };
+
+  const handlePressIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.98,
+      tension: 100,
+      friction: 10,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      tension: 100,
+      friction: 10,
+      useNativeDriver: true,
+    }).start();
   };
 
   const takePicture = async () => {
@@ -133,7 +178,7 @@ export const ReceiptScanScreen: React.FC<ReceiptScanScreenProps> = ({ onBack, on
 
       const imageFormat = imageUri.split('.').pop()?.toLowerCase() || 'jpg';
 
-      const response = await fetch(`${BACKEND_URL}/api/ocr/receipt`, {
+      const response = await fetch(`${API_URL}/api/ocr/receipt`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -169,15 +214,68 @@ export const ReceiptScanScreen: React.FC<ReceiptScanScreenProps> = ({ onBack, on
   const handleSave = async () => {
     if (!receiptResult) return;
 
-    // TODO: Save receipt data to backend
-    Alert.alert(
-      '저장 완료',
-      '영수증 정보가 저장되었습니다.',
-      [{ text: '확인', onPress: () => {
-        onSaved?.();
-        handleBack();
-      }}]
-    );
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) {
+        Alert.alert('오류', '로그인이 필요합니다.');
+        return;
+      }
+
+      // 법인카드 결제 내역으로 저장 시도
+      const response = await fetch(`${API_URL}/api/corporate/receipt/save`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          merchant_name: receiptResult.merchant_name,
+          merchant_category: receiptResult.merchant_category,
+          total_amount: receiptResult.total_amount,
+          payment_date: receiptResult.payment_date,
+          payment_time: receiptResult.payment_time,
+          card_number: receiptResult.card_number,
+          approval_number: receiptResult.approval_number,
+          raw_text: receiptResult.raw_text,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        const usage = data.updated_usage;
+        let message = '영수증이 법인카드 사용 내역에 저장되었습니다.';
+        if (usage?.personal) {
+          const remaining = usage.personal.remaining.toLocaleString();
+          message += `\n\n잔여 한도: ${remaining}원`;
+        }
+        Alert.alert('저장 완료', message, [{
+          text: '확인',
+          onPress: () => {
+            onSaved?.();
+            handleBack();
+          }
+        }]);
+      } else {
+        // 법인카드 멤버가 아니거나 한도 초과 등
+        if (data.error?.includes('법인카드 멤버가 아닙니다')) {
+          // 개인 영수증으로 저장 (현재는 알림만)
+          Alert.alert(
+            '저장 완료',
+            '영수증 정보가 저장되었습니다.',
+            [{ text: '확인', onPress: () => {
+              onSaved?.();
+              handleBack();
+            }}]
+          );
+        } else {
+          Alert.alert('저장 실패', data.error || '저장에 실패했습니다.');
+        }
+      }
+    } catch (error) {
+      console.error('Receipt save error:', error);
+      Alert.alert('오류', '영수증 저장 중 오류가 발생했습니다.');
+    }
   };
 
   const handleRetake = () => {
@@ -212,7 +310,7 @@ export const ReceiptScanScreen: React.FC<ReceiptScanScreenProps> = ({ onBack, on
         style={styles.scrollView}
         contentContainerStyle={[
           styles.content,
-          { paddingBottom: insets.bottom + 24 }
+          { paddingBottom: insets.bottom + 100 }
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -223,30 +321,43 @@ export const ReceiptScanScreen: React.FC<ReceiptScanScreenProps> = ({ onBack, on
             </Text>
 
             <TouchableOpacity
-              style={[
-                styles.cameraBox,
-                receiptImage && styles.cameraBoxWithImage
-              ]}
               onPress={takePicture}
-              activeOpacity={0.8}
+              onPressIn={handlePressIn}
+              onPressOut={handlePressOut}
+              activeOpacity={1}
               disabled={isProcessing}
             >
-              {receiptImage ? (
-                <Image source={{ uri: receiptImage }} style={styles.receiptImage} />
-              ) : (
-                <View style={styles.cameraIconContainer}>
-                  <View style={styles.cameraIconCircle}>
-                    <CameraIcon width={32} height={32} color="#666666" />
+              <Animated.View
+                style={[
+                  styles.cameraBox,
+                  receiptImage && styles.cameraBoxWithImage,
+                  { transform: [{ scale: isProcessing ? pulseAnim : scaleAnim }] }
+                ]}
+              >
+                {/* Corner markers */}
+                <View style={[styles.cornerMark, styles.cornerTopLeft]} />
+                <View style={[styles.cornerMark, styles.cornerTopRight]} />
+                <View style={[styles.cornerMark, styles.cornerBottomLeft]} />
+                <View style={[styles.cornerMark, styles.cornerBottomRight]} />
+
+                {receiptImage ? (
+                  <Image source={{ uri: receiptImage }} style={styles.receiptImage} />
+                ) : (
+                  <View style={styles.cameraIconContainer}>
+                    <View style={styles.cameraIconCircle}>
+                      <CameraIcon width={32} height={32} color="#666666" />
+                    </View>
+                    <Text style={styles.cameraText}>영수증 촬영</Text>
+                    <Text style={styles.cameraSubtext}>영수증 전체가 보이게 촬영해주세요</Text>
                   </View>
-                  <Text style={styles.cameraText}>영수증 촬영</Text>
-                </View>
-              )}
-              {isProcessing && (
-                <View style={styles.loadingOverlay}>
-                  <ActivityIndicator size="large" color="#212121" />
-                  <Text style={styles.loadingText}>인식 중...</Text>
-                </View>
-              )}
+                )}
+                {isProcessing && (
+                  <View style={styles.loadingOverlay}>
+                    <ActivityIndicator size="large" color="#212121" />
+                    <Text style={styles.loadingText}>인식 중...</Text>
+                  </View>
+                )}
+              </Animated.View>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -397,7 +508,9 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 320,
     backgroundColor: '#F8F9FA',
-    borderRadius: 20,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#EBEDF0',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
@@ -405,6 +518,43 @@ const styles = StyleSheet.create({
   },
   cameraBoxWithImage: {
     backgroundColor: '#000000',
+    borderColor: '#212121',
+    borderWidth: 2,
+  },
+  cornerMark: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
+    borderColor: '#D1D5DB',
+    borderWidth: 2,
+  },
+  cornerTopLeft: {
+    top: 16,
+    left: 16,
+    borderRightWidth: 0,
+    borderBottomWidth: 0,
+    borderTopLeftRadius: 4,
+  },
+  cornerTopRight: {
+    top: 16,
+    right: 16,
+    borderLeftWidth: 0,
+    borderBottomWidth: 0,
+    borderTopRightRadius: 4,
+  },
+  cornerBottomLeft: {
+    bottom: 16,
+    left: 16,
+    borderRightWidth: 0,
+    borderTopWidth: 0,
+    borderBottomLeftRadius: 4,
+  },
+  cornerBottomRight: {
+    bottom: 16,
+    right: 16,
+    borderLeftWidth: 0,
+    borderTopWidth: 0,
+    borderBottomRightRadius: 4,
   },
   cameraIconContainer: {
     alignItems: 'center',
@@ -417,12 +567,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
+        shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.08,
-        shadowRadius: 8,
+        shadowRadius: 12,
       },
       android: {
         elevation: 3,
@@ -431,8 +583,14 @@ const styles = StyleSheet.create({
   },
   cameraText: {
     fontSize: 16,
-    fontFamily: FONTS.medium,
-    color: '#666666',
+    fontFamily: FONTS.semiBold,
+    color: '#212121',
+    marginBottom: 6,
+  },
+  cameraSubtext: {
+    fontSize: 13,
+    fontFamily: FONTS.regular,
+    color: '#999999',
   },
   receiptImage: {
     width: '100%',
@@ -511,15 +669,17 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 24,
     marginBottom: 24,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.06,
-        shadowRadius: 8,
+        shadowOpacity: 0.04,
+        shadowRadius: 6,
       },
       android: {
-        elevation: 2,
+        elevation: 1,
       },
     }),
   },

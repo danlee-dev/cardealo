@@ -15,18 +15,18 @@ import {
   ActivityIndicator,
   Alert,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { BackIcon, RefreshIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import { CARD_IMAGES } from '../constants/userCards';
 import { AuthStorage } from '../utils/auth';
 import { CardPlaceholder } from '../components/CardPlaceholder';
+import { API_URL } from '../utils/api';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 const SCREEN_WIDTH = Dimensions.get('window').width;
-const CARD_WIDTH = 140;
-const CARD_SPACING = 20;
-const SIDE_PADDING = 20;
+const CARD_INFO_WIDTH = SCREEN_WIDTH - 56; // Card width with spacing
+const CARD_INFO_SPACING = 12; // Spacing between cards
+const CARD_INFO_TOTAL_WIDTH = CARD_INFO_WIDTH + CARD_INFO_SPACING; // Total width including spacing
+const ROULETTE_MULTIPLIER = 10; // How many times to repeat cards for infinite scroll effect
 
 interface OnePayScreenProps {
   onBack: () => void;
@@ -34,12 +34,19 @@ interface OnePayScreenProps {
     name: string;
     category: string;
   } | null;
+  preSelectedCardId?: number | null;
 }
 
-export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStore }) => {
+export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStore, preSelectedCardId }) => {
   const [displayMode, setDisplayMode] = useState<'barcode' | 'qr'>('barcode');
   const [selectedCardIndex, setSelectedCardIndex] = useState(0);
   const [timeLeft, setTimeLeft] = useState(300); // 5 minutes in seconds
+  const toggleSlideAnim = useRef(new Animated.Value(0)).current;
+  const timerPulseAnim = useRef(new Animated.Value(1)).current;
+
+  // Roulette animation states
+  const [isShuffling, setIsShuffling] = useState(false);
+  const [shuffleComplete, setShuffleComplete] = useState(!preSelectedCardId);
   const [userCards, setUserCards] = useState<Array<{
     cid: number;
     card_name: string;
@@ -66,18 +73,21 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
   } | null>(null);
   const [qrTimestamp, setQrTimestamp] = useState<number | null>(null);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
-  const cardListRef = useRef<FlatList>(null);
-  const cardScaleAnims = useRef<Animated.Value[]>([]);
+  const carouselRef = useRef<FlatList>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const successScaleAnim = useRef(new Animated.Value(0)).current;
+
+  // Roulette scroll animation
+  const scrollAnimValue = useRef(new Animated.Value(0)).current;
+  const rouletteStarted = useRef(false);
 
   const fetchUserCards = async () => {
     try {
       const token = await AuthStorage.getToken();
       if (!token) return;
 
-      const response = await fetch(`${BACKEND_URL}/api/mypage`, {
+      const response = await fetch(`${API_URL}/api/mypage`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -88,11 +98,10 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
       const data = await response.json();
       console.log('User cards data:', data);
       if (data.success && data.user.cards) {
-        // 최근 등록 순으로 정렬 (cid 내림차순)
+        // Sort by recent registration (cid descending)
         const sortedCards = [...data.user.cards].sort((a, b) => b.cid - a.cid);
         console.log('Cards (sorted by recent):', sortedCards);
         setUserCards(sortedCards);
-        cardScaleAnims.current = sortedCards.map(() => new Animated.Value(1));
       }
     } catch (error) {
       console.error('Failed to fetch user cards:', error);
@@ -113,9 +122,9 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
 
       const selectedCard = userCards[selectedCardIndex];
       console.log('Generating QR for card:', selectedCard.cid);
-      console.log('Backend URL:', BACKEND_URL);
+      console.log('Backend URL:', API_URL);
 
-      const response = await fetch(`${BACKEND_URL}/api/qr/generate`, {
+      const response = await fetch(`${API_URL}/api/qr/generate`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -145,8 +154,8 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
         setBarcodeImage(data.barcode_image);
         setTimeLeft(data.expires_in || 300);
         setQrTimestamp(data.timestamp);
-        setPaymentStatus('idle'); // QR 생성 직후는 idle 상태
-        stopPaymentPolling(); // 이전 polling 정리
+        setPaymentStatus('idle');
+        stopPaymentPolling();
         startPaymentPolling(data.timestamp);
       } else {
         Alert.alert('오류', `QR 코드 생성 실패: ${data.error || data.message || '알 수 없는 오류'}`);
@@ -160,16 +169,15 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
   };
 
   const startPaymentPolling = async (timestamp: number) => {
-    let scanChecked = false; // QR 스캔 확인 완료 여부
+    let scanChecked = false;
 
     const checkPayment = async () => {
       try {
         const token = await AuthStorage.getToken();
         if (!token) return;
 
-        // 1단계: QR 스캔 상태 확인 (스캔 확인 전까지만)
         if (!scanChecked) {
-          const scanResponse = await fetch(`${BACKEND_URL}/api/qr/scan-status?timestamp=${timestamp}`, {
+          const scanResponse = await fetch(`${API_URL}/api/qr/scan-status?timestamp=${timestamp}`, {
             method: 'GET',
             headers: {
               'Authorization': `Bearer ${token}`,
@@ -180,37 +188,31 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
           const scanData = await scanResponse.json();
 
           if (scanData.status === 'scanned' || scanData.status === 'processing') {
-            // QR이 스캔됨 - 이제 "결제 대기 중..." 표시
             setPaymentStatus('waiting');
             scanChecked = true;
           } else if (scanData.status === 'completed') {
-            // 이미 완료됨 (빠른 결제)
             scanChecked = true;
           } else if (scanData.status === 'failed') {
-            // 타임아웃 또는 실패
             setPaymentStatus('failed');
             stopPaymentPolling();
             setTimeout(() => {
               setPaymentStatus('idle');
-              generateCode(); // QR 재생성
+              generateCode();
             }, 2000);
             return;
           } else if (scanData.status === 'cancelled') {
-            // 관리자가 취소
             setPaymentStatus('cancelled');
             stopPaymentPolling();
             setTimeout(() => {
               setPaymentStatus('idle');
-              generateCode(); // QR 재생성
+              generateCode();
             }, 2000);
             return;
           }
-          // 'waiting' 상태면 계속 대기
         }
 
-        // 2단계: 결제 완료 확인 (스캔 확인 후에만)
         if (scanChecked) {
-          const response = await fetch(`${BACKEND_URL}/api/payment/recent`, {
+          const response = await fetch(`${API_URL}/api/payment/recent`, {
             method: 'GET',
             headers: {
               'Authorization': `Bearer ${token}`,
@@ -239,7 +241,7 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
               setPaymentStatus('idle');
               setPaymentResult(null);
               successScaleAnim.setValue(0);
-              generateCode(); // QR 자동 갱신
+              generateCode();
             }, 3000);
           }
         }
@@ -270,10 +272,10 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
   }, []);
 
   useEffect(() => {
-    if (userCards.length > 0) {
+    if (userCards.length > 0 && shuffleComplete) {
       generateCode();
     }
-  }, [userCards, selectedCardIndex]);
+  }, [userCards, selectedCardIndex, shuffleComplete]);
 
   useEffect(() => {
     timerRef.current = setInterval(() => {
@@ -286,25 +288,95 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
       });
     }, 1000);
 
+    // Timer pulse animation
+    const pulseAnimation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(timerPulseAnim, {
+          toValue: 0.3,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+        Animated.timing(timerPulseAnim, {
+          toValue: 1,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    pulseAnimation.start();
+
     return () => {
       if (timerRef.current) {
         clearInterval(timerRef.current);
       }
+      pulseAnimation.stop();
       stopPaymentPolling();
     };
   }, [userCards, selectedCardIndex]);
 
+  // Infinite right-scroll roulette animation when preSelectedCardId is provided
   useEffect(() => {
-    if (cardScaleAnims.current.length > 0) {
-      cardScaleAnims.current.forEach((anim, index) => {
-        Animated.spring(anim, {
-          toValue: index === selectedCardIndex ? 1.1 : 1,
-          useNativeDriver: true,
-          friction: 7,
-        }).start();
-      });
+    if (preSelectedCardId && userCards.length > 0 && !shuffleComplete && !rouletteStarted.current) {
+      const targetIndex = userCards.findIndex(card => card.cid === preSelectedCardId);
+      if (targetIndex === -1) {
+        setShuffleComplete(true);
+        return;
+      }
+
+      rouletteStarted.current = true;
+      setIsShuffling(true);
+
+      const totalCards = userCards.length;
+      const cardWidth = CARD_INFO_TOTAL_WIDTH;
+
+      // For infinite right scroll effect:
+      // We repeat cards ROULETTE_MULTIPLIER times
+      // Start from the beginning, scroll through several full rotations to the right
+      // End at the target card position (in the middle set of repeated cards)
+
+      const fullRotations = Math.floor(ROULETTE_MULTIPLIER / 2); // How many full rotations
+      const targetPositionInMiddle = (fullRotations * totalCards + targetIndex) * cardWidth;
+
+      // Reset scroll position
+      scrollAnimValue.setValue(0);
+
+      // Small delay to ensure FlatList is ready
+      setTimeout(() => {
+        // Listen to animation value changes and update scroll position
+        const listenerId = scrollAnimValue.addListener(({ value }) => {
+          carouselRef.current?.scrollToOffset({
+            offset: value,
+            animated: false,
+          });
+        });
+
+        // Animate with easing - starts fast, ends slow (like a real roulette spinning right)
+        Animated.timing(scrollAnimValue, {
+          toValue: targetPositionInMiddle,
+          duration: 3000,
+          useNativeDriver: false,
+          easing: (t) => {
+            // Custom easing: fast start, very slow end (cubic ease-out)
+            return 1 - Math.pow(1 - t, 3);
+          },
+        }).start(() => {
+          scrollAnimValue.removeListener(listenerId);
+          setIsShuffling(false);
+          setShuffleComplete(true);
+          setSelectedCardIndex(targetIndex);
+
+          // Scroll to the actual position in the middle set for clean state
+          setTimeout(() => {
+            const middleSetStartIndex = fullRotations * totalCards;
+            carouselRef.current?.scrollToOffset({
+              offset: (middleSetStartIndex + targetIndex) * cardWidth,
+              animated: false,
+            });
+          }, 50);
+        });
+      }, 100);
     }
-  }, [selectedCardIndex]);
+  }, [preSelectedCardId, userCards, shuffleComplete]);
 
   const handleBack = () => {
     Animated.timing(slideAnim, {
@@ -316,25 +388,48 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
     });
   };
 
-  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+  const handleCarouselScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (isShuffling) return;
+
     const scrollPosition = event.nativeEvent.contentOffset.x;
-    const index = Math.round(scrollPosition / (CARD_WIDTH + CARD_SPACING));
-    if (index >= 0 && index < userCards.length && index !== selectedCardIndex) {
+    const cardWidth = CARD_INFO_TOTAL_WIDTH;
+    const totalCards = userCards.length;
+
+    // Calculate which card is closest to center
+    const rawIndex = Math.round(scrollPosition / cardWidth);
+    const index = rawIndex % totalCards;
+
+    if (index >= 0 && index < totalCards && index !== selectedCardIndex) {
       setSelectedCardIndex(index);
     }
   };
 
   const handleCardPress = (index: number) => {
-    setSelectedCardIndex(index);
-    cardListRef.current?.scrollToIndex({
-      index,
+    if (isShuffling) return;
+
+    const actualIndex = index % userCards.length;
+    setSelectedCardIndex(actualIndex);
+
+    const cardWidth = CARD_INFO_TOTAL_WIDTH;
+    carouselRef.current?.scrollToOffset({
+      offset: index * cardWidth,
       animated: true,
-      viewPosition: 0.5,
     });
   };
 
   const handleRefresh = () => {
     generateCode();
+  };
+
+  const handleToggleMode = (mode: 'barcode' | 'qr') => {
+    if (mode === displayMode) return;
+    setDisplayMode(mode);
+    Animated.spring(toggleSlideAnim, {
+      toValue: mode === 'barcode' ? 0 : 1,
+      useNativeDriver: true,
+      friction: 8,
+      tension: 100,
+    }).start();
   };
 
   const formatTime = (seconds: number): string => {
@@ -368,9 +463,26 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
     };
   });
 
-  const selectedCard = cardDetails.length > 0 ? cardDetails[selectedCardIndex] : null;
-  const benefitPercent = selectedCard ? (selectedCard.benefitLimit.used / selectedCard.benefitLimit.total) * 100 : 0;
-  const performancePercent = selectedCard ? (selectedCard.performance.current / selectedCard.performance.required) * 100 : 0;
+  // Create repeated cards for infinite scroll effect
+  const repeatedCards: Array<{
+    cid: number;
+    name: string;
+    image: any;
+    discounts: string[];
+    benefitLimit: { used: number; total: number };
+    performance: { current: number; required: number };
+    uniqueKey: string;
+    originalIndex: number;
+  }> = [];
+  for (let i = 0; i < ROULETTE_MULTIPLIER; i++) {
+    cardDetails.forEach((card, index) => {
+      repeatedCards.push({
+        ...card,
+        uniqueKey: `${i}-${index}`,
+        originalIndex: index,
+      });
+    });
+  }
 
   return (
     <Animated.View
@@ -399,211 +511,239 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-      {/* Toggle Buttons */}
-      <View style={styles.toggleContainer}>
-        <TouchableOpacity
-          style={[
-            styles.toggleButton,
-            displayMode === 'barcode' && styles.toggleButtonActive,
-          ]}
-          onPress={() => setDisplayMode('barcode')}
-          activeOpacity={0.8}
-        >
-          <Text
-            style={[
-              styles.toggleText,
-              displayMode === 'barcode' && styles.toggleTextActive,
-            ]}
-          >
-            바코드
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.toggleButton,
-            displayMode === 'qr' && styles.toggleButtonActive,
-          ]}
-          onPress={() => setDisplayMode('qr')}
-          activeOpacity={0.8}
-        >
-          <Text
-            style={[
-              styles.toggleText,
-              displayMode === 'qr' && styles.toggleTextActive,
-            ]}
-          >
-            QR코드
-          </Text>
-        </TouchableOpacity>
-      </View>
+        {/* Toggle Buttons */}
+        <View style={styles.toggleContainer}>
+          <View style={styles.toggleTrack}>
+            <Animated.View
+              style={[
+                styles.toggleIndicator,
+                {
+                  transform: [{
+                    translateX: toggleSlideAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [2, (SCREEN_WIDTH - 48) / 2],
+                    })
+                  }]
+                }
+              ]}
+            />
+            <TouchableOpacity
+              style={styles.toggleButton}
+              onPress={() => handleToggleMode('barcode')}
+              activeOpacity={1}
+            >
+              <Text
+                style={[
+                  styles.toggleText,
+                  displayMode === 'barcode' && styles.toggleTextActive,
+                ]}
+              >
+                바코드
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.toggleButton}
+              onPress={() => handleToggleMode('qr')}
+              activeOpacity={1}
+            >
+              <Text
+                style={[
+                  styles.toggleText,
+                  displayMode === 'qr' && styles.toggleTextActive,
+                ]}
+              >
+                QR코드
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
 
-      {/* Barcode/QR Display */}
-      <View style={styles.codeDisplayContainer}>
-        {isLoading ? (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#2563EB" />
-            <Text style={styles.loadingText}>코드 생성 중...</Text>
-          </View>
-        ) : displayMode === 'barcode' ? (
-          <View style={styles.barcodeContainer}>
-            {barcodeImage ? (
-              <Image
-                source={{ uri: barcodeImage }}
-                style={styles.barcodeImage}
-                resizeMode="contain"
-              />
+        {/* Barcode/QR Display */}
+        <View style={styles.codeDisplayContainer}>
+          <View style={styles.codeDisplayInner}>
+            {isLoading ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#212121" />
+                <Text style={styles.loadingText}>코드 생성 중...</Text>
+              </View>
+            ) : displayMode === 'barcode' ? (
+              <View style={styles.barcodeContainer}>
+                {barcodeImage ? (
+                  <Image
+                    source={{ uri: barcodeImage }}
+                    style={styles.barcodeImage}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  <Text style={styles.noCodeText}>바코드를 생성할 수 없습니다</Text>
+                )}
+              </View>
             ) : (
-              <Text style={styles.noCodeText}>바코드를 생성할 수 없습니다</Text>
+              <View style={styles.qrContainer}>
+                {qrImage ? (
+                  <Image
+                    source={{ uri: qrImage }}
+                    style={styles.qrImage}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  <Text style={styles.noCodeText}>QR 코드를 생성할 수 없습니다</Text>
+                )}
+              </View>
             )}
           </View>
-        ) : (
-          <View style={styles.qrContainer}>
-            {qrImage ? (
-              <Image
-                source={{ uri: qrImage }}
-                style={styles.qrImage}
-                resizeMode="contain"
-              />
-            ) : (
-              <Text style={styles.noCodeText}>QR 코드를 생성할 수 없습니다</Text>
-            )}
+          <View style={styles.timerSection}>
+            <View style={styles.timerBadge}>
+              <Animated.View style={[styles.timerDot, { opacity: timerPulseAnim }]} />
+              <Text style={styles.timerText}>{formatTime(timeLeft)}</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.refreshButton}
+              onPress={handleRefresh}
+              activeOpacity={0.7}
+            >
+              <RefreshIcon width={16} height={16} color="#666666" />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Card Info Carousel */}
+        {cardDetails.length > 0 && (
+          <View style={styles.cardInfoCarouselSection}>
+            <FlatList
+              ref={carouselRef}
+              data={repeatedCards}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyExtractor={(item) => item.uniqueKey}
+              contentContainerStyle={styles.cardInfoCarouselContent}
+              snapToInterval={CARD_INFO_TOTAL_WIDTH}
+              decelerationRate="fast"
+              onScroll={handleCarouselScroll}
+              scrollEventThrottle={16}
+              scrollEnabled={!isShuffling}
+              pagingEnabled={false}
+              getItemLayout={(_data, index) => ({
+                length: CARD_INFO_TOTAL_WIDTH,
+                offset: CARD_INFO_TOTAL_WIDTH * index,
+                index,
+              })}
+              initialScrollIndex={Math.floor(ROULETTE_MULTIPLIER / 2) * cardDetails.length}
+              onScrollToIndexFailed={() => {}}
+              renderItem={({ item, index }) => {
+                const cardBenefitPercent = (item.benefitLimit.used / item.benefitLimit.total) * 100;
+                const cardPerformancePercent = (item.performance.current / item.performance.required) * 100;
+
+                return (
+                  <TouchableOpacity
+                    style={styles.cardInfoCard}
+                    onPress={() => handleCardPress(index)}
+                    activeOpacity={0.95}
+                    disabled={isShuffling}
+                  >
+                    <View style={styles.cardInfoHeader}>
+                      <Text style={styles.cardInfoTitle}>카드 정보</Text>
+                    </View>
+
+                    <View style={styles.cardHeader}>
+                      <View style={styles.cardImageWrapper}>
+                        {item.image ? (
+                          <Image source={item.image} style={styles.selectedCardImage} />
+                        ) : (
+                          <CardPlaceholder
+                            cardName={item.name}
+                            benefit={item.discounts[0] || ''}
+                            width={80}
+                            height={50}
+                          />
+                        )}
+                      </View>
+                      <View style={styles.cardHeaderText}>
+                        <Text style={styles.cardName}>{item.name}</Text>
+                        <View style={styles.discountList}>
+                          {item.discounts.slice(0, 2).map((discount: string, idx: number) => (
+                            <View key={idx} style={styles.discountItemWrapper}>
+                              <View style={styles.discountDot} />
+                              <Text style={styles.discountItem} numberOfLines={1} ellipsizeMode="tail">{discount}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      </View>
+                    </View>
+
+                    <View style={styles.progressSection}>
+                      {/* Benefit Limit Progress */}
+                      <View style={styles.progressItem}>
+                        <View style={styles.progressHeader}>
+                          <Text style={styles.progressLabel}>혜택한도</Text>
+                          <Text style={styles.progressValue}>
+                            <Text style={styles.progressValueHighlight}>
+                              {(item.benefitLimit.total - item.benefitLimit.used).toLocaleString()}
+                            </Text>
+                            <Text style={styles.progressValueUnit}>원 남음</Text>
+                          </Text>
+                        </View>
+                        <View style={styles.progressBarContainer}>
+                          <View
+                            style={[
+                              styles.progressBar,
+                              styles.progressBarBenefit,
+                              { width: `${100 - cardBenefitPercent}%` }
+                            ]}
+                          />
+                        </View>
+                        <Text style={styles.progressSubtext}>
+                          {item.benefitLimit.used.toLocaleString()} / {item.benefitLimit.total.toLocaleString()}원 사용
+                        </Text>
+                      </View>
+
+                      {/* Performance Progress */}
+                      <View style={styles.progressItem}>
+                        <View style={styles.progressHeader}>
+                          <Text style={styles.progressLabel}>전월실적</Text>
+                          <Text style={styles.progressValue}>
+                            <Text style={[
+                              styles.progressValueHighlight,
+                              cardPerformancePercent >= 100 && styles.progressValueSuccess
+                            ]}>
+                              {cardPerformancePercent >= 100 ? '달성' : `${Math.round(cardPerformancePercent)}%`}
+                            </Text>
+                          </Text>
+                        </View>
+                        <View style={styles.progressBarContainer}>
+                          <View
+                            style={[
+                              styles.progressBar,
+                              styles.progressBarPerformance,
+                              cardPerformancePercent >= 100 && styles.progressBarSuccess,
+                              { width: `${Math.min(cardPerformancePercent, 100)}%` }
+                            ]}
+                          />
+                        </View>
+                        <Text style={styles.progressSubtext}>
+                          {item.performance.current.toLocaleString()} / {item.performance.required.toLocaleString()}원
+                        </Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+
+            {/* Scroll Indicator */}
+            <View style={styles.indicatorContainer}>
+              {cardDetails.map((_, index) => (
+                <View
+                  key={index}
+                  style={[
+                    styles.indicator,
+                    index === selectedCardIndex && styles.indicatorActive,
+                  ]}
+                />
+              ))}
+            </View>
           </View>
         )}
-        <View style={styles.timerContainer}>
-          <Text style={styles.timerText}>{formatTime(timeLeft)}</Text>
-          <TouchableOpacity onPress={handleRefresh} activeOpacity={0.7}>
-            <RefreshIcon width={20} height={20} color="#C23E38" />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* Selected Card Info */}
-      {selectedCard && (
-        <View style={styles.cardInfoContainer}>
-          <View style={styles.cardHeader}>
-            {selectedCard.image ? (
-              <Image source={selectedCard.image} style={styles.selectedCardImage} />
-            ) : (
-              <CardPlaceholder
-                cardName={selectedCard.name}
-                benefit={selectedCard.discounts[0] || ''}
-                width={100}
-                height={62}
-              />
-            )}
-            <View style={styles.cardHeaderText}>
-              <Text style={styles.cardName}>{selectedCard.name}</Text>
-              <View style={styles.discountList}>
-                {selectedCard.discounts.map((discount, index) => (
-                  <Text key={index} style={styles.discountItem}>
-                    {discount}
-                  </Text>
-                ))}
-              </View>
-            </View>
-          </View>
-
-          {/* Benefit Limit Progress */}
-          <View style={styles.progressItem}>
-            <View style={styles.progressHeader}>
-              <Text style={styles.progressLabel}>혜택한도</Text>
-              <Text style={styles.progressValue}>
-                {selectedCard.benefitLimit.used.toLocaleString()}원 /{' '}
-                {selectedCard.benefitLimit.total.toLocaleString()}원
-              </Text>
-            </View>
-            <View style={styles.progressBarContainer}>
-              <LinearGradient
-                colors={['#FCC490', '#8586CA']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={[styles.progressBar, { width: `${100 - benefitPercent}%` }]}
-              />
-            </View>
-            <Text style={styles.progressSubtext}>
-              실적 / 혜택한도
-            </Text>
-          </View>
-
-          {/* Performance Progress */}
-          <View style={styles.progressItem}>
-            <View style={styles.progressHeader}>
-              <Text style={styles.progressLabel}>실적</Text>
-              <Text style={styles.progressValue}>
-                {selectedCard.performance.current.toLocaleString()}원 /{' '}
-                {selectedCard.performance.required.toLocaleString()}원
-              </Text>
-            </View>
-            <View style={styles.progressBarContainer}>
-              <LinearGradient
-                colors={['#22B573', '#FFFFFF']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={[styles.progressBar, { width: `${performancePercent}%` }]}
-              />
-            </View>
-          </View>
-        </View>
-      )}
-
-      {/* Card Selection Scroll */}
-      <View style={styles.cardSelectionSection}>
-        <View style={styles.cardScrollContainer}>
-          <FlatList
-            ref={cardListRef}
-            data={cardDetails}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            keyExtractor={(item) => item.name}
-            contentContainerStyle={styles.cardList}
-            snapToInterval={CARD_WIDTH + CARD_SPACING}
-            decelerationRate="fast"
-            onScroll={handleScroll}
-            scrollEventThrottle={16}
-            getItemLayout={(data, index) => ({
-              length: CARD_WIDTH + CARD_SPACING,
-              offset: (CARD_WIDTH + CARD_SPACING) * index,
-              index,
-            })}
-            renderItem={({ item, index }) => (
-              <Animated.View
-                style={{
-                  transform: [{ scale: cardScaleAnims.current[index] || new Animated.Value(1) }],
-                }}
-              >
-                <TouchableOpacity
-                  style={[
-                    styles.cardItem,
-                    index === selectedCardIndex && styles.cardItemSelected,
-                  ]}
-                  onPress={() => handleCardPress(index)}
-                  activeOpacity={0.8}
-                >
-                  {item.image ? (
-                    <Image source={item.image} style={styles.cardThumbnail} />
-                  ) : (
-                    <CardPlaceholder
-                      cardName={item.name}
-                      benefit={item.discounts[0] || ''}
-                      width={100}
-                      height={62}
-                    />
-                  )}
-                  <Text
-                    style={[
-                      styles.cardItemName,
-                      index === selectedCardIndex && styles.cardItemNameSelected,
-                    ]}
-                    numberOfLines={2}
-                  >
-                    {item.name}
-                  </Text>
-                </TouchableOpacity>
-              </Animated.View>
-            )}
-          />
-        </View>
-      </View>
       </ScrollView>
 
       {/* Payment Waiting Overlay */}
@@ -687,64 +827,80 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingTop: 60,
-    paddingBottom: 20,
+    paddingBottom: 16,
     backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F5F5',
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: 50,
+    paddingBottom: 40,
   },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontFamily: FONTS.bold,
     color: '#212121',
+    letterSpacing: -0.3,
   },
   toggleContainer: {
-    flexDirection: 'row',
     paddingHorizontal: 20,
-    marginBottom: 20,
-    gap: 12,
+    marginBottom: 16,
+  },
+  toggleTrack: {
+    flexDirection: 'row',
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    padding: 2,
+    position: 'relative',
+  },
+  toggleIndicator: {
+    position: 'absolute',
+    top: 2,
+    bottom: 2,
+    width: '50%',
+    backgroundColor: '#212121',
+    borderRadius: 10,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.15,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 3,
+      },
+    }),
   },
   toggleButton: {
     flex: 1,
     paddingVertical: 12,
-    borderRadius: 24,
-    backgroundColor: '#F5F5F5',
     alignItems: 'center',
-  },
-  toggleButtonActive: {
-    backgroundColor: '#212121',
+    zIndex: 1,
   },
   toggleText: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FONTS.semiBold,
-    color: '#999999',
+    color: '#888888',
   },
   toggleTextActive: {
     color: '#FFFFFF',
   },
   codeDisplayContainer: {
     marginHorizontal: 20,
-    marginBottom: 30,
-    backgroundColor: '#FFFFFF',
+    marginBottom: 16,
+    backgroundColor: '#FAFAFA',
     borderRadius: 16,
-    padding: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#EEEEEE',
+  },
+  codeDisplayInner: {
     alignItems: 'center',
-    minHeight: 250,
+    minHeight: 240,
     justifyContent: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
   },
   loadingContainer: {
     alignItems: 'center',
@@ -752,15 +908,16 @@ const styles = StyleSheet.create({
     paddingVertical: 40,
   },
   loadingText: {
-    marginTop: 12,
-    fontSize: 14,
+    marginTop: 16,
+    fontSize: 13,
     fontFamily: FONTS.medium,
-    color: '#666666',
+    color: '#888888',
+    letterSpacing: -0.2,
   },
   noCodeText: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FONTS.regular,
-    color: '#999999',
+    color: '#AAAAAA',
     textAlign: 'center',
   },
   barcodeContainer: {
@@ -768,84 +925,163 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   barcodeImage: {
-    width: SCREEN_WIDTH - 60,
-    height: 140,
-    marginBottom: 12,
-  },
-  codeNumber: {
-    fontSize: 18,
-    fontFamily: FONTS.bold,
-    color: '#C23E38',
+    width: SCREEN_WIDTH - 72,
+    height: 160,
   },
   qrContainer: {
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    padding: 12,
+    borderRadius: 12,
   },
   qrImage: {
-    width: 200,
-    height: 200,
+    width: 180,
+    height: 180,
   },
-  timerContainer: {
+  timerSection: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#EEEEEE',
+  },
+  timerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
     gap: 8,
-    marginTop: 16,
-    alignSelf: 'flex-end',
+  },
+  timerDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#22C55E',
   },
   timerText: {
-    fontSize: 16,
+    fontSize: 14,
     fontFamily: FONTS.bold,
-    color: '#C23E38',
+    color: '#212121',
+    letterSpacing: 0.5,
   },
-  cardInfoContainer: {
-    marginHorizontal: 20,
-    marginBottom: 0,
+  refreshButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardInfoCarouselSection: {
+    marginBottom: 12,
+  },
+  cardInfoCarouselContent: {
+    paddingLeft: 20,
+    paddingRight: 20 - CARD_INFO_SPACING,
+  },
+  cardInfoCard: {
+    width: CARD_INFO_WIDTH,
+    marginRight: CARD_INFO_SPACING,
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
-    padding: 20,
-    gap: 20,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#EEEEEE',
+  },
+  indicatorContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 12,
+    gap: 6,
+  },
+  indicator: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#E0E0E0',
+  },
+  indicatorActive: {
+    backgroundColor: '#212121',
+    width: 24,
+  },
+  cardInfoHeader: {
+    marginBottom: 12,
+  },
+  cardInfoTitle: {
+    fontSize: 11,
+    fontFamily: FONTS.semiBold,
+    color: '#888888',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   cardHeader: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 15,
+    alignItems: 'center',
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F5F5',
+    overflow: 'hidden',
+  },
+  cardImageWrapper: {
+    backgroundColor: '#F8F8F8',
+    borderRadius: 8,
+    padding: 4,
+    marginRight: 12,
   },
   selectedCardImage: {
-    width: 100,
-    height: 75,
-    borderRadius: 8,
-    marginRight: 15,
+    width: 80,
+    height: 50,
+    borderRadius: 4,
   },
   cardHeaderText: {
     flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
+    overflow: 'hidden',
   },
   cardName: {
-    fontSize: 16,
+    fontSize: 14,
     fontFamily: FONTS.bold,
     color: '#212121',
-    marginBottom: 10,
+    marginBottom: 6,
+    letterSpacing: -0.3,
   },
   discountList: {
     gap: 4,
+    overflow: 'hidden',
+  },
+  discountItemWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  discountDot: {
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: '#22C55E',
+    flexShrink: 0,
   },
   discountItem: {
-    fontSize: 12,
-    fontFamily: FONTS.semiBold,
-    color: '#4AA63C',
+    fontSize: 10,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+    flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  progressSection: {
+    paddingTop: 12,
+    gap: 10,
   },
   progressItem: {
-    gap: 8,
+    gap: 4,
   },
   progressHeader: {
     flexDirection: 'row',
@@ -853,71 +1089,52 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   progressLabel: {
-    fontSize: 14,
+    fontSize: 12,
     fontFamily: FONTS.semiBold,
-    color: '#212121',
+    color: '#666666',
   },
   progressValue: {
     fontSize: 12,
     fontFamily: FONTS.medium,
-    color: '#666666',
+    color: '#888888',
+  },
+  progressValueHighlight: {
+    fontSize: 13,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+  },
+  progressValueUnit: {
+    fontSize: 11,
+    fontFamily: FONTS.regular,
+    color: '#888888',
+  },
+  progressValueSuccess: {
+    color: '#22C55E',
   },
   progressBarContainer: {
     width: '100%',
-    height: 8,
+    height: 4,
     backgroundColor: '#F0F0F0',
-    borderRadius: 4,
+    borderRadius: 2,
     overflow: 'hidden',
   },
   progressBar: {
     height: '100%',
-    borderRadius: 4,
+    borderRadius: 2,
   },
-  progressSubtext: {
-    fontSize: 11,
-    fontFamily: FONTS.regular,
-    color: '#999999',
-    textAlign: 'right',
-  },
-  cardSelectionSection: {
-    paddingTop: 10,
-    paddingBottom: 30,
-    overflow: 'visible',
-  },
-  cardScrollContainer: {
-    height: 200,
-    overflow: 'visible',
-  },
-  cardList: {
-    paddingHorizontal: (SCREEN_WIDTH - CARD_WIDTH) / 2,
-    alignItems: 'center',
-  },
-  cardItem: {
-    width: CARD_WIDTH,
-    marginRight: CARD_SPACING,
-    alignItems: 'center',
-    padding: 16,
-    borderRadius: 16,
-    backgroundColor: '#F8F8F8',
-  },
-  cardItemSelected: {
+  progressBarBenefit: {
     backgroundColor: '#212121',
   },
-  cardThumbnail: {
-    width: 100,
-    height: 62,
-    borderRadius: 8,
-    marginBottom: 12,
+  progressBarPerformance: {
+    backgroundColor: '#888888',
   },
-  cardItemName: {
-    fontSize: 13,
-    fontFamily: FONTS.semiBold,
-    marginTop: 10,
-    color: '#666666',
-    textAlign: 'center',
+  progressBarSuccess: {
+    backgroundColor: '#22C55E',
   },
-  cardItemNameSelected: {
-    color: '#FFFFFF',
+  progressSubtext: {
+    fontSize: 10,
+    fontFamily: FONTS.regular,
+    color: '#AAAAAA',
   },
   overlayContainer: {
     position: 'absolute',
@@ -925,110 +1142,127 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 1000,
   },
   overlayContent: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    padding: 40,
+    borderRadius: 28,
+    paddingVertical: 36,
+    paddingHorizontal: 32,
     alignItems: 'center',
-    width: SCREEN_WIDTH - 80,
-    maxWidth: 320,
+    width: SCREEN_WIDTH - 64,
+    maxWidth: 340,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.15,
+        shadowRadius: 24,
+      },
+      android: {
+        elevation: 12,
+      },
+    }),
   },
   overlayTitle: {
-    fontSize: 24,
+    fontSize: 20,
     fontFamily: FONTS.bold,
     color: '#212121',
-    marginTop: 24,
-    marginBottom: 8,
+    marginTop: 20,
+    marginBottom: 6,
+    letterSpacing: -0.3,
   },
   overlaySubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FONTS.regular,
-    color: '#666666',
+    color: '#888888',
     textAlign: 'center',
+    lineHeight: 18,
   },
   successIconContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#2563EB',
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#22C55E',
     justifyContent: 'center',
     alignItems: 'center',
   },
   successIcon: {
-    fontSize: 48,
+    fontSize: 36,
     color: '#FFFFFF',
     fontFamily: FONTS.bold,
   },
   successTitle: {
-    fontSize: 28,
+    fontSize: 24,
     fontFamily: FONTS.bold,
     color: '#212121',
-    marginTop: 24,
-    marginBottom: 8,
+    marginTop: 20,
+    marginBottom: 4,
+    letterSpacing: -0.5,
   },
   successSubtitle: {
-    fontSize: 16,
-    fontFamily: FONTS.regular,
+    fontSize: 14,
+    fontFamily: FONTS.medium,
     color: '#666666',
-    marginBottom: 24,
+    marginBottom: 20,
   },
   amountContainer: {
     width: '100%',
-    backgroundColor: '#F5F8FF',
+    backgroundColor: '#F8F8F8',
     borderRadius: 16,
     padding: 20,
-    marginBottom: 16,
+    marginBottom: 12,
   },
   amountRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 10,
   },
   amountLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FONTS.regular,
-    color: '#666666',
+    color: '#888888',
   },
   discountAmount: {
-    fontSize: 18,
+    fontSize: 16,
     fontFamily: FONTS.bold,
-    color: '#2563EB',
+    color: '#22C55E',
   },
   finalAmount: {
-    fontSize: 22,
+    fontSize: 20,
     fontFamily: FONTS.bold,
     color: '#212121',
   },
   benefitText: {
-    fontSize: 12,
+    fontSize: 11,
     fontFamily: FONTS.regular,
-    color: '#999999',
+    color: '#AAAAAA',
     textAlign: 'center',
+    marginTop: 4,
   },
   failedIconContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     backgroundColor: '#EF4444',
     justifyContent: 'center',
     alignItems: 'center',
   },
   failedIcon: {
-    fontSize: 48,
+    fontSize: 36,
     color: '#FFFFFF',
     fontFamily: FONTS.bold,
   },
   failedTitle: {
-    fontSize: 28,
+    fontSize: 24,
     fontFamily: FONTS.bold,
     color: '#212121',
-    marginTop: 24,
-    marginBottom: 8,
+    marginTop: 20,
+    marginBottom: 6,
+    letterSpacing: -0.5,
   },
 });

@@ -9,11 +9,12 @@ import {
   Animated,
   Dimensions,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import { AuthStorage } from '../utils/auth';
+import { API_URL } from '../utils/api';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 interface CardBenefit {
@@ -35,6 +36,7 @@ interface CardBenefitScreenProps {
 }
 
 export const CardBenefitScreen: React.FC<CardBenefitScreenProps> = ({ onBack }) => {
+  const insets = useSafeAreaInsets();
   const [benefits, setBenefits] = useState<Record<string, CardBenefit[]>>({});
   const [isLoading, setIsLoading] = useState(true);
   const slideAnim = React.useRef(new Animated.Value(SCREEN_WIDTH)).current;
@@ -58,7 +60,7 @@ export const CardBenefitScreen: React.FC<CardBenefitScreenProps> = ({ onBack }) 
         return;
       }
 
-      const response = await fetch(`${BACKEND_URL}/api/card/benefit`, {
+      const response = await fetch(`${API_URL}/api/card/benefit`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -115,6 +117,7 @@ export const CardBenefitScreen: React.FC<CardBenefitScreenProps> = ({ onBack }) 
       ) : (
         <ScrollView
           style={styles.scrollView}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}
           showsVerticalScrollIndicator={false}
         >
           {Object.keys(benefits).length === 0 ? (

@@ -15,8 +15,7 @@ import {
 import { LogoBlack, BackIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import { AuthAPI } from '../utils/auth';
-
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
+import { API_URL } from '../utils/api';
 
 interface SignupScreenProps {
   onSignupSuccess: () => void;
@@ -70,7 +69,7 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onB
 
     setIsSearching(true);
     try {
-      const response = await fetch(`${BACKEND_URL}/api/card/list?keyword=${encodeURIComponent(query)}&page=1`);
+      const response = await fetch(`${API_URL}/api/card/list?keyword=${encodeURIComponent(query)}&page=1`);
       const data = await response.json();
 
       if (data.success && data.cards) {

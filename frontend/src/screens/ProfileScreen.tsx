@@ -10,25 +10,68 @@ import {
   FlatList,
   Platform,
   Animated,
-  Alert,
+  Pressable,
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { BackIcon, BellIcon, SettingsIcon, CardAddIcon } from '../components/svg';
+import { BackIcon, BellIcon, SettingsIcon, CardAddIcon, ReceiptIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import { CARD_IMAGES } from '../constants/userCards';
 import { CardRegistrationScreen } from './CardRegistrationScreen';
 import { ReceiptScanScreen } from './ReceiptScanScreen';
+import { SettingsScreen } from './SettingsScreen';
 import { AdminAuthScreen } from './AdminAuthScreen';
 import { AdminDashboardScreen } from './AdminDashboardScreen';
 import { AdminDepartmentScreen } from './AdminDepartmentScreen';
 import { AdminMembersScreen } from './AdminMembersScreen';
+import { EmployeeDashboardScreen } from './EmployeeDashboardScreen';
 import { CardBenefitScreen } from './CardBenefitScreen';
-import { AuthAPI, AuthStorage } from '../utils/auth';
+import { NotificationScreen } from './NotificationScreen';
+import { CorporateCardRegistrationScreen } from './CorporateCardRegistrationScreen';
+import { AuthStorage } from '../utils/auth';
 import { CardEditModal } from '../components/CardEditModal';
 import { CardPlaceholder } from '../components/CardPlaceholder';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { API_URL } from '../utils/api';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
+// Animated pressable button component
+const AnimatedPressable = ({ children, onPress, style, disabled }: {
+  children: React.ReactNode;
+  onPress?: () => void;
+  style?: any;
+  disabled?: boolean;
+}) => {
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  const handlePressIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.97,
+      useNativeDriver: true,
+      speed: 50,
+      bounciness: 4,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 50,
+      bounciness: 4,
+    }).start();
+  };
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}
+      disabled={disabled}
+    >
+      <Animated.View style={[style, { transform: [{ scale: scaleAnim }] }]}>
+        {children}
+      </Animated.View>
+    </Pressable>
+  );
+};
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CARD_SECTION_WIDTH = SCREEN_WIDTH - 40;
@@ -40,16 +83,21 @@ interface ProfileScreenProps {
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }) => {
   const insets = useSafeAreaInsets();
-  const [hasNotification] = useState(true);
   const [showCardRegistration, setShowCardRegistration] = useState(false);
   const [showReceiptScan, setShowReceiptScan] = useState(false);
   const [showCardBenefit, setShowCardBenefit] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [showAdminAuth, setShowAdminAuth] = useState(false);
   const [showAdminDashboard, setShowAdminDashboard] = useState(false);
   const [showAdminDepartment, setShowAdminDepartment] = useState(false);
   const [showAdminMembers, setShowAdminMembers] = useState(false);
+  const [showEmployeeDashboard, setShowEmployeeDashboard] = useState(false);
   const [corporateCards, setCorporateCards] = useState<any[]>([]);
   const [selectedCardId, setSelectedCardId] = useState<number | null>(null);
+  const [corporateRole, setCorporateRole] = useState<'none' | 'admin' | 'employee'>('none');
+  const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
 
   const [userData, setUserData] = useState<{
@@ -57,6 +105,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     phoneNumber: string;
     monthlySpending: number;
     monthlySavings: number;
+    isCorporateUser: boolean;
+    isBusiness: boolean;
     cards: Array<{
       cid: number;
       card_name: string;
@@ -72,6 +122,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
       reset_date?: string | null;
     }>;
   } | null>(null);
+  const [showCorporateCardRegistration, setShowCorporateCardRegistration] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [editingCard, setEditingCard] = useState<string | null>(null);
 
@@ -106,26 +157,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     setShowAdminMembers(false);
   };
 
-  const handleLogout = () => {
-    Alert.alert(
-      '로그아웃',
-      '정말 로그아웃 하시겠습니까?',
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '로그아웃',
-          style: 'destructive',
-          onPress: async () => {
-            await AuthAPI.logout();
-            if (onLogout) {
-              onLogout();
-            }
-          },
-        },
-      ]
-    );
-  };
-
   const fetchUserData = async () => {
     try {
       setIsLoading(true);
@@ -135,7 +166,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
         return;
       }
 
-      const response = await fetch(`${BACKEND_URL}/api/mypage`, {
+      const response = await fetch(`${API_URL}/api/mypage`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -150,6 +181,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           phoneNumber: data.user.user_phone || '010-****-****',
           monthlySpending: data.user.monthly_spending || 0,
           monthlySavings: data.user.monthly_savings || 0,
+          isCorporateUser: data.user.is_corporate_user || false,
+          isBusiness: data.user.isBusiness || false,
           cards: data.user.cards || [],
         });
       }
@@ -157,6 +190,52 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
       console.error('Failed to fetch user data:', error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const fetchUnreadCount = async () => {
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) return;
+
+      const response = await fetch(`${API_URL}/api/notifications/unread-count`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setUnreadNotificationCount(data.unread_count);
+      }
+    } catch (error) {
+      console.error('Failed to fetch unread count:', error);
+    }
+  };
+
+  const fetchCorporateRole = async () => {
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) return;
+
+      const response = await fetch(`${API_URL}/api/corporate/is-employee`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        if (data.is_admin) {
+          setCorporateRole('admin');
+        } else if (data.is_employee) {
+          setCorporateRole('employee');
+        } else {
+          setCorporateRole('none');
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch corporate role:', error);
     }
   };
 
@@ -169,6 +248,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     }).start();
 
     fetchUserData();
+    fetchUnreadCount();
+    fetchCorporateRole();
   }, []);
 
 
@@ -180,6 +261,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     }).start(() => {
       onBack();
     });
+  };
+
+  const handleCardScroll = (event: any) => {
+    const scrollPosition = event.nativeEvent.contentOffset.x;
+    const index = Math.round(scrollPosition / (CARD_SECTION_WIDTH + 16));
+    if (index !== currentCardIndex && index >= 0) {
+      setCurrentCardIndex(index);
+    }
   };
 
   const cardDetails = userData?.cards.map((card) => {
@@ -214,14 +303,17 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
 
   const renderCardSection = ({
     item,
+    index,
   }: {
     item: (typeof cardDetails)[0];
+    index: number;
   }) => {
     const benefitPercent = (item.benefitLimit.used / item.benefitLimit.total) * 100;
     const performancePercent = (item.performance.current / item.performance.required) * 100;
+    const isLastItem = index === (cardDetails?.length || 0) - 1;
 
     return (
-      <View style={styles.cardSection}>
+      <View style={[styles.cardSection, isLastItem && styles.cardSectionLast]}>
         <View style={styles.cardTopArea}>
           {item.image ? (
             <Image source={item.image} style={styles.cardImage} />
@@ -247,10 +339,13 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
               </TouchableOpacity>
             </View>
             <View style={styles.discountList}>
-              {item.discounts.map((discount, index) => (
-                <Text key={index} style={styles.discountItem}>
-                  {discount}
-                </Text>
+              {item.discounts.slice(0, 2).map((discount, index) => (
+                <View key={index} style={styles.discountItemWrapper}>
+                  <View style={styles.discountDot} />
+                  <Text style={styles.discountItem} numberOfLines={1} ellipsizeMode="tail">
+                    {discount}
+                  </Text>
+                </View>
               ))}
             </View>
           </View>
@@ -266,11 +361,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
               </Text>
             </View>
             <View style={styles.progressBarContainer}>
-              <LinearGradient
-                colors={['#FCC490', '#8586CA']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={[styles.progressBar, { width: `${100 - benefitPercent}%` }]}
+              <View
+                style={[styles.progressBar, styles.progressBarBenefit, { width: `${Math.min(100 - benefitPercent, 100)}%` }]}
               />
             </View>
           </View>
@@ -284,11 +376,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
               </Text>
             </View>
             <View style={styles.progressBarContainer}>
-              <LinearGradient
-                colors={['#22B573', '#FFFFFF']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={[styles.progressBar, { width: `${performancePercent}%` }]}
+              <View
+                style={[styles.progressBar, styles.progressBarPerformance, { width: `${Math.min(performancePercent, 100)}%` }]}
               />
             </View>
           </View>
@@ -310,25 +399,31 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
       >
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity
-          onPress={handleBack}
-          activeOpacity={0.7}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <BackIcon width={10} height={16} />
-        </TouchableOpacity>
+        <View style={styles.headerLeft}>
+          <TouchableOpacity
+            onPress={handleBack}
+            activeOpacity={0.7}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <BackIcon width={10} height={18} />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.headerTitleContainer}>
+          <Text style={styles.headerTitle}>마이페이지</Text>
+        </View>
         <View style={styles.headerRight}>
           <TouchableOpacity
             activeOpacity={0.7}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            style={styles.headerIcon}
+            style={styles.headerIconBtn}
+            onPress={() => setShowNotifications(true)}
           >
-            <BellIcon width={20} height={20} hasNotification={hasNotification} />
+            <BellIcon width={20} height={20} hasNotification={unreadNotificationCount > 0} />
           </TouchableOpacity>
           <TouchableOpacity
             activeOpacity={0.7}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            onPress={handleLogout}
+            onPress={() => setShowSettings(true)}
           >
             <SettingsIcon width={20} height={20} />
           </TouchableOpacity>
@@ -342,20 +437,30 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
       >
         {/* User Info Section */}
         <View style={styles.userInfoSection}>
-          <Text style={styles.greeting}>안녕하세요, {userData?.userName || '사용자'}님</Text>
-          <Text style={styles.phoneNumber}>{userData?.phoneNumber || '010-****-****'}</Text>
-          <View style={styles.statsRow}>
+          <View style={styles.userInfoTop}>
+            <View style={styles.avatarContainer}>
+              <Text style={styles.avatarText}>
+                {(userData?.userName || '사용자').charAt(0)}
+              </Text>
+            </View>
+            <View style={styles.userInfoText}>
+              <Text style={styles.greeting}>{userData?.userName || '사용자'}님</Text>
+              <Text style={styles.phoneNumber}>{userData?.phoneNumber || '010-****-****'}</Text>
+            </View>
+          </View>
+
+          <View style={styles.statsCard}>
             <View style={styles.statItem}>
               <Text style={styles.statLabel}>이번 달 소비</Text>
               <Text style={styles.statValue}>
-                {(userData?.monthlySpending || 0).toLocaleString()}원
+                {(userData?.monthlySpending || 0).toLocaleString()}<Text style={styles.statUnit}>원</Text>
               </Text>
             </View>
             <View style={styles.statDivider} />
             <View style={styles.statItem}>
-              <Text style={styles.statLabel}>혜택으로 절약</Text>
+              <Text style={styles.statLabelGreen}>혜택으로 절약</Text>
               <Text style={styles.statValueGreen}>
-                {(userData?.monthlySavings || 0).toLocaleString()}원
+                {(userData?.monthlySavings || 0).toLocaleString()}<Text style={styles.statUnitGreen}>원</Text>
               </Text>
             </View>
           </View>
@@ -364,14 +469,44 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
         {/* My Deck Report Section */}
         <View style={styles.deckReportSection}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>My Deck Report</Text>
-            <TouchableOpacity
-              style={styles.adminButton}
-              onPress={() => setShowAdminAuth(true)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.adminButtonText}>관리자</Text>
-            </TouchableOpacity>
+            <View style={styles.sectionTitleRow}>
+              <Text style={styles.sectionTitle}>My Deck Report</Text>
+              <TouchableOpacity
+                style={styles.addCardTag}
+                onPress={() => setShowCardRegistration(true)}
+                activeOpacity={0.7}
+              >
+                <CardAddIcon width={12} height={12} color="#666666" />
+                <Text style={styles.addCardTagText}>등록</Text>
+              </TouchableOpacity>
+            </View>
+            {corporateRole === 'admin' && (
+              <TouchableOpacity
+                style={styles.adminButton}
+                onPress={() => setShowAdminAuth(true)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.adminButtonText}>관리자</Text>
+              </TouchableOpacity>
+            )}
+            {corporateRole === 'employee' && (
+              <TouchableOpacity
+                style={styles.employeeButton}
+                onPress={() => setShowEmployeeDashboard(true)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.employeeButtonText}>법인카드</Text>
+              </TouchableOpacity>
+            )}
+            {userData?.isBusiness && corporateRole === 'none' && (
+              <TouchableOpacity
+                style={styles.businessRegisterButton}
+                onPress={() => setShowCorporateCardRegistration(true)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.businessRegisterButtonText}>법인카드 등록</Text>
+              </TouchableOpacity>
+            )}
           </View>
           <View style={styles.deckReportContainer}>
             <FlatList
@@ -379,45 +514,56 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
               renderItem={renderCardSection}
               keyExtractor={(item) => item.name}
               horizontal
-              pagingEnabled
               showsHorizontalScrollIndicator={false}
-              snapToInterval={CARD_SECTION_WIDTH + 20}
+              snapToInterval={CARD_SECTION_WIDTH + 16}
+              snapToAlignment="start"
               decelerationRate="fast"
               contentContainerStyle={styles.deckReportList}
               style={styles.deckReportFlatList}
+              onScroll={handleCardScroll}
+              scrollEventThrottle={16}
             />
+            {cardDetails.length > 1 && (
+              <View style={styles.paginationDots}>
+                {cardDetails.map((_, index) => (
+                  <View
+                    key={index}
+                    style={[
+                      styles.paginationDot,
+                      currentCardIndex === index && styles.paginationDotActive,
+                    ]}
+                  />
+                ))}
+              </View>
+            )}
           </View>
         </View>
 
-        {/* Quick Actions */}
-        <View style={styles.quickActionsContainer}>
-          <TouchableOpacity
-            style={styles.quickActionCard}
-            activeOpacity={0.8}
-            onPress={() => setShowCardRegistration(true)}
-          >
-            <View style={styles.quickActionIcon}>
-              <CardAddIcon width={22} height={22} />
-            </View>
-            <Text style={styles.quickActionTitle}>카드 등록</Text>
-            <Text style={styles.quickActionSubtitle}>새 카드 추가</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.quickActionCard}
-            activeOpacity={0.8}
+        {/* Receipt Scan - Corporate Users Only */}
+        {corporateRole !== 'none' && (
+          <AnimatedPressable
+            style={styles.receiptScanSection}
             onPress={() => setShowReceiptScan(true)}
           >
-            <View style={styles.quickActionIcon}>
-              <Text style={styles.quickActionIconText}>R</Text>
+            <View style={styles.receiptScanContent}>
+              <View style={styles.receiptScanLeft}>
+                <View style={styles.receiptScanIconContainer}>
+                  <ReceiptIcon width={22} height={22} color="#FFFFFF" />
+                </View>
+                <View style={styles.receiptScanTextContainer}>
+                  <Text style={styles.receiptScanTitle}>영수증 스캔</Text>
+                  <Text style={styles.receiptScanSubtitle}>법인카드 사용 내역을 자동으로 기록하세요</Text>
+                </View>
+              </View>
+              <View style={styles.receiptScanArrow}>
+                <Text style={styles.receiptScanArrowText}>›</Text>
+              </View>
             </View>
-            <Text style={styles.quickActionTitle}>영수증 스캔</Text>
-            <Text style={styles.quickActionSubtitle}>소비 내역 기록</Text>
-          </TouchableOpacity>
-        </View>
+          </AnimatedPressable>
+        )}
 
         {/* Advertisement Section */}
-        <View style={styles.adSection}>
+        <AnimatedPressable style={styles.adSection}>
           <View style={styles.adChickenContainer}>
             <Image
               source={require('../../assets/images/chicken.png')}
@@ -427,8 +573,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           </View>
           <View style={styles.adContent}>
             <View style={styles.adTextContainer}>
-              <Text style={styles.adSubtitle}>이번달 소비 유지하면서</Text>
-              <Text style={styles.adTitle}>배달 치킨 한마리{'\n'}더 받기 !</Text>
+              <Text style={styles.adLabel}>추천 카드</Text>
+              <Text style={styles.adTitle}>배달 치킨 한마리{'\n'}더 받기</Text>
             </View>
             <View style={styles.adCardContainer}>
               <Image
@@ -439,31 +585,40 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
               <Text style={styles.adCardName}>배민 한 그릇 카드</Text>
             </View>
           </View>
-        </View>
+        </AnimatedPressable>
 
         {/* Card Benefit Section */}
-        <TouchableOpacity
+        <AnimatedPressable
           style={styles.benefitSection}
-          activeOpacity={0.8}
           onPress={() => setShowCardBenefit(true)}
         >
-          <Text style={styles.benefitTitle}>내 카드 혜택 상세 보기</Text>
-          <Text style={styles.benefitSubtitle}>
-            등록된 모든 카드의 혜택을 한눈에 확인하세요
-          </Text>
-        </TouchableOpacity>
+          <View style={styles.benefitContent}>
+            <View>
+              <Text style={styles.benefitTitle}>내 카드 혜택 상세 보기</Text>
+              <Text style={styles.benefitSubtitle}>
+                등록된 모든 카드의 혜택을 한눈에 확인하세요
+              </Text>
+            </View>
+            <View style={styles.benefitArrow}>
+              <Text style={styles.benefitArrowText}>→</Text>
+            </View>
+          </View>
+        </AnimatedPressable>
 
         {/* Cardealo Combination Section */}
         <View style={styles.combinationSection}>
+          <View style={styles.combinationHeader}>
+            <Text style={styles.combinationLabel}>AI 추천</Text>
+          </View>
           <Text style={styles.combinationTitle}>
-            Cardealo Combination로 최대 혜택 받기
+            최적의 카드 조합 찾기
           </Text>
           <Text style={styles.combinationSubtitle}>
-            AI가 추천하는 최적의 카드 조합을 확인하세요
+            AI가 분석한 맞춤 카드 조합을 확인하세요
           </Text>
-          <TouchableOpacity style={styles.combinationButton} activeOpacity={0.8}>
+          <AnimatedPressable style={styles.combinationButton}>
             <Text style={styles.combinationButtonText}>조합 보러가기</Text>
-          </TouchableOpacity>
+          </AnimatedPressable>
         </View>
       </ScrollView>
       </Animated.View>
@@ -517,6 +672,24 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           />
         </View>
       )}
+      {showEmployeeDashboard && (
+        <View style={styles.overlay}>
+          <EmployeeDashboardScreen
+            onBack={() => setShowEmployeeDashboard(false)}
+          />
+        </View>
+      )}
+      {showCorporateCardRegistration && (
+        <View style={styles.overlay}>
+          <CorporateCardRegistrationScreen
+            onClose={() => setShowCorporateCardRegistration(false)}
+            onSuccess={() => {
+              fetchUserData();
+              fetchCorporateRole();
+            }}
+          />
+        </View>
+      )}
       {editingCard && (
         <CardEditModal
           visible={true}
@@ -533,6 +706,31 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           <CardBenefitScreen onBack={() => setShowCardBenefit(false)} />
         </View>
       )}
+      {showSettings && (
+        <View style={styles.overlay}>
+          <SettingsScreen
+            onBack={() => setShowSettings(false)}
+            onLogout={() => {
+              setShowSettings(false);
+              if (onLogout) {
+                onLogout();
+              }
+            }}
+            userName={userData?.userName}
+            userPhone={userData?.phoneNumber}
+          />
+        </View>
+      )}
+      {showNotifications && (
+        <View style={styles.overlay}>
+          <NotificationScreen
+            onBack={() => {
+              setShowNotifications(false);
+              fetchUnreadCount();
+            }}
+          />
+        </View>
+      )}
 
     </View>
   );
@@ -541,7 +739,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F8F9FA',
   },
   header: {
     flexDirection: 'row',
@@ -549,90 +747,206 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingTop: 60,
-    paddingBottom: 20,
+    paddingBottom: 16,
     backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
   },
-  headerRight: {
-    flexDirection: 'row',
+  headerTitleContainer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 60,
+    bottom: 16,
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  headerIcon: {
-    marginRight: 20,
+  headerTitle: {
+    textAlign: 'center',
+    fontSize: 17,
+    fontFamily: FONTS.semiBold,
+    color: '#1A1A1A',
+    letterSpacing: -0.3,
+  },
+  headerLeft: {
+    width: 60,
+    alignItems: 'flex-start',
+    zIndex: 1,
+  },
+  headerRight: {
+    width: 60,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 16,
+    zIndex: 1,
+  },
+  headerIconBtn: {
+    padding: 4,
   },
   scrollView: {
     flex: 1,
   },
+  // User Info Section
   userInfoSection: {
     paddingHorizontal: 20,
-    paddingVertical: 30,
+    paddingTop: 24,
+    paddingBottom: 20,
     backgroundColor: '#FFFFFF',
   },
-  greeting: {
-    fontSize: 24,
+  userInfoTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  avatarContainer: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#1A1A1A',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
+  },
+  avatarText: {
+    fontSize: 20,
     fontFamily: FONTS.bold,
-    color: '#212121',
-    marginBottom: 8,
+    color: '#FFFFFF',
+  },
+  userInfoText: {
+    flex: 1,
+  },
+  greeting: {
+    fontSize: 20,
+    fontFamily: FONTS.bold,
+    color: '#1A1A1A',
+    marginBottom: 4,
+    letterSpacing: -0.4,
   },
   phoneNumber: {
     fontSize: 14,
     fontFamily: FONTS.regular,
-    color: '#999999',
-    marginBottom: 24,
+    color: '#888888',
   },
-  statsRow: {
+  statsCard: {
     flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: '#F8F9FA',
+    borderRadius: 14,
+    paddingVertical: 18,
+    paddingHorizontal: 20,
   },
   statItem: {
     flex: 1,
+    alignItems: 'center',
   },
   statDivider: {
     width: 1,
-    height: 40,
-    backgroundColor: '#E0E0E0',
-    marginHorizontal: 20,
+    height: 36,
+    backgroundColor: '#E5E5E5',
   },
   statLabel: {
-    fontSize: 14,
-    fontFamily: FONTS.regular,
-    color: '#666666',
-    marginBottom: 8,
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#888888',
+    marginBottom: 6,
+  },
+  statLabelGreen: {
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#2E7D32',
+    marginBottom: 6,
   },
   statValue: {
-    fontSize: 20,
+    fontSize: 18,
     fontFamily: FONTS.bold,
-    color: '#212121',
+    color: '#1A1A1A',
+  },
+  statUnit: {
+    fontSize: 14,
+    fontFamily: FONTS.medium,
+    color: '#1A1A1A',
   },
   statValueGreen: {
-    fontSize: 20,
+    fontSize: 18,
     fontFamily: FONTS.bold,
-    color: '#4AA63C',
+    color: '#2E7D32',
   },
+  statUnitGreen: {
+    fontSize: 14,
+    fontFamily: FONTS.medium,
+    color: '#2E7D32',
+  },
+  // Deck Report Section
   deckReportSection: {
-    marginTop: 20,
-    paddingBottom: 30,
+    marginTop: 8,
+    paddingBottom: 24,
+    backgroundColor: '#FFFFFF',
   },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    marginBottom: 0,
+    paddingTop: 20,
+    marginBottom: 4,
+  },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   sectionTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontFamily: FONTS.bold,
-    color: '#212121',
+    color: '#1A1A1A',
+    letterSpacing: -0.3,
   },
-  adminButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#9C27B0',
+  addCardTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#F5F5F5',
     borderRadius: 6,
   },
+  addCardTagText: {
+    fontSize: 11,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+  },
+  adminButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    backgroundColor: '#1A1A1A',
+    borderRadius: 8,
+  },
   adminButtonText: {
-    fontSize: 13,
-    fontFamily: FONTS.bold,
+    fontSize: 12,
+    fontFamily: FONTS.semiBold,
+    color: '#FFFFFF',
+  },
+  employeeButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    backgroundColor: '#2E7D32',
+    borderRadius: 8,
+  },
+  employeeButtonText: {
+    fontSize: 12,
+    fontFamily: FONTS.semiBold,
+    color: '#FFFFFF',
+  },
+  businessRegisterButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    backgroundColor: '#1565C0',
+    borderRadius: 8,
+  },
+  businessRegisterButtonText: {
+    fontSize: 12,
+    fontFamily: FONTS.semiBold,
     color: '#FFFFFF',
   },
   deckReportContainer: {
@@ -643,39 +957,58 @@ const styles = StyleSheet.create({
   },
   deckReportList: {
     paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingVertical: 12,
+  },
+  paginationDots: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingTop: 8,
+    gap: 6,
+  },
+  paginationDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#E0E0E0',
+  },
+  paginationDotActive: {
+    backgroundColor: '#1A1A1A',
+    width: 16,
   },
   cardSection: {
     width: CARD_SECTION_WIDTH,
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
-    padding: 20,
-    marginRight: 20,
-    marginVertical: 5,
+    padding: 18,
+    marginRight: 16,
+    marginVertical: 4,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: {
-          width: 0,
-          height: 2,
-        },
-        shadowOpacity: 0.1,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
         shadowRadius: 8,
       },
       android: {
-        elevation: 8,
+        elevation: 3,
       },
     }),
   },
+  cardSectionLast: {
+    marginRight: 0,
+  },
   cardTopArea: {
     flexDirection: 'row',
-    marginBottom: 20,
+    marginBottom: 16,
   },
   cardImage: {
-    width: 80,
-    height: 50,
+    width: 76,
+    height: 48,
     borderRadius: 8,
-    marginRight: 15,
+    marginRight: 14,
   },
   cardImagePlaceholder: {
     backgroundColor: '#F5F5F5',
@@ -683,7 +1016,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   cardImagePlaceholderText: {
-    fontSize: 12,
+    fontSize: 11,
     fontFamily: FONTS.medium,
     color: '#999999',
   },
@@ -694,38 +1027,54 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 8,
   },
   cardName: {
-    fontSize: 16,
+    fontSize: 15,
     fontFamily: FONTS.bold,
-    color: '#212121',
+    color: '#1A1A1A',
     flex: 1,
+    letterSpacing: -0.2,
   },
   editButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     backgroundColor: '#F5F5F5',
     borderRadius: 6,
   },
   editButtonText: {
-    fontSize: 12,
-    fontFamily: FONTS.semiBold,
+    fontSize: 11,
+    fontFamily: FONTS.medium,
     color: '#666666',
   },
   discountList: {
     gap: 4,
   },
+  discountItemWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  discountDot: {
+    width: 3,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: '#2E7D32',
+    marginRight: 6,
+  },
   discountItem: {
     fontSize: 12,
-    fontFamily: FONTS.semiBold,
-    color: '#4AA63C',
+    fontFamily: FONTS.regular,
+    color: '#666666',
+    flex: 1,
   },
   cardBottomArea: {
-    gap: 15,
+    gap: 14,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#F5F5F5',
   },
   progressItem: {
-    gap: 8,
+    gap: 6,
   },
   progressHeader: {
     flexDirection: 'row',
@@ -733,80 +1082,97 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   progressLabel: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FONTS.semiBold,
-    color: '#212121',
+    color: '#1A1A1A',
   },
   progressValue: {
     fontSize: 12,
-    fontFamily: FONTS.medium,
-    color: '#666666',
+    fontFamily: FONTS.regular,
+    color: '#888888',
   },
   progressBarContainer: {
     width: '100%',
-    height: 8,
-    backgroundColor: '#F0F0F0',
-    borderRadius: 4,
+    height: 6,
+    backgroundColor: '#EEEEEE',
+    borderRadius: 3,
     overflow: 'hidden',
   },
   progressBar: {
     height: '100%',
-    borderRadius: 4,
+    borderRadius: 3,
   },
-  quickActionsContainer: {
-    flexDirection: 'row',
+  progressBarBenefit: {
+    backgroundColor: '#1A1A1A',
+  },
+  progressBarPerformance: {
+    backgroundColor: '#2E7D32',
+  },
+  // Receipt Scan Section (Corporate Users)
+  receiptScanSection: {
     marginHorizontal: 20,
-    marginBottom: 20,
-    gap: 12,
-  },
-  quickActionCard: {
-    flex: 1,
+    marginTop: 8,
+    marginBottom: 16,
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 18,
-    alignItems: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.06,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 2,
-      },
-    }),
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#EEEEEE',
   },
-  quickActionIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#F5F5F5',
+  receiptScanContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  receiptScanLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  receiptScanIconContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#1A1A1A',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 12,
+    marginRight: 14,
   },
-  quickActionIconText: {
-    fontSize: 20,
+  receiptScanIcon: {
+    fontSize: 18,
     fontFamily: FONTS.bold,
-    color: '#212121',
+    color: '#FFFFFF',
   },
-  quickActionTitle: {
+  receiptScanTextContainer: {
+    flex: 1,
+  },
+  receiptScanTitle: {
     fontSize: 15,
-    fontFamily: FONTS.bold,
-    color: '#212121',
-    marginBottom: 4,
+    fontFamily: FONTS.semiBold,
+    color: '#1A1A1A',
+    marginBottom: 3,
   },
-  quickActionSubtitle: {
+  receiptScanSubtitle: {
     fontSize: 12,
     fontFamily: FONTS.regular,
-    color: '#999999',
+    color: '#888888',
+  },
+  receiptScanArrow: {
+    width: 28,
+    height: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  receiptScanArrowText: {
+    fontSize: 22,
+    fontFamily: FONTS.medium,
+    color: '#CCCCCC',
   },
   registrationSection: {
     marginHorizontal: 20,
     marginBottom: 20,
     padding: 20,
-    backgroundColor: '#212121',
+    backgroundColor: '#1A1A1A',
     borderRadius: 16,
   },
   registrationHeader: {
@@ -816,130 +1182,171 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   registrationTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontFamily: FONTS.bold,
     color: '#FFFFFF',
   },
   registrationSubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FONTS.regular,
-    color: '#CCCCCC',
+    color: '#AAAAAA',
   },
+  // Ad Section
   adSection: {
     marginHorizontal: 20,
-    marginBottom: 20,
-    height: 160,
-    backgroundColor: '#FFFAED',
-    borderRadius: 16,
+    marginBottom: 16,
+    height: 140,
+    backgroundColor: '#FBF8F4',
+    borderRadius: 14,
     flexDirection: 'row',
     overflow: 'hidden',
-    paddingLeft: 15,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: {
-          width: 0,
-          height: 2,
-        },
+        shadowOffset: { width: 0, height: 3 },
         shadowOpacity: 0.08,
-        shadowRadius: 8,
+        shadowRadius: 12,
       },
       android: {
-        elevation: 3,
+        elevation: 4,
       },
     }),
   },
   adChickenContainer: {
-    width: 120,
+    width: 110,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 20,
   },
   adChickenImage: {
-    width: 120,
-    height: 120,
+    width: 100,
+    height: 100,
   },
   adContent: {
     flex: 1,
-    padding: 20,
+    paddingVertical: 16,
+    paddingRight: 16,
     justifyContent: 'space-between',
   },
   adTextContainer: {
-    gap: 4,
+    gap: 2,
   },
-  adSubtitle: {
-    fontSize: 12,
+  adLabel: {
+    fontSize: 11,
     fontFamily: FONTS.medium,
-    color: '#666666',
+    color: '#888888',
+    marginBottom: 4,
   },
   adTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontFamily: FONTS.bold,
-    color: '#212121',
-    lineHeight: 24,
+    color: '#1A1A1A',
+    lineHeight: 22,
+    letterSpacing: -0.3,
   },
   adCardContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
   },
   adCardImage: {
-    width: 60,
-    height: 38,
+    width: 52,
+    height: 33,
     borderRadius: 4,
   },
   adCardName: {
     fontSize: 12,
-    fontFamily: FONTS.semiBold,
-    color: '#4AA63C',
+    fontFamily: FONTS.medium,
+    color: '#666666',
   },
+  // Benefit Section
   benefitSection: {
     marginHorizontal: 20,
-    marginBottom: 20,
-    padding: 20,
-    backgroundColor: '#4AA63C',
-    borderRadius: 16,
+    marginBottom: 16,
+    padding: 18,
+    backgroundColor: '#1A1A1A',
+    borderRadius: 14,
+  },
+  benefitContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   benefitTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontFamily: FONTS.bold,
     color: '#FFFFFF',
-    marginBottom: 8,
+    marginBottom: 4,
+    letterSpacing: -0.2,
   },
   benefitSubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FONTS.regular,
-    color: '#FFFFFF',
-    opacity: 0.9,
+    color: 'rgba(255,255,255,0.7)',
   },
+  benefitArrow: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  benefitArrowText: {
+    fontSize: 16,
+    color: '#FFFFFF',
+    fontFamily: FONTS.semiBold,
+  },
+  // Combination Section
   combinationSection: {
     marginHorizontal: 20,
     marginBottom: 40,
-    padding: 24,
-    backgroundColor: '#212121',
-    borderRadius: 16,
+    padding: 20,
+    backgroundColor: '#FBF8F4',
+    borderRadius: 14,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.08,
+        shadowRadius: 12,
+      },
+      android: {
+        elevation: 4,
+      },
+    }),
   },
-  combinationTitle: {
-    fontSize: 18,
-    fontFamily: FONTS.bold,
-    color: '#FFFFFF',
+  combinationHeader: {
     marginBottom: 8,
   },
+  combinationLabel: {
+    fontSize: 11,
+    fontFamily: FONTS.semiBold,
+    color: '#2E7D32',
+    letterSpacing: 0.3,
+  },
+  combinationTitle: {
+    fontSize: 17,
+    fontFamily: FONTS.bold,
+    color: '#1A1A1A',
+    marginBottom: 4,
+    letterSpacing: -0.3,
+  },
   combinationSubtitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FONTS.regular,
-    color: '#CCCCCC',
-    marginBottom: 20,
+    color: '#888888',
+    marginBottom: 16,
+    lineHeight: 18,
   },
   combinationButton: {
-    backgroundColor: '#4AA63C',
+    backgroundColor: '#1A1A1A',
     paddingVertical: 14,
-    borderRadius: 8,
+    borderRadius: 10,
     alignItems: 'center',
   },
   combinationButtonText: {
-    fontSize: 16,
-    fontFamily: FONTS.bold,
+    fontSize: 15,
+    fontFamily: FONTS.semiBold,
     color: '#FFFFFF',
   },
   overlay: {

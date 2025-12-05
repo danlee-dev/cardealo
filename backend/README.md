@@ -634,6 +634,292 @@ Response:
 }
 ```
 
+---
+
+## 친구 관리 API
+
+### Search friends
+```
+GET /api/friends/search?query={검색어}
+Authorization: bearer {token}
+```
+
+**Query params**:
+- `query`: 검색어 (이메일 또는 user_id, 최소 2자 이상)
+
+Response:
+
+```json
+{
+    "success": true,
+    "users": [
+        {
+            "user_id": "kim_chulsoo",
+            "user_name": "김철수",
+            "user_email": "kim@cardealo.com",
+            "is_friend": false,
+            "friendship_status": null
+        }
+    ]
+}
+```
+
+**friendship_status 값**:
+- `null`: 친구 관계 없음
+- `"accepted"`: 친구 관계
+- `"pending"`: 받은 친구 요청
+- `"sent_pending"`: 보낸 친구 요청
+
+### Send friend request
+```
+POST /api/friends/request
+Authorization: bearer {token}
+Content-Type: application/json
+
+{
+    "friend_id": "kim_chulsoo"
+}
+```
+
+Response:
+
+```json
+{
+    "success": true,
+    "message": "친구 요청을 보냈습니다"
+}
+```
+
+### Get friend requests
+
+```
+GET /api/friends/requests
+Authorization: bearer {token}
+```
+
+Response:
+
+```json
+{
+    "success": true,
+    "requests": [
+        {
+            "id": 1,
+            "user_id": "hong_gildong",
+            "user_name": "홍길동",
+            "user_email": "hong@cardealo.com",
+            "created_at": "2024-01-01T12:00:00"
+        }
+    ]
+}
+```
+
+### Accept friend request
+
+```
+POST /api/friends/accept
+Authorization: bearer {token}
+Content-Type: application/json
+
+{
+    "request_id": 1
+}
+```
+
+Response:
+
+```json
+{
+    "success": true,
+    "message": "친구 요청을 수락했습니다"
+}
+```
+
+### Reject friend request
+
+```
+POST /api/friends/reject
+Authorization: bearer {token}
+Content-Type: application/json
+
+{
+    "request_id": 1
+}
+```
+
+Response:
+
+```json
+{
+    "success": true,
+    "message": "친구 요청을 거절했습니다"
+}
+```
+
+### Get friends list
+
+```
+GET /api/friends
+Authorization: bearer {token}
+```
+
+Response:
+
+```json
+{
+    "success": true,
+    "friends": [
+        {
+            "user_id": "kim_chulsoo",
+            "user_name": "김철수",
+            "user_email": "kim@cardealo.com",
+            "friendship_id": 1,
+            "became_friends_at": "2024-01-01T12:00:00"
+        }
+    ]
+}
+```
+
+### Delete friend
+
+```
+DELETE /api/friends/{friend_user_id}
+Authorization: bearer {token}
+```
+
+Response:
+
+```json
+{
+    "success": true,
+    "message": "친구를 삭제했습니다"
+}
+```
+
+### Get friend's courses
+
+```
+GET /api/friends/{friend_user_id}/courses?limit=10&offset=0
+Authorization: bearer {token}
+```
+
+**Query params**:
+- `limit`: 최대 결과 개수 (기본: 10)
+- `offset`: 오프셋 (기본: 0)
+
+Response:
+
+```json
+{
+    "success": true,
+    "friend": {
+        "user_id": "kim_chulsoo",
+        "user_name": "김철수",
+        "user_email": "kim@cardealo.com"
+    },
+    "courses": [
+        {
+            "id": 1,
+            "title": "잠실 석촌호수 산책 코스",
+            "description": "혜택까지 알뜰한 코스",
+            "stops": [...],
+            "route_info": {...},
+            "total_distance": 1234,
+            "total_duration": 45,
+            "total_benefit_score": 250,
+            "num_people": 2,
+            "budget": 100000,
+            "created_at": "2024-01-01T00:00:00",
+            "creator_id": "kim_chulsoo",
+            "is_shared_with_me": true,
+            "member_count": 2,
+            "members": ["hong_gildong", "kim_chulsoo"]
+        }
+    ]
+}
+```
+
+**참고**: 친구 관계가 아닌 경우 403 Forbidden 에러 반환
+
+---
+
+## 코스 공유 API
+
+### Invite friend to course
+
+```
+POST /api/course/{course_id}/invite
+Authorization: bearer {token}
+Content-Type: application/json
+
+{
+    "friend_user_id": "kim_chulsoo"
+}
+```
+
+Response:
+
+```json
+{
+    "success": true,
+    "message": "친구를 코스에 초대했습니다"
+}
+```
+
+- 친구 관계가 아닌 경우 초대 불가
+- 이미 코스에 참여 중인 경우 초대 불가
+- 코스 참여자만 다른 친구를 초대 가능
+
+### Get course members
+
+```
+GET /api/course/{course_id}/members
+Authorization: bearer {token}
+```
+
+Response:
+
+```json
+{
+    "success": true,
+    "members": [
+        {
+            "user_id": "hong_gildong",
+            "user_name": "홍길동",
+            "user_email": "hong@cardealo.com",
+            "joined_at": "2024-01-01T12:00:00",
+            "is_creator": true
+        },
+        {
+            "user_id": "kim_chulsoo",
+            "user_name": "김철수",
+            "user_email": "kim@cardealo.com",
+            "joined_at": "2024-01-02T10:00:00",
+            "is_creator": false
+        }
+    ],
+    "creator_id": "hong_gildong"
+}
+```
+
+### Leave course
+
+```
+POST /api/course/{course_id}/leave
+Authorization: bearer {token}
+```
+
+Response:
+
+```json
+{
+    "success": true,
+    "message": "코스에서 나갔습니다"
+}
+```
+- 코스 생성자는 나갈 수 없음
+- 코스에 참여하고 있지 않은 경우 에러 반환
+
 
 
 #### `search_nearby_stores(lat, lng, radius, category)`

@@ -317,7 +317,7 @@ class LocationService:
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self.google_api_key,
-            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types"
+            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos"
         }
 
         all_stores = []
@@ -365,6 +365,19 @@ class LocationService:
                 display_name = place.get("displayName", {})
                 name = display_name.get("text", "") if isinstance(display_name, dict) else str(display_name)
 
+                # Extract photo URL if available
+                photo_url = None
+                photos = place.get("photos", [])
+                if photos and len(photos) > 0:
+                    photo_name = photos[0].get("name", "")
+                    if photo_name:
+                        photo_url = f"https://places.googleapis.com/v1/{photo_name}/media?maxHeightPx=400&maxWidthPx=400&key={self.google_api_key}"
+                        print(f"[Photo] {name}: OK ({len(photos)} photos)")
+                    else:
+                        print(f"[Photo] {name}: photo_name empty")
+                else:
+                    print(f"[Photo] {name}: No photos returned")
+
                 store = {
                     'name': name,
                     'category': detected_category,
@@ -372,7 +385,8 @@ class LocationService:
                     'latitude': place_lat,
                     'longitude': place_lng,
                     'distance': int(distance),
-                    'place_id': place.get('id', '')
+                    'place_id': place.get('id', ''),
+                    'photo_url': photo_url
                 }
                 all_stores.append(store)
 
@@ -418,7 +432,7 @@ class LocationService:
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self.google_api_key,
-            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types"
+            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos"
         }
 
         print(f"[Building Stores New] 건물 내 가맹점 검색: {building_name}")
@@ -463,6 +477,14 @@ class LocationService:
                 display_name = place.get("displayName", {})
                 name = display_name.get("text", "") if isinstance(display_name, dict) else str(display_name)
 
+                # Extract photo URL if available
+                photo_url = None
+                photos = place.get("photos", [])
+                if photos and len(photos) > 0:
+                    photo_name = photos[0].get("name", "")
+                    if photo_name:
+                        photo_url = f"https://places.googleapis.com/v1/{photo_name}/media?maxHeightPx=400&maxWidthPx=400&key={self.google_api_key}"
+
                 store = {
                     'name': name,
                     'category': category,
@@ -471,7 +493,8 @@ class LocationService:
                     'longitude': place_lng,
                     'distance': int(distance),
                     'place_id': place.get('id', ''),
-                    'building': building_name
+                    'building': building_name,
+                    'photo_url': photo_url
                 }
                 stores.append(store)
                 print(f"[Building Stores New] - {name} ({distance:.1f}m)")
@@ -561,3 +584,93 @@ class LocationService:
     def _google_type_to_category(self, google_type: str) -> str:
         """Map single Google Place type to our category (deprecated, use _google_types_to_category)"""
         return self._google_types_to_category([google_type])
+
+    def get_place_details(self, place_id: str) -> Optional[Dict]:
+        """
+        Get detailed information about a place using Google Places Details API (New)
+
+        Args:
+            place_id: Google Place ID
+
+        Returns:
+            {
+                'name': str,
+                'address': str,
+                'phone': str,
+                'website': str,
+                'rating': float,
+                'user_ratings_total': int,
+                'opening_hours': {
+                    'open_now': bool,
+                    'weekday_text': List[str]
+                },
+                'photos': List[str],  # photo URLs
+                'price_level': int,
+                'types': List[str]
+            }
+        """
+        BASE_URL_PLACE_DETAILS = "https://places.googleapis.com/v1/places"
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": self.google_api_key,
+            "X-Goog-FieldMask": "id,displayName,formattedAddress,nationalPhoneNumber,websiteUri,rating,userRatingCount,regularOpeningHours,photos,priceLevel,types"
+        }
+
+        try:
+            response = requests.get(
+                f"{BASE_URL_PLACE_DETAILS}/{place_id}",
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+
+            data = response.json()
+
+            # Extract photo URLs
+            photos = []
+            for photo in data.get("photos", [])[:5]:  # Max 5 photos
+                photo_name = photo.get("name", "")
+                if photo_name:
+                    photo_url = f"https://places.googleapis.com/v1/{photo_name}/media?maxHeightPx=400&maxWidthPx=400&key={self.google_api_key}"
+                    photos.append(photo_url)
+
+            # Extract opening hours
+            opening_hours = None
+            regular_hours = data.get("regularOpeningHours", {})
+            if regular_hours:
+                opening_hours = {
+                    'open_now': regular_hours.get("openNow", False),
+                    'weekday_text': regular_hours.get("weekdayDescriptions", [])
+                }
+
+            # Map price level
+            price_level_map = {
+                "PRICE_LEVEL_FREE": 0,
+                "PRICE_LEVEL_INEXPENSIVE": 1,
+                "PRICE_LEVEL_MODERATE": 2,
+                "PRICE_LEVEL_EXPENSIVE": 3,
+                "PRICE_LEVEL_VERY_EXPENSIVE": 4
+            }
+            price_level = price_level_map.get(data.get("priceLevel"), None)
+
+            display_name = data.get("displayName", {})
+            name = display_name.get("text", "") if isinstance(display_name, dict) else str(display_name)
+
+            return {
+                'place_id': place_id,
+                'name': name,
+                'address': data.get('formattedAddress', ''),
+                'phone': data.get('nationalPhoneNumber', ''),
+                'website': data.get('websiteUri', ''),
+                'rating': data.get('rating'),
+                'user_ratings_total': data.get('userRatingCount'),
+                'opening_hours': opening_hours,
+                'photos': photos,
+                'price_level': price_level,
+                'types': data.get('types', [])
+            }
+
+        except Exception as e:
+            print(f"[Place Details Error] {place_id}: {e}")
+            return None

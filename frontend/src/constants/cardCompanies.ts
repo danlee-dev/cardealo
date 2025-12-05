@@ -8,17 +8,17 @@ export interface CardCompanyInfo {
 export const CARD_COMPANIES: { [key: string]: CardCompanyInfo } = {
   신한: {
     name: '신한카드',
-    color: '#004DFF',
+    color: '#0052CC',
     textColor: '#FFFFFF',
   },
   삼성: {
     name: '삼성카드',
-    color: '#1428A0',
+    color: '#1A237E',
     textColor: '#FFFFFF',
   },
   하나: {
     name: '하나카드',
-    color: '#00857D',
+    color: '#00796B',
     textColor: '#FFFFFF',
   },
   현대: {
@@ -28,42 +28,42 @@ export const CARD_COMPANIES: { [key: string]: CardCompanyInfo } = {
   },
   KB: {
     name: 'KB국민카드',
-    color: '#FFBF00',
+    color: '#D4A853',
     textColor: '#000000',
   },
   국민: {
     name: 'KB국민카드',
-    color: '#FFBF00',
+    color: '#D4A853',
     textColor: '#000000',
   },
   NH: {
     name: 'NH농협카드',
-    color: '#00A651',
+    color: '#2E7D32',
     textColor: '#FFFFFF',
   },
   농협: {
     name: 'NH농협카드',
-    color: '#00A651',
+    color: '#2E7D32',
     textColor: '#FFFFFF',
   },
   우리: {
     name: '우리카드',
-    color: '#0033A0',
+    color: '#1E3A5F',
     textColor: '#FFFFFF',
   },
   롯데: {
     name: '롯데카드',
-    color: '#ED1C24',
+    color: '#C62828',
     textColor: '#FFFFFF',
   },
   BC: {
     name: 'BC카드',
-    color: '#DC143C',
+    color: '#B71C1C',
     textColor: '#FFFFFF',
   },
   카카오: {
     name: '카카오뱅크',
-    color: '#FFEB00',
+    color: '#F9D71C',
     textColor: '#000000',
   },
   토스: {
@@ -73,22 +73,22 @@ export const CARD_COMPANIES: { [key: string]: CardCompanyInfo } = {
   },
   씨티: {
     name: '씨티카드',
-    color: '#003DA5',
+    color: '#003087',
     textColor: '#FFFFFF',
   },
   IBK: {
     name: 'IBK기업은행',
-    color: '#00479B',
+    color: '#1565C0',
     textColor: '#FFFFFF',
   },
   기업: {
     name: 'IBK기업은행',
-    color: '#00479B',
+    color: '#1565C0',
     textColor: '#FFFFFF',
   },
   수협: {
     name: '수협카드',
-    color: '#005BAC',
+    color: '#0277BD',
     textColor: '#FFFFFF',
   },
 };

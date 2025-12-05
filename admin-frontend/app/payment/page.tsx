@@ -6,9 +6,74 @@ import axios from 'axios';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+// 바코드인지 확인 (12자리 숫자)
+const isBarcode = (data: string): boolean => {
+  return /^\d{12}$/.test(data);
+};
+
+// Insufficient Balance Modal Component
+const InsufficientBalanceModal = ({
+  isOpen,
+  onClose,
+  currentBalance,
+  requiredAmount,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  currentBalance: number;
+  requiredAmount: number;
+}) => {
+  if (!isOpen) return null;
+
+  const shortage = requiredAmount - currentBalance;
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+      <div className="bg-white rounded-2xl p-6 max-w-sm w-full mx-4 shadow-2xl">
+        <div className="flex justify-center mb-4">
+          <div className="w-14 h-14 rounded-full bg-red-100 flex items-center justify-center">
+            <span className="text-3xl font-bold text-red-500">!</span>
+          </div>
+        </div>
+
+        <h2 className="text-xl font-bold text-center text-gray-900 mb-2">
+          잔액이 부족합니다
+        </h2>
+        <p className="text-sm text-gray-500 text-center mb-6">
+          결제를 진행하려면 잔액을 충전해주세요.
+        </p>
+
+        <div className="bg-gray-50 rounded-xl p-4 mb-6">
+          <div className="flex justify-between mb-2">
+            <span className="text-gray-500">현재 잔액</span>
+            <span className="font-semibold">{currentBalance.toLocaleString()}원</span>
+          </div>
+          <div className="flex justify-between mb-2">
+            <span className="text-gray-500">결제 금액</span>
+            <span className="font-semibold">{requiredAmount.toLocaleString()}원</span>
+          </div>
+          <div className="border-t border-gray-200 my-2" />
+          <div className="flex justify-between">
+            <span className="text-red-500 font-semibold">부족 금액</span>
+            <span className="text-red-500 font-bold text-lg">{shortage.toLocaleString()}원</span>
+          </div>
+        </div>
+
+        <button
+          onClick={onClose}
+          className="w-full bg-gray-900 text-white py-3.5 rounded-xl font-semibold hover:bg-gray-800 transition-colors"
+        >
+          확인
+        </button>
+      </div>
+    </div>
+  );
+};
+
 export default function PaymentPage() {
   const router = useRouter();
   const [qrData, setQrData] = useState('');
+  const [scanType, setScanType] = useState<'qr' | 'barcode'>('qr');
   const [merchantId, setMerchantId] = useState(1); // 기본 가맹점 ID
   const [amount, setAmount] = useState('');
   const [benefit, setBenefit] = useState<any>(null);
@@ -18,17 +83,29 @@ export default function PaymentPage() {
   const [success, setSuccess] = useState(false);
   const hasLoadedData = useRef(false);
 
+  // Insufficient balance modal state
+  const [showInsufficientModal, setShowInsufficientModal] = useState(false);
+  const [balanceInfo, setBalanceInfo] = useState({ current: 0, required: 0 });
+
   useEffect(() => {
     if (hasLoadedData.current) return;
 
     const savedQrData = sessionStorage.getItem('qr_data');
-    console.log('>>> Payment page loaded, QR data from storage:', savedQrData);
+    console.log('>>> Payment page loaded, scanned data from storage:', savedQrData);
     if (savedQrData) {
       setQrData(savedQrData);
+      // 바코드인지 QR인지 판단
+      if (isBarcode(savedQrData)) {
+        setScanType('barcode');
+        console.log('>>> Detected as barcode');
+      } else {
+        setScanType('qr');
+        console.log('>>> Detected as QR code');
+      }
       sessionStorage.removeItem('qr_data');
       hasLoadedData.current = true;
     } else {
-      console.log('>>> No QR data found, redirecting to /scan');
+      console.log('>>> No scan data found, redirecting to /scan');
       router.push('/scan');
     }
   }, [router]);
@@ -44,11 +121,22 @@ export default function PaymentPage() {
     setError('');
 
     try {
-      const response = await axios.post(`${API_URL}/api/qr/scan`, {
-        qr_data: qrData,
-        merchant_id: merchantId,
-        payment_amount: parseInt(amount)
-      });
+      let response;
+      if (scanType === 'barcode') {
+        // 바코드 스캔 API 호출
+        response = await axios.post(`${API_URL}/api/qr/scan-barcode`, {
+          barcode_data: qrData,
+          merchant_id: merchantId,
+          payment_amount: parseInt(amount)
+        });
+      } else {
+        // QR 스캔 API 호출
+        response = await axios.post(`${API_URL}/api/qr/scan`, {
+          qr_data: qrData,
+          merchant_id: merchantId,
+          payment_amount: parseInt(amount)
+        });
+      }
 
       setBenefit(response.data);
     } catch (err: any) {
@@ -75,19 +163,32 @@ export default function PaymentPage() {
         router.push('/');
       }, 2000);
     } catch (err: any) {
-      setError(err.response?.data?.detail || '결제 처리에 실패했습니다');
+      const errorData = err.response?.data;
+      // Check for insufficient balance error
+      if (errorData?.error === 'insufficient_balance') {
+        setBalanceInfo({
+          current: errorData.balance || 0,
+          required: errorData.required || parseInt(amount),
+        });
+        setShowInsufficientModal(true);
+      } else {
+        setError(errorData?.detail || '결제 처리에 실패했습니다');
+      }
     } finally {
       setProcessing(false);
     }
   };
 
+  // QR인 경우에만 파싱하여 사용자 정보 표시
   let userData = null;
-  try {
-    userData = qrData ? JSON.parse(qrData) : null;
-    console.log('>>> Parsed user data:', userData);
-  } catch (e) {
-    console.error('>>> QR 데이터 파싱 실패:', e);
-    console.log('>>> QR 데이터:', qrData);
+  if (scanType === 'qr') {
+    try {
+      userData = qrData ? JSON.parse(qrData) : null;
+      console.log('>>> Parsed user data:', userData);
+    } catch (e) {
+      console.error('>>> QR 데이터 파싱 실패:', e);
+      console.log('>>> QR 데이터:', qrData);
+    }
   }
 
   return (
@@ -100,6 +201,9 @@ export default function PaymentPage() {
           ← 홈으로
         </button>
         <h1 className="text-2xl font-bold text-text mt-2">결제 처리</h1>
+        {scanType === 'barcode' && (
+          <p className="text-sm text-text-secondary mt-1">바코드 스캔됨: {qrData}</p>
+        )}
       </header>
 
       <main className="flex-1 p-6">
@@ -114,15 +218,25 @@ export default function PaymentPage() {
             </div>
           ) : (
             <div className="bg-white rounded-subtle shadow-lg p-6">
-              <div className="mb-6">
-                <h3 className="text-sm font-semibold text-text-secondary mb-1">사용자</h3>
-                <p className="text-lg">{userData?.user_name}</p>
-              </div>
+              {scanType === 'qr' ? (
+                <>
+                  <div className="mb-6">
+                    <h3 className="text-sm font-semibold text-text-secondary mb-1">사용자</h3>
+                    <p className="text-lg">{userData?.user_name || '-'}</p>
+                  </div>
 
-              <div className="mb-6">
-                <h3 className="text-sm font-semibold text-text-secondary mb-1">카드</h3>
-                <p className="text-lg">{userData?.card_name}</p>
-              </div>
+                  <div className="mb-6">
+                    <h3 className="text-sm font-semibold text-text-secondary mb-1">카드</h3>
+                    <p className="text-lg">{userData?.card_name || '-'}</p>
+                  </div>
+                </>
+              ) : (
+                <div className="mb-6 bg-gray-50 rounded-subtle p-4">
+                  <p className="text-sm text-text-secondary">
+                    바코드 스캔됨 - 금액 입력 후 정보가 표시됩니다
+                  </p>
+                </div>
+              )}
 
               <div className="mb-6">
                 <h3 className="text-sm font-semibold text-text-secondary mb-1">결제 금액</h3>
@@ -174,6 +288,14 @@ export default function PaymentPage() {
           )}
         </div>
       </main>
+
+      {/* Insufficient Balance Modal */}
+      <InsufficientBalanceModal
+        isOpen={showInsufficientModal}
+        onClose={() => setShowInsufficientModal(false)}
+        currentBalance={balanceInfo.current}
+        requiredAmount={balanceInfo.required}
+      />
     </div>
   );
 }

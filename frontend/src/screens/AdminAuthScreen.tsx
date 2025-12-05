@@ -1,59 +1,191 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, Alert, Animated, Dimensions } from 'react-native';
-import { FONTS, COLORS } from '../constants/theme';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Animated,
+  Dimensions,
+  ActivityIndicator,
+  ScrollView,
+  Platform,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FONTS } from '../constants/theme';
+import { AuthStorage } from '../utils/auth';
+import { BackIcon, CheckCircleIcon, AlertCircleIcon } from '../components/svg';
+import { API_URL } from '../utils/api';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
+interface CorporateCard {
+  id: number;
+  card_name: string;
+  card_number: string;
+  card_company: string;
+  monthly_limit: number;
+  used_amount: number;
+  benefit_summary: string;
+  departments: Array<{
+    id: number;
+    name: string;
+    monthly_limit: number;
+    used_amount: number;
+    color: string;
+  }>;
+  total_members: number;
+  active_members: number;
+}
+
 interface AdminAuthScreenProps {
-  onAuthenticated: () => void;
+  onAuthenticated: (cards: CorporateCard[]) => void;
   onCancel: () => void;
 }
 
 export const AdminAuthScreen: React.FC<AdminAuthScreenProps> = ({ onAuthenticated, onCancel }) => {
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
+  const insets = useSafeAreaInsets();
+  const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [corporateCards, setCorporateCards] = useState<CorporateCard[]>([]);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
 
-  const ADMIN_PASSWORD = 'admin1234'; // 비밀번호: admin1234
-
   useEffect(() => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: 0,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start();
+
+    checkAdminStatus();
   }, []);
 
-  const handleAuth = async () => {
-    if (!password) {
-      Alert.alert('오류', '비밀번호를 입력해주세요.');
-      return;
-    }
-
-    setLoading(true);
-
-    // 임시 인증 로직 (실제로는 백엔드 API 호출)
-    setTimeout(() => {
-      if (password === ADMIN_PASSWORD) {
+  const checkAdminStatus = async () => {
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) {
         setLoading(false);
-        onAuthenticated();
-      } else {
-        setLoading(false);
-        Alert.alert('인증 실패', '비밀번호가 올바르지 않습니다.');
-        setPassword('');
+        setIsAdmin(false);
+        return;
       }
-    }, 500);
+
+      const response = await fetch(`${API_URL}/api/corporate/is-admin`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = await response.json();
+
+      if (data.success && data.is_admin) {
+        const cardsResponse = await fetch(`${API_URL}/api/corporate/cards`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        const cardsData = await cardsResponse.json();
+
+        if (cardsData.success && cardsData.cards.length > 0) {
+          setIsAdmin(true);
+          setCorporateCards(cardsData.cards);
+        } else {
+          setIsAdmin(false);
+        }
+      } else {
+        setIsAdmin(false);
+      }
+    } catch (error) {
+      console.error('Admin check failed:', error);
+      setIsAdmin(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleProceed = () => {
+    if (corporateCards.length > 0) {
+      onAuthenticated(corporateCards);
+    }
   };
 
   const handleCancel = () => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: SCREEN_WIDTH,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start(() => {
       onCancel();
     });
   };
+
+  if (loading) {
+    return (
+      <Animated.View
+        style={[
+          styles.container,
+          {
+            transform: [{ translateX: slideAnim }],
+          },
+        ]}
+      >
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#212121" />
+        </View>
+      </Animated.View>
+    );
+  }
+
+  if (!isAdmin) {
+    return (
+      <Animated.View
+        style={[
+          styles.container,
+          {
+            transform: [{ translateX: slideAnim }],
+          },
+        ]}
+      >
+        {/* Header */}
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, Platform.OS === 'android' ? 24 : 0) + 10 }]}>
+          <TouchableOpacity
+            onPress={handleCancel}
+            activeOpacity={0.7}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          >
+            <BackIcon width={10} height={16} />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.content}>
+          <View style={styles.iconContainerWrapper}>
+            <AlertCircleIcon width={80} height={80} color="#666666" backgroundColor="#E8E8E8" />
+          </View>
+
+          <Text style={styles.title}>접근 권한 없음</Text>
+          <Text style={styles.subtitle}>
+            법인카드 관리자만 접근할 수 있습니다.{'\n'}
+            법인카드를 등록하면 관리자 기능을 사용할 수 있습니다.
+          </Text>
+
+          <View style={styles.buttonContainerCentered}>
+            <TouchableOpacity
+              style={styles.primaryButton}
+              onPress={handleCancel}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.primaryButtonText}>돌아가기</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Animated.View>
+    );
+  }
 
   return (
     <Animated.View
@@ -64,55 +196,64 @@ export const AdminAuthScreen: React.FC<AdminAuthScreenProps> = ({ onAuthenticate
         },
       ]}
     >
-      <TouchableOpacity
-        style={styles.backButton}
-        onPress={handleCancel}
-        activeOpacity={0.7}
-      >
-        <Text style={styles.backButtonText}>←</Text>
-      </TouchableOpacity>
-
-      <View style={styles.iconContainer}>
-        <View style={styles.lockIcon} />
-      </View>
-
-      <Text style={styles.title}>관리자 인증</Text>
-      <Text style={styles.subtitle}>보안을 위해 관리자 비밀번호를{'\n'}한 번 더 입력해주세요</Text>
-
-      <View style={styles.formContainer}>
-        <Text style={styles.label}>비밀번호</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="관리자 비밀번호를 입력해주세요"
-          placeholderTextColor="#999999"
-          secureTextEntry
-          value={password}
-          onChangeText={setPassword}
-          onSubmitEditing={handleAuth}
-          returnKeyType="done"
-          autoFocus
-        />
-
+      {/* Header */}
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, Platform.OS === 'android' ? 24 : 0) + 10 }]}>
         <TouchableOpacity
-          style={[styles.authButton, loading && styles.authButtonDisabled]}
-          onPress={handleAuth}
-          disabled={loading}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.authButtonText}>
-            {loading ? '인증 중...' : '관리자 인증'}
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.cancelButton}
           onPress={handleCancel}
-          disabled={loading}
-          activeOpacity={0.8}
+          activeOpacity={0.7}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
-          <Text style={styles.cancelButtonText}>취소</Text>
+          <BackIcon width={10} height={16} />
         </TouchableOpacity>
       </View>
+
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: insets.bottom + 24 }
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.iconContainerWrapper}>
+          <CheckCircleIcon width={80} height={80} color="#FFFFFF" backgroundColor="#212121" />
+        </View>
+
+        <Text style={styles.title}>관리자 인증 완료</Text>
+        <Text style={styles.subtitle}>
+          법인카드 {corporateCards.length}개를 관리할 수 있습니다.
+        </Text>
+
+        <View style={styles.cardList}>
+          {corporateCards.map((card) => (
+            <View key={card.id} style={styles.cardItem}>
+              <View style={styles.cardItemLeft}>
+                <Text style={styles.cardItemName}>{card.card_name}</Text>
+                <Text style={styles.cardItemCompany}>{card.card_company}</Text>
+              </View>
+              <Text style={styles.cardItemMembers}>{card.active_members}명 활동</Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={styles.buttonContainer}>
+          <TouchableOpacity
+            style={styles.primaryButton}
+            onPress={handleProceed}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.primaryButtonText}>대시보드 열기</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={handleCancel}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.secondaryButtonText}>취소</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
     </Animated.View>
   );
 };
@@ -121,41 +262,36 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: 24,
-    paddingTop: 60,
   },
-  backButton: {
-    position: 'absolute',
-    top: 60,
-    left: 20,
-    width: 40,
-    height: 40,
+  loadingContainer: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 10,
   },
-  backButtonText: {
-    fontSize: 24,
-    color: '#000000',
+  header: {
+    paddingHorizontal: 20,
+    paddingBottom: 20,
   },
-  iconContainer: {
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: 20,
+  },
+  content: {
+    flex: 1,
+    paddingHorizontal: 20,
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconContainerWrapper: {
+    alignSelf: 'center',
     marginBottom: 32,
-  },
-  lockIcon: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#9C27B0',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 3,
-    borderColor: '#FFFFFF',
   },
   title: {
     fontSize: 24,
     fontFamily: FONTS.bold,
-    color: '#000000',
+    color: '#212121',
     textAlign: 'center',
     marginBottom: 12,
   },
@@ -165,53 +301,81 @@ const styles = StyleSheet.create({
     color: '#666666',
     textAlign: 'center',
     lineHeight: 22,
-    marginBottom: 48,
+    marginBottom: 32,
   },
-  formContainer: {
+  cardList: {
     width: '100%',
+    marginBottom: 32,
   },
-  label: {
-    fontSize: 14,
-    fontFamily: FONTS.medium,
-    color: '#333333',
-    marginBottom: 8,
-  },
-  input: {
-    height: 52,
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    fontSize: 15,
-    fontFamily: FONTS.regular,
-    color: '#000000',
+  cardItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    marginBottom: 16,
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.04,
+        shadowRadius: 6,
+      },
+      android: {
+        elevation: 1,
+      },
+    }),
   },
-  authButton: {
+  cardItemLeft: {
+    flex: 1,
+  },
+  cardItemName: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginBottom: 4,
+  },
+  cardItemCompany: {
+    fontSize: 13,
+    fontFamily: FONTS.regular,
+    color: '#999999',
+  },
+  cardItemMembers: {
+    fontSize: 14,
+    fontFamily: FONTS.semiBold,
+    color: '#4AA63C',
+  },
+  buttonContainer: {
+    width: '100%',
+    gap: 10,
+  },
+  buttonContainerCentered: {
+    width: '100%',
+    marginTop: 16,
+  },
+  primaryButton: {
     height: 52,
-    backgroundColor: '#9C27B0',
-    borderRadius: 8,
+    backgroundColor: '#212121',
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 12,
   },
-  authButtonDisabled: {
-    backgroundColor: '#D1C4E9',
-  },
-  authButtonText: {
+  primaryButtonText: {
     fontSize: 16,
     fontFamily: FONTS.bold,
     color: '#FFFFFF',
   },
-  cancelButton: {
+  secondaryButton: {
     height: 52,
     backgroundColor: '#F5F5F5',
-    borderRadius: 8,
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  cancelButtonText: {
+  secondaryButtonText: {
     fontSize: 16,
     fontFamily: FONTS.medium,
     color: '#666666',

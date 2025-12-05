@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { API_URL } from './api';
 
 const TOKEN_KEY = 'auth_token';
 const USER_ID_KEY = 'user_id';
@@ -83,12 +84,10 @@ export interface RegisterResponse {
   error?: string;
 }
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
-
 export const AuthAPI = {
   async login(email: string, password: string): Promise<LoginResponse> {
     try {
-      const response = await fetch(`${BACKEND_URL}/api/login`, {
+      const response = await fetch(`${API_URL}/api/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -117,7 +116,7 @@ export const AuthAPI = {
 
   async register(userData: RegisterRequest): Promise<RegisterResponse> {
     try {
-      const response = await fetch(`${BACKEND_URL}/api/register`, {
+      const response = await fetch(`${API_URL}/api/register`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

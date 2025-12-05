@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, String, Integer, Boolean, ForeignKey, select, DateTime, Text, Date
+from sqlalchemy import create_engine, Column, String, Integer, Boolean, ForeignKey, select, delete, DateTime, Text, Date
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 from sqlalchemy_utils import PasswordType
 from datetime import datetime, date
@@ -8,17 +8,26 @@ import json
 import csv
 
 
-# 데이터베이스 경로 설정 (backend 폴더에 저장)
-DATABASE = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cardealo.db')
+# 데이터베이스 경로 설정
+LOCAL_DATABASE = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cardealo.db')
 cards_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ai/cards.json')
 card_benefits_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'ai/card_benefits.csv')
 
+# DATABASE_URL 환경변수 사용 (Railway에서 자동 제공)
+# 로컬에서는 SQLite 사용
+DATABASE_URL = os.environ.get('DATABASE_URL', f"sqlite:///{LOCAL_DATABASE}")
+
+# Railway PostgreSQL URL 수정 (postgres:// -> postgresql://)
+if DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+
 # SQLAlchemy 설정
-DATABASE_URL = f"sqlite:///{DATABASE}"
+is_sqlite = DATABASE_URL.startswith('sqlite')
+engine_args = {"check_same_thread": False} if is_sqlite else {}
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args=engine_args,
     echo=False
 )
 
@@ -40,6 +49,7 @@ class User(Base):
     monthly_spending = Column(Integer, default=0)
     monthly_savings = Column(Integer, default=0)
     isBusiness = Column(Boolean, default=False)
+    balance = Column(Integer, default=0)  # 사용자 잔액 (원)
 
     mycards = relationship("MyCard", back_populates="user", cascade="all, delete-orphan")
 
@@ -134,6 +144,37 @@ class SavedCourseUser(Base):
     saved_at = Column(DateTime, default=datetime.utcnow)
 
 
+class SharedCourse(Base):
+    """친구에게 공유된 코스"""
+    __tablename__ = 'shared_course'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    course_id = Column(Integer, ForeignKey('saved_course.id'), nullable=False)
+    shared_by = Column(String, ForeignKey('user.user_id'), nullable=False)  # 공유한 사람
+    shared_to = Column(String, ForeignKey('user.user_id'), nullable=False)  # 공유받은 사람
+    shared_at = Column(DateTime, default=datetime.utcnow)
+
+    course = relationship("SavedCourse")
+    sender = relationship("User", foreign_keys=[shared_by])
+    receiver = relationship("User", foreign_keys=[shared_to])
+
+
+class Friendship(Base):
+    """친구 관계 테이블"""
+    __tablename__ = 'friendship'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey('user.user_id'), nullable=False)  # 요청한 사용자
+    friend_id = Column(String, ForeignKey('user.user_id'), nullable=False)  # 요청받은 사용자
+    status = Column(String, default='pending')  # pending, accepted, rejected, blocked
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", foreign_keys=[user_id], backref="friendships_sent")
+    friend = relationship("User", foreign_keys=[friend_id], backref="friendships_received")
+    
+
+
 class PaymentHistory(Base):
     """결제 내역 (관리자 시스템에서 전송받음)"""
     __tablename__ = 'payment_history'
@@ -169,6 +210,162 @@ class QRScanStatus(Base):
 
     user = relationship("User")
     card = relationship("MyCard")
+
+
+# ============ 법인카드 관련 모델들 ============
+
+class CorporateCard(Base):
+    """법인카드 정보"""
+    __tablename__ = 'corporate_card'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    card_name = Column(String, nullable=False)
+    card_number = Column(String)  # 마스킹된 카드번호 (예: ****-****-****-1234)
+    card_company = Column(String)  # 카드사
+    owner_user_id = Column(String, ForeignKey('user.user_id'), nullable=False)  # 법인카드 소유자 (관리자)
+    monthly_limit = Column(Integer, default=10000000)  # 월 한도 (기본 1000만원)
+    used_amount = Column(Integer, default=0)  # 사용 금액
+    benefit_summary = Column(Text)  # 혜택 요약
+    benefits_json = Column(Text)  # JSON 형태의 혜택 상세
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    owner = relationship("User", backref="corporate_cards")
+    members = relationship("CorporateCardMember", back_populates="corporate_card", cascade="all, delete-orphan")
+    departments = relationship("Department", back_populates="corporate_card", cascade="all, delete-orphan")
+    payments = relationship("CorporatePaymentHistory", back_populates="corporate_card", cascade="all, delete-orphan")
+
+
+class Department(Base):
+    """부서 정보"""
+    __tablename__ = 'department'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    corporate_card_id = Column(Integer, ForeignKey('corporate_card.id'), nullable=False)
+    name = Column(String, nullable=False)  # 부서명
+    monthly_limit = Column(Integer, default=2000000)  # 부서별 월 한도 (기본 200만원)
+    used_amount = Column(Integer, default=0)  # 사용 금액
+    color = Column(String, default='#4AA63C')  # UI 표시용 색상
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    corporate_card = relationship("CorporateCard", back_populates="departments")
+    members = relationship("CorporateCardMember", back_populates="department")
+
+
+class CorporateCardMember(Base):
+    """법인카드 팀원 (이메일로 초대)"""
+    __tablename__ = 'corporate_card_member'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    corporate_card_id = Column(Integer, ForeignKey('corporate_card.id'), nullable=False)
+    user_id = Column(String, ForeignKey('user.user_id'))  # 가입된 사용자 연결 (nullable - 초대 상태일 때는 null)
+    invited_email = Column(String, nullable=False)  # 초대된 이메일
+    department_id = Column(Integer, ForeignKey('department.id'))  # 소속 부서
+    role = Column(String, default='member')  # admin, manager, member
+    monthly_limit = Column(Integer, default=500000)  # 개인별 월 한도 (기본 50만원)
+    used_amount = Column(Integer, default=0)  # 사용 금액
+    status = Column(String, default='pending')  # pending, active, inactive
+    invited_at = Column(DateTime, default=datetime.utcnow)
+    joined_at = Column(DateTime)  # 초대 수락 시간
+
+    corporate_card = relationship("CorporateCard", back_populates="members")
+    user = relationship("User", backref="corporate_memberships")
+    department = relationship("Department", back_populates="members")
+
+
+class Notification(Base):
+    """사용자 알림"""
+    __tablename__ = 'notification'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey('user.user_id'), nullable=False)
+    type = Column(String, nullable=False)  # payment, benefit_tip, friend_request, friend_accepted, course_shared, system
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    data = Column(Text)  # JSON: 추가 데이터 (action_type, action_target 등)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", backref="notifications")
+
+
+class CorporatePaymentHistory(Base):
+    """법인카드 결제 내역"""
+    __tablename__ = 'corporate_payment_history'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    transaction_id = Column(String(36), unique=True, nullable=False)
+    corporate_card_id = Column(Integer, ForeignKey('corporate_card.id'), nullable=False)
+    member_id = Column(Integer, ForeignKey('corporate_card_member.id'))  # 결제한 팀원
+    user_id = Column(String, ForeignKey('user.user_id'))  # 결제한 사용자
+    merchant_name = Column(String)
+    merchant_category = Column(String)  # 가맹점 카테고리
+    payment_amount = Column(Integer)
+    discount_amount = Column(Integer, default=0)
+    final_amount = Column(Integer)
+    benefit_text = Column(Text)
+    receipt_image = Column(Text)  # 영수증 이미지 (base64 또는 URL)
+    receipt_ocr_data = Column(Text)  # OCR 추출 데이터 (JSON)
+    payment_date = Column(DateTime, default=datetime.utcnow)
+    synced_at = Column(DateTime)  # 동기화 시간
+
+    corporate_card = relationship("CorporateCard", back_populates="payments")
+    member = relationship("CorporateCardMember")
+    user = relationship("User")
+
+
+class Conversation(Base):
+    """채팅 대화방 (두 사용자 간의 1:1 대화)"""
+    __tablename__ = 'conversation'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user1_id = Column(String, ForeignKey('user.user_id'), nullable=False)
+    user2_id = Column(String, ForeignKey('user.user_id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user1 = relationship("User", foreign_keys=[user1_id])
+    user2 = relationship("User", foreign_keys=[user2_id])
+    messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
+
+
+class Message(Base):
+    """채팅 메시지"""
+    __tablename__ = 'message'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(Integer, ForeignKey('conversation.id'), nullable=False)
+    sender_id = Column(String, ForeignKey('user.user_id'), nullable=False)
+    content = Column(Text, nullable=False)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    conversation = relationship("Conversation", back_populates="messages")
+    sender = relationship("User")
+
+
+class RouteCache(Base):
+    """경로 정보 캐시 (API 비용 절감)"""
+    __tablename__ = 'route_cache'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 캐시 키: 좌표 + 모드 조합 (좌표는 소수점 4자리로 반올림하여 약 11m 정확도)
+    cache_key = Column(String, unique=True, nullable=False, index=True)
+    origin_lat = Column(String, nullable=False)  # 소수점 4자리
+    origin_lng = Column(String, nullable=False)
+    dest_lat = Column(String, nullable=False)
+    dest_lng = Column(String, nullable=False)
+    mode = Column(String, nullable=False)  # walking, driving, transit
+
+    # 캐시된 응답 데이터 (JSON)
+    response_data = Column(Text, nullable=False)
+
+    # 메타데이터
+    created_at = Column(DateTime, default=datetime.utcnow)
+    hit_count = Column(Integer, default=0)  # 캐시 적중 횟수
+    last_hit_at = Column(DateTime)  # 마지막 캐시 적중 시간
+
 
 def get_db() -> Session:
     """
@@ -292,8 +489,36 @@ def create_test_user():
 
 
 def init_db():
-    """데이터베이스 테이블을 초기화합니다"""
-    Base.metadata.create_all(bind=engine)
+    """데이터베이스 초기 데이터를 시딩합니다 (스키마는 마이그레이션이 담당)"""
+    # Note: create_all() 제거됨 - Flask-Migrate가 스키마 관리
+    from sqlalchemy import inspect
+
+    # 필요한 테이블들이 모두 존재하는지 확인 (마이그레이션 전이면 스킵)
+    inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
+    required_tables = ['card', 'card_benefit', 'user', 'mycard', 'corporate_card']
+
+    missing_tables = [t for t in required_tables if t not in existing_tables]
+    if missing_tables:
+        print(f'[DB] Tables not yet created: {missing_tables}. Skipping data seeding (run migrations first).')
+        return
+
+    # Auto-migration: Add balance column if not exists
+    try:
+        user_columns = [col['name'] for col in inspector.get_columns('user')]
+        if 'balance' not in user_columns:
+            from sqlalchemy import text
+            with engine.connect() as conn:
+                # PostgreSQL and SQLite compatible syntax
+                if 'postgresql' in DATABASE_URL:
+                    conn.execute(text('ALTER TABLE "user" ADD COLUMN balance INTEGER DEFAULT 0'))
+                else:
+                    conn.execute(text('ALTER TABLE user ADD COLUMN balance INTEGER DEFAULT 0'))
+                conn.commit()
+            print('[DB] Added balance column to user table')
+    except Exception as e:
+        print(f'[DB] Auto-migration check: {e}')
+
     with open(cards_path, 'r', encoding='utf-8') as f:
         cards_data = json.load(f)
     card_benefits_data = csv.reader(open(card_benefits_path, 'r', encoding='utf-8'))
@@ -331,3 +556,203 @@ def init_db():
 
     # 테스트 사용자 자동 생성
     create_test_user()
+
+    # 법인카드 테스트 데이터 생성
+    create_corporate_cards()
+
+
+def create_corporate_cards():
+    """실제 한국 법인카드 상품 5개를 생성합니다"""
+    db = get_db()
+
+    # 실제 한국 법인카드 상품 데이터 (5개)
+    corporate_cards_data = [
+        {
+            'card_name': '신한 법인카드',
+            'card_number': '9411-7800-1234-1234',
+            'card_company': '신한카드',
+            'owner_email': 'hong@cardealo.com',
+            'monthly_limit': 20000000,
+            'benefit_summary': '전 가맹점 0.1% 마이신한포인트 적립, 연간 적립한도 없음',
+            'benefits_json': json.dumps({
+                'categories': [
+                    {'category': '전가맹점', 'discount_type': 'point', 'discount_value': 0.1, 'max_discount': None, 'description': '정상결제금액의 0.1% 기본 적립'},
+                    {'category': '신한은행가맹점', 'discount_type': 'point', 'discount_value': 0.3, 'max_discount': None, 'description': '신한은행 결제계좌 연결 가맹점 추가 적립'}
+                ],
+                'pre_month_requirement': 0,
+                'annual_fee': {'local': 5000, 'visa_master': 10000}
+            }, ensure_ascii=False),
+            'departments': [
+                {'name': '영업팀', 'monthly_limit': 5000000, 'color': '#0046FF'},
+                {'name': '물류팀', 'monthly_limit': 8000000, 'color': '#4CAF50'}
+            ]
+        },
+        {
+            'card_name': '삼성카드 CORPORATE #2',
+            'card_number': '****-****-****-5678',
+            'card_company': '삼성카드',
+            'owner_email': 'hong@cardealo.com',
+            'monthly_limit': 50000000,
+            'benefit_summary': '국내외 전 가맹점 0.2% 캐시백 또는 빅포인트 적립',
+            'benefits_json': json.dumps({
+                'categories': [
+                    {'category': '국내가맹점', 'discount_type': 'cashback', 'discount_value': 0.2, 'max_discount': None},
+                    {'category': '해외가맹점', 'discount_type': 'cashback', 'discount_value': 0.2, 'max_discount': None},
+                    {'category': '빅포인트', 'discount_type': 'point', 'discount_value': 0.2, 'max_discount': None, 'description': '캐시백 대신 빅포인트 선택 가능'}
+                ],
+                'pre_month_requirement': 0
+            }, ensure_ascii=False),
+            'departments': [
+                {'name': '마케팅팀', 'monthly_limit': 10000000, 'color': '#0066B3'},
+                {'name': '개발팀', 'monthly_limit': 15000000, 'color': '#FF5722'},
+                {'name': '경영지원팀', 'monthly_limit': 8000000, 'color': '#607D8B'}
+            ]
+        },
+        {
+            'card_name': '삼성카드 CORPORATE 마일리지',
+            'card_number': '****-****-****-9012',
+            'card_company': '삼성카드',
+            'owner_email': 'hong@cardealo.com',
+            'monthly_limit': 30000000,
+            'benefit_summary': '전월실적/적립한도 없이 스카이패스 마일리지 적립',
+            'benefits_json': json.dumps({
+                'categories': [
+                    {'category': '전가맹점', 'discount_type': 'mileage', 'discount_value': 1000, 'unit': '원당 1마일', 'max_mileage': None, 'description': '스카이패스 마일리지 무제한 적립'},
+                    {'category': '대한항공', 'discount_type': 'mileage', 'discount_value': 1000, 'unit': '원당 2마일', 'max_mileage': None, 'description': '대한항공 결제 시 2배 적립'}
+                ],
+                'pre_month_requirement': 0
+            }, ensure_ascii=False),
+            'departments': [
+                {'name': '해외영업팀', 'monthly_limit': 15000000, 'color': '#00BCD4'}
+            ]
+        },
+        {
+            'card_name': '현대카드 M 포인트 법인',
+            'card_number': '****-****-****-3456',
+            'card_company': '현대카드',
+            'owner_email': 'hong@cardealo.com',
+            'monthly_limit': 100000000,
+            'benefit_summary': '전가맹점 0.5~1% M포인트 적립, 주유/통신료 추가 적립',
+            'benefits_json': json.dumps({
+                'categories': [
+                    {'category': '전가맹점', 'discount_type': 'point', 'discount_value': 0.5, 'max_discount': None, 'description': 'M포인트 기본 적립'},
+                    {'category': '주유', 'discount_type': 'point', 'discount_value': 1, 'max_discount': 50000, 'description': 'SK/GS/S-OIL/현대오일뱅크'},
+                    {'category': '통신료', 'discount_type': 'point', 'discount_value': 1, 'max_discount': 30000, 'description': 'SKT/KT/LG U+ 자동이체'}
+                ],
+                'pre_month_requirement': 300000
+            }, ensure_ascii=False),
+            'departments': [
+                {'name': '임원실', 'monthly_limit': 50000000, 'color': '#1A1A1A'}
+            ]
+        },
+        {
+            'card_name': 'KB국민 비즈 법인카드',
+            'card_number': '****-****-****-7890',
+            'card_company': 'KB국민카드',
+            'owner_email': 'hong@cardealo.com',
+            'monthly_limit': 15000000,
+            'benefit_summary': '전가맹점 0.2% 포인트리 적립, 주유/대형마트 추가 할인',
+            'benefits_json': json.dumps({
+                'categories': [
+                    {'category': '전가맹점', 'discount_type': 'point', 'discount_value': 0.2, 'max_discount': None, 'description': '포인트리 기본 적립'},
+                    {'category': '주유', 'discount_type': 'per_unit', 'discount_value': 60, 'unit': '리터', 'max_discount': 50000, 'description': 'SK/GS/S-OIL/현대오일뱅크'},
+                    {'category': '대형마트', 'discount_type': 'percent', 'discount_value': 5, 'places': ['이마트', '홈플러스', '롯데마트'], 'max_discount': 30000}
+                ],
+                'pre_month_requirement': 300000
+            }, ensure_ascii=False),
+            'departments': [
+                {'name': '총무팀', 'monthly_limit': 5000000, 'color': '#FFBC00'},
+                {'name': '구매팀', 'monthly_limit': 8000000, 'color': '#009688'}
+            ]
+        }
+    ]
+
+    try:
+        # 먼저 hong@cardealo.com의 기존 법인카드 모두 삭제
+        hong_user = db.scalars(
+            select(User).where(User.user_email == 'hong@cardealo.com')
+        ).first()
+
+        if hong_user:
+            existing_cards = db.scalars(
+                select(CorporateCard).where(CorporateCard.owner_user_id == hong_user.user_id)
+            ).all()
+
+            deleted_count = 0
+            for card in existing_cards:
+                # 관련 데이터 먼저 삭제 (cascade가 설정되어 있지 않을 수 있으므로 명시적으로)
+                db.execute(delete(CorporatePaymentHistory).where(CorporatePaymentHistory.corporate_card_id == card.id))
+                db.execute(delete(CorporateCardMember).where(CorporateCardMember.corporate_card_id == card.id))
+                db.execute(delete(Department).where(Department.corporate_card_id == card.id))
+                db.delete(card)
+                deleted_count += 1
+
+            if deleted_count > 0:
+                print(f'[DB] Deleted {deleted_count} existing corporate cards from hong@cardealo.com')
+
+        created_count = 0
+        for card_data in corporate_cards_data:
+            # 이미 존재하는지 확인
+            existing_card = db.scalars(
+                select(CorporateCard).where(CorporateCard.card_name == card_data['card_name'])
+            ).first()
+            if existing_card:
+                continue
+
+            # 소유자 찾기
+            owner = db.scalars(
+                select(User).where(User.user_email == card_data['owner_email'])
+            ).first()
+            if not owner:
+                print(f"[DB] Warning: Owner {card_data['owner_email']} not found")
+                continue
+
+            # 법인카드 생성
+            corporate_card = CorporateCard(
+                card_name=card_data['card_name'],
+                card_number=card_data['card_number'],
+                card_company=card_data['card_company'],
+                owner_user_id=owner.user_id,
+                monthly_limit=card_data['monthly_limit'],
+                benefit_summary=card_data['benefit_summary'],
+                benefits_json=card_data['benefits_json']
+            )
+            db.add(corporate_card)
+            db.flush()  # ID 생성을 위해 flush
+
+            # 부서 생성
+            for dept_data in card_data.get('departments', []):
+                department = Department(
+                    corporate_card_id=corporate_card.id,
+                    name=dept_data['name'],
+                    monthly_limit=dept_data['monthly_limit'],
+                    color=dept_data['color']
+                )
+                db.add(department)
+
+            # 소유자를 관리자로 자동 등록
+            owner_member = CorporateCardMember(
+                corporate_card_id=corporate_card.id,
+                user_id=owner.user_id,
+                invited_email=owner.user_email,
+                role='admin',
+                monthly_limit=card_data['monthly_limit'],
+                status='active',
+                joined_at=datetime.utcnow()
+            )
+            db.add(owner_member)
+
+            created_count += 1
+
+        db.commit()
+
+        if created_count > 0:
+            print(f'[DB] {created_count} corporate cards created successfully')
+        else:
+            print('[DB] All corporate cards already exist')
+
+    except Exception as e:
+        db.rollback()
+        print(f'[DB] Failed to create corporate cards: {e}')
+    finally:
+        db.close()

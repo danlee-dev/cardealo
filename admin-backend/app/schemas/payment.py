@@ -9,6 +9,12 @@ class QRScanRequest(BaseModel):
     payment_amount: int
 
 
+class BarcodeScanRequest(BaseModel):
+    barcode_data: str  # 12자리 숫자
+    merchant_id: int
+    payment_amount: int
+
+
 class PaymentProcessRequest(BaseModel):
     transaction_id: str
     confirm: bool = True

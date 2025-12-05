@@ -7,7 +7,7 @@ import math
 
 class DirectionsService:
     """
-    Google Directions API를 사용한 경로 안내 서비스
+    경로 안내 서비스 (TMAP 우선, Google 폴백)
 
     기능:
     - 다중 경유지 경로 계산
@@ -16,7 +16,10 @@ class DirectionsService:
     - 서울 대중교통 요금 fallback 계산
     """
 
-    BASE_URL = "https://maps.googleapis.com/maps/api/directions/json"
+    GOOGLE_BASE_URL = "https://maps.googleapis.com/maps/api/directions/json"
+    TMAP_ROUTES_URL = "https://apis.openapi.sk.com/tmap/routes"
+    TMAP_WALK_URL = "https://apis.openapi.sk.com/tmap/routes/pedestrian"
+    TMAP_TRANSIT_URL = "https://apis.openapi.sk.com/transit/routes"
 
     # 서울 대중교통 요금표 (2024년 3월 기준, 성인 카드)
     SEOUL_TRANSIT_FARE = {
@@ -36,6 +39,7 @@ class DirectionsService:
 
     def __init__(self):
         self.google_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+        self.tmap_api_key = os.getenv("TMAP_API_KEY")
 
         if not self.google_api_key:
             raise ValueError("GOOGLE_MAPS_API_KEY must be set")
@@ -135,7 +139,7 @@ class DirectionsService:
 
         try:
             response = requests.get(
-                self.BASE_URL,
+                self.GOOGLE_BASE_URL,
                 params=params,
                 timeout=10
             )
@@ -341,42 +345,93 @@ class DirectionsService:
 
             print(f"[Leg {i + 1}] {points[i].get('name', 'N/A')} → {points[i + 1].get('name', 'N/A')} ({mode})")
 
-            # 각 구간 경로 계산
-            leg_result = self.get_directions(
-                origin=origin,
-                destination=destination,
-                mode=mode
-            )
+            leg_distance = 0
+            leg_duration = 0
+            leg_fare = 0
+            leg_polyline = ''
+            leg_success = False
 
-            if leg_result['status'] == 'OK':
-                leg_distance = leg_result.get('total_distance', 0)
-                leg_duration = leg_result.get('total_duration', 0)
-                leg_fare = leg_result.get('fare', {}).get('value', 0)
+            # TMAP 우선 사용 (한국 최적화)
+            if mode in ['walking', 'driving']:
+                tmap_result = self._get_tmap_directions(origin, destination, mode)
+                if tmap_result:
+                    leg_distance = tmap_result['distance']
+                    leg_duration = tmap_result['duration']
+                    leg_polyline = tmap_result['polyline']
+                    leg_success = True
+                    print(f"[TMAP] Leg {i + 1} 성공")
 
-                # Polyline 추출 (지도 표시용)
-                leg_polyline = ''
-                routes = leg_result.get('routes', [])
-                if routes and len(routes) > 0:
-                    leg_polyline = routes[0].get('overview_polyline', {}).get('points', '')
+            leg_transit_legs = None  # 대중교통 구간 상세
 
-                legs_summary.append({
+            if mode == 'transit':
+                # 대중교통은 TMAP Transit API 사용
+                tmap_result = self._get_tmap_transit_directions(origin, destination)
+                if tmap_result:
+                    leg_distance = tmap_result['distance']
+                    leg_duration = tmap_result['duration']
+                    leg_fare = tmap_result.get('fare', 0)
+                    leg_polyline = tmap_result['polyline']
+                    leg_transit_legs = tmap_result.get('transit_legs', [])
+                    leg_success = True
+                    print(f"[TMAP Transit] Leg {i + 1} 성공")
+
+            # TMAP 실패 시 Google API fallback
+            if not leg_success:
+                leg_result = self.get_directions(
+                    origin=origin,
+                    destination=destination,
+                    mode=mode
+                )
+
+                if leg_result['status'] == 'OK':
+                    leg_distance = leg_result.get('total_distance', 0)
+                    leg_duration = leg_result.get('total_duration', 0)
+                    leg_fare = leg_result.get('fare', {}).get('value', 0)
+
+                    routes = leg_result.get('routes', [])
+                    if routes and len(routes) > 0:
+                        leg_polyline = routes[0].get('overview_polyline', {}).get('points', '')
+                    leg_success = True
+                else:
+                    print(f"[Warning] Leg {i + 1} 경로 계산 실패: {leg_result.get('status')}")
+
+            if leg_success:
+                # 거리/시간 텍스트 포맷
+                if leg_distance >= 1000:
+                    distance_text = f"{leg_distance / 1000:.1f} km"
+                else:
+                    distance_text = f"{leg_distance} m"
+
+                if leg_duration >= 3600:
+                    hours = leg_duration // 3600
+                    mins = (leg_duration % 3600) // 60
+                    duration_text = f"{hours}시간 {mins}분"
+                else:
+                    mins = leg_duration // 60
+                    duration_text = f"{mins}분"
+
+                leg_summary = {
                     'from': points[i].get('name', f'지점 {i}'),
                     'to': points[i + 1].get('name', f'지점 {i + 1}'),
                     'mode': mode,
                     'distance': leg_distance,
                     'duration': leg_duration,
                     'fare': leg_fare if leg_fare else None,
-                    'distance_text': leg_result.get('total_distance_text', ''),
-                    'duration_text': leg_result.get('total_duration_text', ''),
-                    'fare_text': leg_result.get('fare_text', '') if leg_fare else None,
-                    'polyline': leg_polyline  # 프론트엔드 지도 표시용
-                })
+                    'distance_text': distance_text,
+                    'duration_text': duration_text,
+                    'fare_text': f"{leg_fare:,}원" if leg_fare else None,
+                    'polyline': leg_polyline
+                }
+
+                # 대중교통인 경우 상세 구간 정보 추가
+                if leg_transit_legs:
+                    leg_summary['transit_legs'] = leg_transit_legs
+
+                legs_summary.append(leg_summary)
 
                 total_distance += leg_distance
                 total_duration += leg_duration
                 total_fare += leg_fare if leg_fare else 0
-            else:
-                print(f"[Warning] Leg {i + 1} 경로 계산 실패: {leg_result.get('status')}")
 
         # 전체 거리/시간 포맷
         if total_distance >= 1000:
@@ -686,3 +741,310 @@ class DirectionsService:
         distance = R * c
 
         return distance
+
+    def _get_tmap_directions(
+        self,
+        origin: Dict[str, float],
+        destination: Dict[str, float],
+        mode: str = "driving"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        TMAP API로 경로 조회 (한국 전용, driving/walking 지원)
+
+        Args:
+            origin: 출발지 {"latitude": float, "longitude": float}
+            destination: 목적지 {"latitude": float, "longitude": float}
+            mode: 이동 모드 ("driving" 또는 "walking")
+
+        Returns:
+            성공 시: {
+                'distance': int (미터),
+                'duration': int (초),
+                'polyline': str (Google Polyline Encoding)
+            }
+            실패 시: None
+        """
+        if not self.tmap_api_key or self.tmap_api_key == 'your_tmap_api_key_here':
+            return None
+
+        try:
+            # 보행자 vs 자동차 경로 URL 선택
+            if mode == "walking":
+                url = self.TMAP_WALK_URL
+            else:
+                url = self.TMAP_ROUTES_URL
+
+            headers = {
+                'appKey': self.tmap_api_key,
+                'Content-Type': 'application/json'
+            }
+
+            body = {
+                'startX': str(origin['longitude']),
+                'startY': str(origin['latitude']),
+                'endX': str(destination['longitude']),
+                'endY': str(destination['latitude']),
+                'reqCoordType': 'WGS84GEO',
+                'resCoordType': 'WGS84GEO',
+            }
+
+            # 보행자 경로는 추가 파라미터 필요
+            if mode == "walking":
+                body['startName'] = '출발지'
+                body['endName'] = '도착지'
+
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+
+            if response.status_code != 200:
+                print(f"[TMAP] API 오류: {response.status_code}")
+                return None
+
+            data = response.json()
+            features = data.get('features', [])
+
+            if not features:
+                return None
+
+            # 경로 정보 추출
+            total_distance = 0
+            total_duration = 0
+            coordinates = []
+
+            for feature in features:
+                properties = feature.get('properties', {})
+                geometry = feature.get('geometry', {})
+
+                if properties.get('totalDistance'):
+                    total_distance = properties['totalDistance']
+                if properties.get('totalTime'):
+                    total_duration = properties['totalTime']
+
+                if geometry.get('type') == 'LineString':
+                    coords = geometry.get('coordinates', [])
+                    coordinates.extend(coords)
+
+            # Google Polyline Encoding으로 변환
+            polyline = self._encode_polyline(coordinates)
+
+            print(f"[TMAP] 경로 조회 성공 - 거리: {total_distance}m, 시간: {total_duration // 60}분")
+
+            return {
+                'distance': total_distance,
+                'duration': total_duration,
+                'polyline': polyline
+            }
+
+        except Exception as e:
+            print(f"[TMAP] 예외 발생: {e}")
+            return None
+
+    def _encode_polyline(self, coordinates: list) -> str:
+        """
+        좌표 리스트를 Google Polyline Encoding으로 변환
+        coordinates: [[lng, lat], [lng, lat], ...]
+        """
+        if not coordinates:
+            return ""
+
+        def encode_value(value: int) -> str:
+            value = ~(value << 1) if value < 0 else (value << 1)
+            chunks = []
+            while value >= 0x20:
+                chunks.append(chr((0x20 | (value & 0x1f)) + 63))
+                value >>= 5
+            chunks.append(chr(value + 63))
+            return ''.join(chunks)
+
+        encoded = []
+        prev_lat = 0
+        prev_lng = 0
+
+        for coord in coordinates:
+            if len(coord) < 2:
+                continue
+            lng, lat = coord[0], coord[1]
+
+            lat_int = round(lat * 1e5)
+            lng_int = round(lng * 1e5)
+
+            d_lat = lat_int - prev_lat
+            d_lng = lng_int - prev_lng
+
+            prev_lat = lat_int
+            prev_lng = lng_int
+
+            encoded.append(encode_value(d_lat))
+            encoded.append(encode_value(d_lng))
+
+        return ''.join(encoded)
+
+    def _get_tmap_transit_directions(
+        self,
+        origin: Dict[str, float],
+        destination: Dict[str, float]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        TMAP 대중교통 API로 경로 조회
+
+        Args:
+            origin: 출발지 {"latitude": float, "longitude": float}
+            destination: 목적지 {"latitude": float, "longitude": float}
+
+        Returns:
+            성공 시: {
+                'distance': int (미터),
+                'duration': int (초),
+                'fare': int (원),
+                'polyline': str (Google Polyline Encoding)
+            }
+            실패 시: None
+        """
+        if not self.tmap_api_key or self.tmap_api_key == 'your_tmap_api_key_here':
+            return None
+
+        try:
+            headers = {
+                'appKey': self.tmap_api_key,
+                'Content-Type': 'application/json'
+            }
+
+            body = {
+                'startX': str(origin['longitude']),
+                'startY': str(origin['latitude']),
+                'endX': str(destination['longitude']),
+                'endY': str(destination['latitude']),
+                'format': 'json',
+                'count': 1
+            }
+
+            response = requests.post(
+                self.TMAP_TRANSIT_URL,
+                headers=headers,
+                json=body,
+                timeout=15
+            )
+
+            if response.status_code != 200:
+                print(f"[TMAP Transit] API 오류: {response.status_code}")
+                return None
+
+            data = response.json()
+            meta = data.get('metaData', {})
+            plan = meta.get('plan', {})
+            itineraries = plan.get('itineraries', [])
+
+            if not itineraries:
+                return None
+
+            # 첫 번째 경로 사용
+            itin = itineraries[0]
+            total_time = itin.get('totalTime', 0)
+            fare_info = itin.get('fare', {}).get('regular', {})
+            total_fare = fare_info.get('totalFare', 0)
+
+            # 거리 및 polyline 추출
+            total_distance = 0
+            coordinates = []
+            transit_legs = []  # 대중교통 구간 요약 정보
+
+            for leg in itin.get('legs', []):
+                distance = leg.get('distance', 0)
+                total_distance += distance
+
+                # 구간 정보 추출
+                mode = leg.get('mode', 'WALK')
+                section_time = leg.get('sectionTime', 0)
+                route = leg.get('route', {})
+
+                leg_info = {
+                    'mode': mode,
+                    'duration': section_time,
+                    'duration_text': f"{section_time // 60}분" if section_time >= 60 else f"{section_time}초"
+                }
+
+                if mode == 'WALK':
+                    leg_info['name'] = '도보'
+                elif mode in ['BUS', 'SUBWAY']:
+                    if isinstance(route, str):
+                        leg_info['name'] = route
+                    else:
+                        leg_info['name'] = route.get('name', '노선')
+                        leg_info['routeColor'] = route.get('routeColor', '')
+                        leg_info['typeName'] = route.get('typeName', '')
+
+                    # 정류장 개수
+                    pass_stops = leg.get('passStopList', {})
+                    stations = []
+
+                    # Debug: print actual keys
+                    if isinstance(pass_stops, dict) and pass_stops:
+                        print(f"[TMAP Transit Debug] directions passStopList keys: {list(pass_stops.keys())}")
+
+                    if isinstance(pass_stops, dict):
+                        # Try multiple possible key names
+                        stations = pass_stops.get('stationList', [])
+                        if not stations:
+                            stations = pass_stops.get('stations', [])
+                        if not stations:
+                            stations = pass_stops.get('stop', [])
+                        if not stations:
+                            stations = pass_stops.get('list', [])
+                    elif isinstance(pass_stops, list):
+                        stations = pass_stops
+
+                    # Also check at leg level
+                    if not stations:
+                        stations = leg.get('stationList', [])
+                        if not stations:
+                            stations = leg.get('stations', [])
+
+                    leg_info['stopCount'] = len(stations)
+
+                transit_legs.append(leg_info)
+
+                # passShape에서 좌표 추출 (있는 경우)
+                pass_shape = leg.get('passShape', {})
+                linestring = pass_shape.get('linestring', '')
+                if linestring:
+                    # linestring format: "lng lat, lng lat, ..."
+                    for point in linestring.split(','):
+                        parts = point.strip().split(' ')
+                        if len(parts) >= 2:
+                            try:
+                                lng = float(parts[0])
+                                lat = float(parts[1])
+                                coordinates.append([lng, lat])
+                            except ValueError:
+                                pass
+
+                # 도보 구간 steps에서 좌표 추출
+                for step in leg.get('steps', []):
+                    step_linestring = step.get('linestring', '')
+                    if step_linestring:
+                        for point in step_linestring.split(','):
+                            parts = point.strip().split(' ')
+                            if len(parts) >= 2:
+                                try:
+                                    lng = float(parts[0])
+                                    lat = float(parts[1])
+                                    coordinates.append([lng, lat])
+                                except ValueError:
+                                    pass
+
+            polyline = self._encode_polyline(coordinates) if coordinates else ''
+
+            print(f"[TMAP Transit] 경로 조회 성공 - 거리: {total_distance}m, 시간: {total_time // 60}분, 요금: {total_fare}원")
+
+            return {
+                'distance': total_distance,
+                'duration': total_time,
+                'fare': total_fare,
+                'polyline': polyline,
+                'transit_legs': transit_legs
+            }
+
+        except Exception as e:
+            print(f"[TMAP Transit] 예외 발생: {e}")
+            import traceback
+            traceback.print_exc()
+            return None

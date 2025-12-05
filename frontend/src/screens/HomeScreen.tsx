@@ -1,21 +1,32 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ScrollView, Platform, Alert, TextInput, Keyboard, TouchableWithoutFeedback, Image, StatusBar, FlatList, Animated, Modal } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NaverMapView, NaverMapMarkerOverlay, NaverMapPolylineOverlay } from '@mj-studio/react-native-naver-map';
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
-import { SearchIcon, StarsIcon, CafeIcon, CoffeeIcon, FoodIcon, CartIcon, CardsIcon, LocationMarkerIcon, StorePinIcon, StarIcon, MyLocationIcon, SearchPinIcon, RefreshIcon, CourseIcon, SavedCourseIcon, BackIcon } from '../components/svg';
+import { SearchIcon, StarsIcon, CafeIcon, CoffeeIcon, FoodIcon, CartIcon, CardsIcon, LocationMarkerIcon, StorePinIcon, StarIcon, MyLocationIcon, SearchPinIcon, RefreshIcon, CourseIcon, SavedCourseIcon, BackIcon, CloseIcon, ChatIcon, ChevronRightIcon } from '../components/svg';
 import { FONTS, COLORS } from '../constants/theme';
 import * as Location from 'expo-location';
 import axios from 'axios';
-import { USER_CARDS, API_URL, CARD_IMAGES } from '../constants/userCards';
+import { USER_CARDS, CARD_IMAGES } from '../constants/userCards';
+import { API_URL } from '../utils/api';
 import { getMerchantLogo } from '../constants/merchantImages';
 import { AuthStorage } from '../utils/auth';
 import { CardPlaceholder } from '../components/CardPlaceholder';
 import { LinearGradient } from 'expo-linear-gradient';
 import { ProfileScreen } from './ProfileScreen';
 import { OnePayScreen } from './OnePayScreen';
+import { FriendsScreen } from './FriendsScreen';
+import { ChatListScreen } from './ChatListScreen';
+import { ChatRoomScreen } from './ChatRoomScreen';
+import { Conversation } from '../utils/userWebSocket';
+import { useNotifications } from '../contexts/NotificationContext';
 import { LocationDebugModal } from '../components/LocationDebugModal';
 import { calculateDistance } from '../constants/mapUtils';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import WheelPicker from 'react-native-wheely';
+import { CourseLoadingView } from '../components/CourseLoadingView';
+import { PlaceDetailView } from '../components/PlaceDetailView';
+import { RouteDetailView } from '../components/RouteDetailView';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -34,6 +45,8 @@ interface StoreCard {
   distance: number;
   phone?: string;
   building_name?: string;
+  photo_url?: string;
+  place_id?: string;
   top_card?: {
     card: string;
     score: number;
@@ -53,6 +66,16 @@ interface CardRecommendation {
   benefit_summary: string;
 }
 
+interface TransitLegDetail {
+  mode: 'WALK' | 'BUS' | 'SUBWAY';
+  duration: number;
+  duration_text: string;
+  name: string;
+  routeColor?: string;
+  typeName?: string;
+  stopCount?: number;
+}
+
 interface CourseLeg {
   from: string;
   to: string;
@@ -64,6 +87,7 @@ interface CourseLeg {
   duration_text: string;
   fare_text: string | null;
   polyline: string;
+  transit_legs?: TransitLegDetail[];
 }
 
 interface CourseRoute {
@@ -82,6 +106,7 @@ interface CoursePlace {
   category: string;
   latitude: number;
   longitude: number;
+  place_id?: string;
   benefits: Array<{
     card: string;
     benefit: string;
@@ -102,6 +127,7 @@ interface AICourseResult {
     reasoning: string;
     stops: CoursePlace[];
     routes: any[];
+    legs_summary?: CourseLeg[];  // TMAP polyline included
     total_distance: number;
     total_duration: number;
     total_benefit_score: number;
@@ -122,6 +148,10 @@ interface SavedCourse {
   created_at: string;
   user_id: string;
   is_saved_by_user: boolean;
+  shared_by?: {
+    user_id: string;
+    user_name: string;
+  };
 }
 
 interface PopularCourse extends SavedCourse {
@@ -134,6 +164,7 @@ interface HomeScreenProps {
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const insets = useSafeAreaInsets();
+  const { unreadCount, setNavigationCallbacks } = useNotifications();
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [stores, setStores] = useState<StoreCard[]>([]);
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -144,13 +175,38 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const [currentZoom, setCurrentZoom] = useState(16);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [searchSuggestions, setSearchSuggestions] = useState<Array<{
+    place_id: string;
+    name: string;
+    address: string;
+    latitude: number;
+    longitude: number;
+    types: string[];
+  }>>([]);
+  const [searchHistory, setSearchHistory] = useState<Array<{
+    name: string;
+    address: string;
+    latitude: number;
+    longitude: number;
+  }>>([]);
+  const [loadingSearchSuggestions, setLoadingSearchSuggestions] = useState(false);
   const [selectedCardIndex, setSelectedCardIndex] = useState(0);
   const [favoriteStores, setFavoriteStores] = useState<Set<string>>(new Set());
   const [showProfile, setShowProfile] = useState(false);
   const [showOnePay, setShowOnePay] = useState(false);
+  const [showPlaceDetail, setShowPlaceDetail] = useState(false);
+  const [showRouteDetail, setShowRouteDetail] = useState(false);
+  const [selectedRouteSegment, setSelectedRouteSegment] = useState<{
+    start: { latitude: number; longitude: number };
+    end: { latitude: number; longitude: number };
+    startName: string;
+    endName: string;
+    endPlaceId?: string;
+  } | null>(null);
+  const [preSelectedCardIdForOnePay, setPreSelectedCardIdForOnePay] = useState<number | null>(null);
   const [isInsideBuilding, setIsInsideBuilding] = useState(false);
   const [filterSort, setFilterSort] = useState<'benefit' | 'distance' | 'recommend'>('recommend');
-  const [filterOrder, setFilterOrder] = useState<'asc' | 'desc'>('desc');
   const [filterOpenOnly, setFilterOpenOnly] = useState(false);
   const [searchResultLocation, setSearchResultLocation] = useState<{ latitude: number; longitude: number; name: string } | null>(null);
   const [debugLocation, setDebugLocation] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -197,6 +253,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const [aiCourses, setAiCourses] = useState<AICourseResult[]>([]);
   const [savedCourses, setSavedCourses] = useState<SavedCourse[]>([]);
   const [popularCourses, setPopularCourses] = useState<PopularCourse[]>([]);
+  const [sharedCourses, setSharedCourses] = useState<SavedCourse[]>([]);
   const [loadingCourseList, setLoadingCourseList] = useState(false);
 
   // Selected course detail
@@ -204,14 +261,29 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const [courseSaved, setCourseSaved] = useState(false);
   const [savingCourse, setSavingCourse] = useState(false);
 
+  // Friends
+  const [showFriends, setShowFriends] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [sharingCourseId, setSharingCourseId] = useState<string | null>(null);
+
+  // Chat
+  const [showChatList, setShowChatList] = useState(false);
+  const [showChatRoom, setShowChatRoom] = useState(false);
+  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
+
   const bottomSheetRef = useRef<BottomSheet>(null);
   const mapRef = useRef<any>(null);
   const cardScrollRef = useRef<FlatList>(null);
   const isScrollingToCard = useRef(false);
-  const snapPoints = useMemo(() => ['25%', '45%', '70%', '95%'], []);
+  const snapPoints = useMemo(() => ['25%', '45%', '70%', '87%'], []);
 
   // Animation for course mode transition
   const courseModeAnimation = useRef(new Animated.Value(0)).current;
+  const searchBarScaleAnim = useRef(new Animated.Value(1)).current;
+  const searchBarBorderAnim = useRef(new Animated.Value(0)).current;
+  const neonRotationAnim = useRef(new Animated.Value(0)).current;
+  const neonAnimationRef = useRef<Animated.CompositeAnimation | null>(null);
 
   // 카드 애니메이션 값 배열
   const cardScaleAnims = useRef<Animated.Value[]>([]).current;
@@ -219,10 +291,189 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   // Progress section 애니메이션 (height 기반)
   const progressHeightAnim = useRef(new Animated.Value(0)).current;
 
+  // Store detail slide 애니메이션
+  const storeDetailSlideAnim = useRef(new Animated.Value(0)).current;
+
   // 로딩 애니메이션 (점 3개)
   const loadingDot1 = useRef(new Animated.Value(0)).current;
   const loadingDot2 = useRef(new Animated.Value(0)).current;
   const loadingDot3 = useRef(new Animated.Value(0)).current;
+
+  // Course card animations
+  const courseCardAnims = useRef<{ [key: string]: Animated.Value }>({}).current;
+  const courseDetailFadeAnim = useRef(new Animated.Value(0)).current;
+  const placeCardAnims = useRef<Animated.Value[]>([]).current;
+  const routeProgressAnim = useRef(new Animated.Value(0)).current;
+  const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Search history key for AsyncStorage
+  const SEARCH_HISTORY_KEY = 'cardealo_search_history';
+
+  // Load search history from AsyncStorage
+  const loadSearchHistory = async () => {
+    try {
+      const history = await AsyncStorage.getItem(SEARCH_HISTORY_KEY);
+      if (history) {
+        setSearchHistory(JSON.parse(history));
+      }
+    } catch (error) {
+      console.error('Failed to load search history:', error);
+    }
+  };
+
+  // Save search to history
+  const saveToSearchHistory = async (item: { name: string; address: string; latitude: number; longitude: number }) => {
+    try {
+      const newHistory = [item, ...searchHistory.filter(h => h.name !== item.name)].slice(0, 10);
+      setSearchHistory(newHistory);
+      await AsyncStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(newHistory));
+    } catch (error) {
+      console.error('Failed to save search history:', error);
+    }
+  };
+
+  // Clear search history
+  const clearSearchHistory = async () => {
+    try {
+      setSearchHistory([]);
+      await AsyncStorage.removeItem(SEARCH_HISTORY_KEY);
+    } catch (error) {
+      console.error('Failed to clear search history:', error);
+    }
+  };
+
+  // Fetch search suggestions with debounce
+  const fetchSearchSuggestions = async (query: string) => {
+    if (!query || query.length < 2) {
+      setSearchSuggestions([]);
+      return;
+    }
+
+    setLoadingSearchSuggestions(true);
+    try {
+      const params: any = { query, limit: 8 };
+      if (userLocation) {
+        params.latitude = userLocation.latitude;
+        params.longitude = userLocation.longitude;
+      }
+
+      const response = await axios.get(`${API_URL}/api/search-autocomplete`, { params });
+      if (response.data.results) {
+        setSearchSuggestions(response.data.results);
+      }
+    } catch (error) {
+      console.error('Failed to fetch search suggestions:', error);
+      setSearchSuggestions([]);
+    } finally {
+      setLoadingSearchSuggestions(false);
+    }
+  };
+
+  // Handle search query change with debounce
+  const handleSearchQueryChange = (text: string) => {
+    setSearchQuery(text);
+
+    // Clear previous debounce
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+    }
+
+    // Debounce API call
+    searchDebounceRef.current = setTimeout(() => {
+      fetchSearchSuggestions(text);
+    }, 300);
+  };
+
+  // Handle selecting a search result
+  const handleSelectSearchResult = async (item: { name: string; address: string; latitude: number; longitude: number }) => {
+    // Save to history
+    await saveToSearchHistory(item);
+
+    // Clear search state
+    setSearchQuery(item.name);
+    setIsSearchFocused(false);
+    setSearchSuggestions([]);
+    Keyboard.dismiss();
+
+    // Clear category filter
+    setSelectedCategory(null);
+
+    // Save search result location
+    setSearchResultLocation({
+      latitude: item.latitude,
+      longitude: item.longitude,
+      name: item.name,
+    });
+
+    // Move map to search result
+    if (mapRef.current) {
+      mapRef.current.animateCameraTo({
+        latitude: item.latitude,
+        longitude: item.longitude,
+        zoom: 16,
+        duration: 500,
+      });
+    }
+
+    // Fetch nearby stores at search location
+    fetchNearbyStores(item.latitude, item.longitude, currentSearchRadius);
+  };
+
+  // Get or create animation for course card
+  const getCourseCardAnim = (key: string) => {
+    if (!courseCardAnims[key]) {
+      courseCardAnims[key] = new Animated.Value(0);
+    }
+    return courseCardAnims[key];
+  };
+
+  // Animate course cards entrance
+  const animateCourseCards = (count: number) => {
+    const animations: Animated.CompositeAnimation[] = [];
+    for (let i = 0; i < count; i++) {
+      const anim = getCourseCardAnim(`course-${i}`);
+      anim.setValue(0);
+      animations.push(
+        Animated.spring(anim, {
+          toValue: 1,
+          friction: 8,
+          tension: 65,
+          delay: i * 80,
+          useNativeDriver: true,
+        })
+      );
+    }
+    Animated.stagger(80, animations).start();
+  };
+
+  // Animate place cards in detail view
+  const animatePlaceCards = (count: number) => {
+    // Reset and create animations
+    placeCardAnims.length = 0;
+    for (let i = 0; i < count; i++) {
+      placeCardAnims.push(new Animated.Value(0));
+    }
+
+    // Animate each card with stagger
+    const animations = placeCardAnims.map((anim, index) =>
+      Animated.spring(anim, {
+        toValue: 1,
+        friction: 8,
+        tension: 50,
+        delay: index * 100,
+        useNativeDriver: true,
+      })
+    );
+
+    Animated.stagger(100, animations).start();
+
+    // Animate route progress
+    Animated.timing(routeProgressAnim, {
+      toValue: 1,
+      duration: 800 + (count * 200),
+      useNativeDriver: false,
+    }).start();
+  };
 
   // 혜택 레벨 계산 (상위 33%, 중위 33%, 하위 33%)
   const getBenefitLevel = (score: number, allScores: number[]): 'high' | 'medium' | 'low' => {
@@ -338,7 +589,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
     switch (categoryId) {
       case 'course':
-        return <CourseIcon width={20} height={19} color="#000000" />;
+        return <CourseIcon width={20} height={19} color="#D4A853" />;
       case 'favorites':
         return <StarsIcon {...iconProps} />;
       case 'cafe':
@@ -417,15 +668,99 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   useEffect(() => {
     requestLocationPermission();
     fetchUserCards();
+    loadFavorites();
+    loadSearchHistory();
   }, []);
+
+  // Register notification navigation callbacks
+  useEffect(() => {
+    setNavigationCallbacks({
+      navigateToChat: (_conversationId: number) => {
+        // Open chat list - user can find the conversation there
+        setShowChatList(true);
+      },
+      navigateToNotifications: () => {
+        // Open chat list as notification center
+        setShowChatList(true);
+      },
+      navigateToCourse: (_courseId?: number) => {
+        // Switch to course mode
+        if (!isCourseMode) {
+          setIsCourseMode(true);
+          setSelectedCategory('course');
+          loadCourseList();
+        }
+      },
+    });
+  }, [isCourseMode, setNavigationCallbacks]);
 
   // Animate course mode transition
   useEffect(() => {
-    Animated.timing(courseModeAnimation, {
-      toValue: isCourseMode ? 1 : 0,
-      duration: 300,
-      useNativeDriver: true,
-    }).start();
+    if (isCourseMode) {
+      // Enter course mode - sophisticated animation sequence
+      Animated.parallel([
+        Animated.timing(courseModeAnimation, {
+          toValue: 1,
+          duration: 400,
+          useNativeDriver: false,
+        }),
+        Animated.sequence([
+          Animated.timing(searchBarScaleAnim, {
+            toValue: 1.02,
+            duration: 150,
+            useNativeDriver: false,
+          }),
+          Animated.spring(searchBarScaleAnim, {
+            toValue: 1,
+            friction: 8,
+            tension: 100,
+            useNativeDriver: false,
+          }),
+        ]),
+        Animated.timing(searchBarBorderAnim, {
+          toValue: 1,
+          duration: 400,
+          useNativeDriver: false,
+        }),
+      ]).start();
+
+      // Start neon rotation animation
+      neonRotationAnim.setValue(0);
+      neonAnimationRef.current = Animated.loop(
+        Animated.timing(neonRotationAnim, {
+          toValue: 1,
+          duration: 2500,
+          useNativeDriver: true,
+          easing: (t) => t, // Linear easing
+        })
+      );
+      neonAnimationRef.current.start();
+    } else {
+      // Exit course mode
+      Animated.parallel([
+        Animated.timing(courseModeAnimation, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: false,
+        }),
+        Animated.timing(searchBarScaleAnim, {
+          toValue: 1,
+          duration: 300,
+          useNativeDriver: false,
+        }),
+        Animated.timing(searchBarBorderAnim, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: false,
+        }),
+      ]).start();
+
+      // Stop neon animation
+      if (neonAnimationRef.current) {
+        neonAnimationRef.current.stop();
+        neonAnimationRef.current = null;
+      }
+    }
   }, [isCourseMode]);
 
   // Initialize card scale animations when userCards change
@@ -446,6 +781,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }
   }, [userCards]);
 
+  // 즐겨찾기 불러오기
+  const loadFavorites = async () => {
+    try {
+      const stored = await AsyncStorage.getItem('favoriteStores');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setFavoriteStores(new Set(parsed));
+      }
+    } catch (error) {
+      console.error('Failed to load favorites:', error);
+    }
+  };
+
+  // 즐겨찾기 저장하기
+  const saveFavorites = async (favorites: Set<string>) => {
+    try {
+      await AsyncStorage.setItem('favoriteStores', JSON.stringify([...favorites]));
+    } catch (error) {
+      console.error('Failed to save favorites:', error);
+    }
+  };
+
   const toggleFavorite = (storeName: string) => {
     const newFavorites = new Set(favoriteStores);
     if (newFavorites.has(storeName)) {
@@ -453,6 +810,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     } else {
       newFavorites.add(storeName);
     }
+    saveFavorites(newFavorites);
     setFavoriteStores(newFavorites);
     // TODO: 백엔드 API 준비되면 서버에 저장
   };
@@ -521,42 +879,98 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }).start();
   }, [selectedCardIndex]);
 
+  // 기본 fallback 위치 (고려대학교 근처)
+  const DEFAULT_LOCATION = {
+    latitude: 37.5898,
+    longitude: 127.0323,
+  };
+
   const requestLocationPermission = async () => {
+    // 5초 타임아웃 설정
+    const locationTimeout = 5000;
+    let timeoutId: NodeJS.Timeout | null = null;
+
+    const useDefaultLocation = () => {
+      console.log('[Location] 기본 위치 사용 (fallback)');
+      setUserLocation(DEFAULT_LOCATION);
+      fetchNearbyStores(DEFAULT_LOCATION.latitude, DEFAULT_LOCATION.longitude, currentSearchRadius);
+    };
+
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('위치 권한 필요', '앱을 사용하려면 위치 권한이 필요합니다. 설정에서 권한을 허용해주세요.');
+        Alert.alert(
+          '위치 권한 필요',
+          '위치 권한이 없어 기본 위치로 설정됩니다.',
+          [{ text: '확인', onPress: useDefaultLocation }]
+        );
         return;
       }
+
+      // 타임아웃 Promise 생성
+      const timeoutPromise = new Promise<null>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error('Location timeout'));
+        }, locationTimeout);
+      });
 
       // Try to get last known position first (faster)
-      const lastKnown = await Location.getLastKnownPositionAsync();
-      if (lastKnown) {
-        const coords = {
-          latitude: lastKnown.coords.latitude,
-          longitude: lastKnown.coords.longitude,
-        };
-        const accuracy = lastKnown.coords.accuracy || null;
+      try {
+        const lastKnown = await Promise.race([
+          Location.getLastKnownPositionAsync(),
+          timeoutPromise,
+        ]);
 
-        console.log(`[Location] Last known position - accuracy: ${accuracy}m`);
-        setGpsAccuracy(accuracy);
+        if (timeoutId) clearTimeout(timeoutId);
 
-        // Check if location is in USA (emulator default)
-        if (coords.latitude > 36 && coords.latitude < 38 && coords.longitude > -123 && coords.longitude < -121) {
-          console.log('[Location] 에뮬레이터 기본 위치 감지 (미국)');
-          Alert.alert('위치 오류', '올바른 위치를 가져올 수 없습니다. 실제 기기에서 사용해주세요.');
+        if (lastKnown) {
+          const coords = {
+            latitude: lastKnown.coords.latitude,
+            longitude: lastKnown.coords.longitude,
+          };
+          const accuracy = lastKnown.coords.accuracy || null;
+
+          console.log(`[Location] Last known position - accuracy: ${accuracy}m`);
+          setGpsAccuracy(accuracy);
+
+          // Check if location is in USA (emulator default)
+          if (coords.latitude > 36 && coords.latitude < 38 && coords.longitude > -123 && coords.longitude < -121) {
+            console.log('[Location] 에뮬레이터 기본 위치 감지 (미국), 기본 위치 사용');
+            useDefaultLocation();
+            return;
+          }
+          setRealUserLocation(coords);
+          setUserLocation(coords);
+          fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
           return;
         }
-        setRealUserLocation(coords);
-        setUserLocation(coords);
-        fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
+      } catch (e) {
+        console.log('[Location] Last known position failed or timeout');
+      }
+
+      // Reset timeout for getCurrentPosition
+      if (timeoutId) clearTimeout(timeoutId);
+      const currentTimeoutPromise = new Promise<null>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error('Location timeout'));
+        }, locationTimeout);
+      });
+
+      // If no last known position, get current position
+      const location = await Promise.race([
+        Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        }),
+        currentTimeoutPromise,
+      ]);
+
+      if (timeoutId) clearTimeout(timeoutId);
+
+      if (!location) {
+        useDefaultLocation();
         return;
       }
 
-      // If no last known position, get current position
-      const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
       const coords = {
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
@@ -568,16 +982,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
       // Check if location is in USA (emulator default)
       if (coords.latitude > 36 && coords.latitude < 38 && coords.longitude > -123 && coords.longitude < -121) {
-        console.log('[Location] 에뮬레이터 기본 위치 감지 (미국)');
-        Alert.alert('위치 오류', '올바른 위치를 가져올 수 없습니다. 실제 기기에서 사용해주세요.');
+        console.log('[Location] 에뮬레이터 기본 위치 감지 (미국), 기본 위치 사용');
+        useDefaultLocation();
         return;
       }
       setRealUserLocation(coords);
       setUserLocation(coords);
       fetchNearbyStores(coords.latitude, coords.longitude, currentSearchRadius);
     } catch (error) {
+      if (timeoutId) clearTimeout(timeoutId);
       console.error('위치 가져오기 실패:', error);
-      Alert.alert('위치 오류', '위치를 가져올 수 없습니다. 위치 서비스를 확인해주세요.');
+      console.log('[Location] 위치 가져오기 실패, 기본 위치 사용');
+      useDefaultLocation();
     }
   };
 
@@ -805,10 +1221,26 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }
   };
 
+  // 목록으로 돌아가기 (슬라이드 애니메이션)
+  const handleBackToList = () => {
+    Keyboard.dismiss();
+    Animated.timing(storeDetailSlideAnim, {
+      toValue: 1,
+      duration: 250,
+      useNativeDriver: true,
+    }).start(() => {
+      setSelectedStore(null);
+      setRecommendations([]);
+      setSelectedCardIndex(0);
+      storeDetailSlideAnim.setValue(0);
+      bottomSheetRef.current?.snapToIndex(1);
+    });
+  };
+
   const handleMarkerClick = async (store: StoreCard) => {
     Keyboard.dismiss();
+    storeDetailSlideAnim.setValue(0);
     setSelectedStore(store);
-    setSelectedCardIndex(0);
     setLoadingRecommendations(true);
     bottomSheetRef.current?.snapToIndex(2);
 
@@ -829,10 +1261,32 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         user_cards: userCards.map(card => card.card_name),
       });
 
-      setRecommendations(response.data.recommendations);
+      const recs = response.data.recommendations;
+      setRecommendations(recs);
+
+      // Auto-select the highest benefit score card (rank 1)
+      if (recs && recs.length > 0) {
+        const topCard = recs[0]; // rank 1 card (highest score)
+        const cardIndex = userCards.findIndex(card => card.card_name === topCard.card);
+        if (cardIndex !== -1) {
+          isScrollingToCard.current = true;
+          setSelectedCardIndex(cardIndex);
+          setTimeout(() => {
+            cardScrollRef.current?.scrollToIndex({
+              index: cardIndex,
+              animated: true
+            });
+          }, 100);
+        } else {
+          setSelectedCardIndex(0);
+        }
+      } else {
+        setSelectedCardIndex(0);
+      }
     } catch (error) {
       console.error('상세 혜택 조회 실패:', error);
       Alert.alert('오류', '상세 혜택 정보를 가져올 수 없습니다.');
+      setSelectedCardIndex(0);
     } finally {
       setLoadingRecommendations(false);
     }
@@ -937,6 +1391,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
             stops: course.stops,
             benefit_summary: '',
             routes: [],
+            legs_summary: course.route_info?.legs_summary,  // Use saved route info
             total_distance: course.total_distance,
             total_duration: course.total_duration,
             total_benefit_score: course.total_benefit_score || 0,
@@ -947,10 +1402,38 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     setShowCourseList(false);
     setCourseSaved(false);
 
-    // Fetch route for the course
+    // Reset route progress animation
+    routeProgressAnim.setValue(0);
+
+    // Check if we already have legs_summary with polylines from TMAP
+    const existingLegsSummary = 'course' in course
+      ? course.course.legs_summary
+      : course.route_info?.legs_summary;
+
+    const hasValidPolylines = existingLegsSummary?.some(leg => leg.polyline && leg.polyline.length > 0);
+
+    // Get stops
     const stops = 'course' in course ? course.course.stops : course.stops;
+
     if (stops && stops.length > 0) {
-      await fetchCourseRoute(stops);
+      if (hasValidPolylines && existingLegsSummary) {
+        // Use existing TMAP polylines directly
+        console.log('[Course Route] 기존 TMAP polyline 사용');
+        const existingRoute: CourseRoute = {
+          status: 'OK',
+          legs_summary: existingLegsSummary,
+          total_distance: courseResult.course.total_distance,
+          total_duration: courseResult.course.total_duration,
+          total_fare: 0,
+          total_distance_text: `${(courseResult.course.total_distance / 1000).toFixed(1)} km`,
+          total_duration_text: `${Math.round(courseResult.course.total_duration)}분`,
+          total_fare_text: '',
+        };
+        setCourseRoute(existingRoute);
+      } else {
+        // No existing polylines, fetch from API
+        await fetchCourseRoute(stops);
+      }
 
       // Move map to first place
       if (mapRef.current) {
@@ -962,10 +1445,57 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
           duration: 500,
         });
       }
+
+      // Trigger place card animations
+      setTimeout(() => {
+        animatePlaceCards(stops.length);
+      }, 200);
     }
 
     // Expand bottom sheet
     bottomSheetRef.current?.snapToIndex(3);
+  };
+
+  // Handle viewing shared course from chat
+  const handleViewSharedCourse = async (course: { id: string; title: string; description: string }) => {
+    // Close chat room first and wait for it to close
+    setShowChatRoom(false);
+    setSelectedConversation(null);
+    setShowChatList(false);
+
+    // Wait for chat room to fully close before switching to course mode
+    await new Promise(resolve => setTimeout(resolve, 350));
+
+    // Switch to course mode
+    setIsCourseMode(true);
+
+    // Look for the course in existing loaded courses
+    const allCourses = [...savedCourses, ...sharedCourses, ...popularCourses];
+    const foundCourse = allCourses.find(c => c.id === course.id);
+
+    if (foundCourse) {
+      // Found in cached courses, use it directly
+      await handleCourseSelect(foundCourse);
+    } else {
+      // Not found in cache, try to fetch from API
+      try {
+        const token = await AuthStorage.getToken();
+        if (!token) return;
+
+        const response = await axios.get(`${API_URL}/api/course/${course.id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (response.data.success && response.data.course) {
+          await handleCourseSelect(response.data.course);
+        } else {
+          Alert.alert('알림', '코스를 찾을 수 없습니다.');
+        }
+      } catch (error) {
+        console.error('Failed to fetch shared course:', error);
+        Alert.alert('알림', '코스를 불러올 수 없습니다.');
+      }
+    }
   };
 
   const handleSaveCourse = async () => {
@@ -1067,13 +1597,66 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     }
   };
 
+  const fetchSharedCourses = async () => {
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) return;
+
+      console.log('[Course] 공유받은 코스 불러오기...');
+
+      const response = await axios.get(`${API_URL}/api/course/shared?limit=10`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (response.data.success && response.data.courses) {
+        setSharedCourses(response.data.courses);
+        console.log('[Course] 공유받은 코스:', response.data.courses.length);
+      }
+    } catch (error: any) {
+      console.error('[Course] 공유받은 코스 불러오기 실패:', error);
+    }
+  };
+
+  const handleShareCourse = async (courseId: string, friendIds: string[]) => {
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) {
+        Alert.alert('안내', '로그인이 필요합니다.');
+        return;
+      }
+
+      const response = await axios.post(
+        `${API_URL}/api/course/share`,
+        { course_id: courseId, friend_ids: friendIds },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      if (response.data.success) {
+        Alert.alert('성공', '코스를 공유했습니다.');
+        setShowShareModal(false);
+        setSharingCourseId(null);
+      } else {
+        Alert.alert('오류', response.data.error || '공유에 실패했습니다.');
+      }
+    } catch (error: any) {
+      console.error('[Course] 코스 공유 실패:', error);
+      Alert.alert('오류', '코스 공유에 실패했습니다.');
+    }
+  };
+
   const loadCourseList = async () => {
     setLoadingCourseList(true);
     try {
       await Promise.all([
         fetchSavedCourses(),
         fetchPopularCourses(),
+        fetchSharedCourses(),
       ]);
+      // Trigger entrance animations after data loads
+      setTimeout(() => {
+        const totalCards = aiCourses.length + savedCourses.length + sharedCourses.length + popularCourses.length;
+        animateCourseCards(Math.min(totalCards, 10));
+      }, 100);
     } finally {
       setLoadingCourseList(false);
     }
@@ -1227,19 +1810,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
           onCameraChanged={handleCameraChange}
         >
         {(() => {
-          const filteredStores = stores.filter(store => !selectedCategory || store.category === selectedCategory);
+          const filteredStores = stores.filter(store => {
+            if (!selectedCategory) return true;
+            if (selectedCategory === 'favorites') return favoriteStores.has(store.name);
+            return store.category === selectedCategory;
+          });
           const allScores = filteredStores
             .map(store => store.top_card?.score || 0)
             .filter(score => score > 0);
 
           return filteredStores.map((store, index) => {
-            // 줌 레벨에 따라 마커 표시 여부 결정 (간단한 클러스터링)
-            const showMarker = currentZoom >= 14 || index % 3 === 0;
-
-            if (!showMarker) return null;
+            // 모든 마커 표시 (성능을 위해 최대 50개로 제한됨 - fetchNearbyStores에서)
+            // 줌 레벨이 낮을 때도 모든 마커 표시
 
             const score = store.top_card?.score || 0;
-            const benefitLevel = score > 0 ? getBenefitLevel(score, allScores) : 'medium';
+            const benefitLevel = score > 0 ? getBenefitLevel(score, allScores) : 'none';
 
             return (
               <NaverMapMarkerOverlay
@@ -1360,6 +1945,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         </TouchableOpacity>
       )}
 
+      {/* Hide search bar when showing course result detail */}
+      {!(isCourseMode && courseResult && !showCourseList) && (
       <View style={styles.searchContainer}>
         {isCourseMode && (
           <TouchableOpacity
@@ -1372,58 +1959,213 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
               setCourseQuery('');
               setShowCourseList(true);
             }}
-            activeOpacity={0.7}
+            activeOpacity={0.8}
           >
-            <Text style={styles.backFromCourseButtonText}>←</Text>
+            <BackIcon width={18} height={18} color="#666666" />
           </TouchableOpacity>
         )}
-        <Animated.View
-          style={[
-            styles.searchBar,
-            {
-              backgroundColor: courseModeAnimation.interpolate({
-                inputRange: [0, 1],
-                outputRange: ['#FFFFFF', '#FAE8D7'],
-              }),
-            },
-          ]}
-        >
-          <SearchIcon width={20} height={20} color="#000000" />
-          <TextInput
-            style={styles.searchInput}
-            placeholder={isCourseMode ? "원하는 코스를 입력하세요 (예: 카페 → 점심 → 저녁)" : "장소, 주소 검색"}
-            placeholderTextColor="#999999"
-            value={isCourseMode ? courseQuery : searchQuery}
-            onChangeText={isCourseMode ? setCourseQuery : setSearchQuery}
-            onSubmitEditing={isCourseMode ? handleCourseSearch : handleSearch}
-            returnKeyType="search"
-            editable={!isSearching && !loadingCourse}
-          />
-          {(isCourseMode ? courseQuery.length > 0 : searchQuery.length > 0) && (
-            <TouchableOpacity onPress={() => {
-              if (isCourseMode) {
-                setCourseQuery('');
-                setCourseResult(null);
-                setCourseRoute(null);
-              } else {
-                setSearchQuery('');
-                setSearchResultLocation(null);
-              }
-            }}>
-              <Text style={styles.clearButton}>✕</Text>
-            </TouchableOpacity>
+        <View style={styles.searchBarWrapper}>
+          {/* Neon border glow effect for course mode */}
+          {isCourseMode && (
+            <View style={styles.neonBorderContainer}>
+              {/* Top edge */}
+              <Animated.View style={[
+                styles.neonEdge,
+                styles.neonEdgeTop,
+                {
+                  opacity: neonRotationAnim.interpolate({
+                    inputRange: [0, 0.1, 0.25, 0.35, 1],
+                    outputRange: [0.3, 1, 1, 0.3, 0.3],
+                  }),
+                }
+              ]}>
+                <LinearGradient
+                  colors={['transparent', '#909090', '#C0C0C0', '#909090', 'transparent']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.neonGradient}
+                />
+              </Animated.View>
+              {/* Right edge */}
+              <Animated.View style={[
+                styles.neonEdge,
+                styles.neonEdgeRight,
+                {
+                  opacity: neonRotationAnim.interpolate({
+                    inputRange: [0, 0.25, 0.35, 0.5, 0.6, 1],
+                    outputRange: [0.3, 0.3, 1, 1, 0.3, 0.3],
+                  }),
+                }
+              ]}>
+                <LinearGradient
+                  colors={['transparent', '#909090', '#C0C0C0', '#909090', 'transparent']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.neonGradient}
+                />
+              </Animated.View>
+              {/* Bottom edge */}
+              <Animated.View style={[
+                styles.neonEdge,
+                styles.neonEdgeBottom,
+                {
+                  opacity: neonRotationAnim.interpolate({
+                    inputRange: [0, 0.5, 0.6, 0.75, 0.85, 1],
+                    outputRange: [0.3, 0.3, 1, 1, 0.3, 0.3],
+                  }),
+                }
+              ]}>
+                <LinearGradient
+                  colors={['transparent', '#909090', '#C0C0C0', '#909090', 'transparent']}
+                  start={{ x: 1, y: 0 }}
+                  end={{ x: 0, y: 0 }}
+                  style={styles.neonGradient}
+                />
+              </Animated.View>
+              {/* Left edge */}
+              <Animated.View style={[
+                styles.neonEdge,
+                styles.neonEdgeLeft,
+                {
+                  opacity: neonRotationAnim.interpolate({
+                    inputRange: [0, 0.1, 0.75, 0.85, 1],
+                    outputRange: [1, 0.3, 0.3, 1, 1],
+                  }),
+                }
+              ]}>
+                <LinearGradient
+                  colors={['transparent', '#909090', '#C0C0C0', '#909090', 'transparent']}
+                  start={{ x: 0, y: 1 }}
+                  end={{ x: 0, y: 0 }}
+                  style={styles.neonGradient}
+                />
+              </Animated.View>
+            </View>
           )}
-        </Animated.View>
-        <TouchableOpacity
-          style={styles.myPageButton}
-          onPress={() => setShowProfile(true)}
-          activeOpacity={0.7}
-        >
-          <CardsIcon width={44} height={44} />
-        </TouchableOpacity>
+          <Animated.View
+            style={[
+              styles.searchBar,
+              {
+                backgroundColor: courseModeAnimation.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['#FFFFFF', '#FAFAFA'],
+                }),
+                borderWidth: searchBarBorderAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, 1],
+                }),
+                borderColor: searchBarBorderAnim.interpolate({
+                  inputRange: [0, 0.5, 1],
+                  outputRange: ['transparent', 'rgba(150, 150, 150, 0.3)', 'rgba(150, 150, 150, 0.5)'],
+                }),
+                shadowOpacity: searchBarBorderAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.1, 0.15],
+                }),
+                shadowRadius: searchBarBorderAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [8, 10],
+                }),
+                shadowColor: '#000',
+                transform: [{ scale: searchBarScaleAnim }],
+              },
+              isSearchFocused && !isCourseMode && {
+                borderBottomLeftRadius: 0,
+                borderBottomRightRadius: 0,
+                borderBottomWidth: 0,
+              },
+            ]}
+          >
+            <SearchIcon width={20} height={20} color={isCourseMode ? '#666666' : '#000000'} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder={isCourseMode ? "원하는 코스를 입력하세요 (예: 카페 -> 점심 -> 저녁)" : "장소, 주소 검색"}
+              placeholderTextColor={isCourseMode ? '#888888' : '#999999'}
+              value={isCourseMode ? courseQuery : searchQuery}
+              onChangeText={isCourseMode ? setCourseQuery : handleSearchQueryChange}
+              onSubmitEditing={isCourseMode ? handleCourseSearch : handleSearch}
+              onFocus={() => !isCourseMode && setIsSearchFocused(true)}
+              onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
+              returnKeyType="search"
+              editable={!isSearching && !loadingCourse}
+            />
+            {(isCourseMode ? courseQuery.length > 0 : searchQuery.length > 0) && (
+              <TouchableOpacity
+                style={styles.clearButton}
+                onPress={() => {
+                  if (isCourseMode) {
+                    setCourseQuery('');
+                    setCourseResult(null);
+                    setCourseRoute(null);
+                  } else {
+                    setSearchQuery('');
+                    setSearchResultLocation(null);
+                    setSearchSuggestions([]);
+                  }
+                }}
+                activeOpacity={0.6}
+              >
+                <CloseIcon width={10} height={10} color="#666666" />
+              </TouchableOpacity>
+            )}
+          </Animated.View>
+        </View>
+        <View style={styles.rightButtonsContainer}>
+          <TouchableOpacity
+            style={styles.chatButton}
+            onPress={() => setShowChatList(true)}
+            activeOpacity={0.7}
+          >
+            <ChatIcon width={24} height={24} color="#1A1A1A" />
+            {chatUnreadCount > 0 && (
+              <View style={styles.chatBadge}>
+                <Text style={styles.chatBadgeText}>
+                  {chatUnreadCount > 99 ? '99+' : chatUnreadCount}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          <Animated.View
+            style={[
+              styles.myPageButtonWrapper,
+              {
+                width: courseModeAnimation.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [56, 0],
+                }),
+                marginLeft: courseModeAnimation.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [8, 0],
+                }),
+                opacity: courseModeAnimation.interpolate({
+                  inputRange: [0, 0.5, 1],
+                  outputRange: [1, 0.3, 0],
+                }),
+              },
+            ]}
+            pointerEvents={isCourseMode ? 'none' : 'auto'}
+          >
+            <TouchableOpacity
+              style={styles.myPageButton}
+              onPress={() => setShowProfile(true)}
+              activeOpacity={0.7}
+            >
+              <CardsIcon width={44} height={44} />
+              {unreadCount > 0 && (
+                <View style={styles.notificationBadge}>
+                  <Text style={styles.notificationBadgeText}>
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </Animated.View>
+        </View>
       </View>
+      )}
 
-      {/* Course Filters */}
+      {/* Course Filters - hide when viewing course detail */}
+      {isCourseMode && !courseResult && (
       <Animated.View
         style={[
           styles.courseFiltersContainer,
@@ -1466,10 +2208,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
           }}
           activeOpacity={0.7}
         >
-          <SavedCourseIcon width={14} height={15} color="#000000" />
+          <SavedCourseIcon width={16} height={16} color="#393A39" filled />
           <Text style={styles.myCoursesButtonText}>내 코스</Text>
         </TouchableOpacity>
       </Animated.View>
+      )}
 
       <Animated.View
         style={[
@@ -1496,47 +2239,44 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
           contentContainerStyle={styles.categoryContainer}
           onScrollBeginDrag={() => Keyboard.dismiss()}
         >
-          {categories.map((category) => {
+          {/* 코스 버튼 - 별도 분리 */}
+          <TouchableOpacity
+            style={[
+              styles.courseButton,
+              isCourseMode && styles.courseButtonActive,
+            ]}
+            onPress={() => {
+              Keyboard.dismiss();
+              const newCourseMode = !isCourseMode;
+              setIsCourseMode(newCourseMode);
+              setSelectedCategory(newCourseMode ? 'course' : null);
+
+              if (!newCourseMode) {
+                setCourseResult(null);
+                setCourseRoute(null);
+                setCourseQuery('');
+              } else {
+                setSearchQuery('');
+                loadCourseList();
+                // Reset store detail bottom sheet when switching to course mode
+                if (selectedStore) {
+                  setSelectedStore(null);
+                  setRecommendations([]);
+                  setSelectedCardIndex(0);
+                  storeDetailSlideAnim.setValue(0);
+                  bottomSheetRef.current?.snapToIndex(1);
+                }
+              }
+            }}
+            activeOpacity={0.8}
+          >
+            {getCategoryIcon('course', true)}
+            <Text style={styles.courseText}>코스</Text>
+          </TouchableOpacity>
+
+          {/* 필터 버튼들 */}
+          {categories.filter(c => c.id !== 'course').map((category) => {
             const isActive = selectedCategory === category.id;
-            const isCourse = category.id === 'course';
-
-            if (isCourse) {
-              return (
-                <TouchableOpacity
-                  key={category.id}
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    const newCourseMode = !isCourseMode;
-                    setIsCourseMode(newCourseMode);
-                    setSelectedCategory(newCourseMode ? 'course' : null);
-
-                    // Clear previous results when toggling mode
-                    if (!newCourseMode) {
-                      setCourseResult(null);
-                      setCourseRoute(null);
-                      setCourseQuery('');
-                    } else {
-                      setSearchQuery('');
-                      // Load course list when entering course mode
-                      loadCourseList();
-                    }
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <LinearGradient
-                    colors={['#FFCB9A', '#D3ADD8', '#6DDFE6']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={styles.courseButton}
-                  >
-                    {getCategoryIcon(category.id, isActive)}
-                    <Text style={styles.courseText}>
-                      {category.label}
-                    </Text>
-                  </LinearGradient>
-                </TouchableOpacity>
-              );
-            }
 
             return (
               <TouchableOpacity
@@ -1549,6 +2289,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                   Keyboard.dismiss();
                   setSelectedCategory(selectedCategory === category.id ? null : category.id);
                 }}
+                activeOpacity={0.8}
               >
                 {getCategoryIcon(category.id, isActive)}
                 <Text style={[
@@ -1573,6 +2314,89 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
           </TouchableOpacity>
         )}
       </Animated.View>
+
+      {/* Search Dropdown - Rendered above category buttons */}
+      {isSearchFocused && !isCourseMode && (
+        <View style={styles.searchDropdown}>
+          {loadingSearchSuggestions ? (
+            <View style={styles.searchDropdownLoading}>
+              <Text style={styles.searchDropdownLoadingText}>검색 중...</Text>
+            </View>
+          ) : searchQuery.length >= 2 && searchSuggestions.length > 0 ? (
+            <ScrollView
+              style={styles.searchDropdownScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {searchSuggestions.map((item, index) => (
+                <TouchableOpacity
+                  key={item.place_id || index}
+                  style={[
+                    styles.searchDropdownItem,
+                    index === searchSuggestions.length - 1 && styles.searchDropdownItemLast,
+                  ]}
+                  onPress={() => handleSelectSearchResult(item)}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.searchDropdownItemIcon}>
+                    <SearchPinIcon width={18} height={18} />
+                  </View>
+                  <View style={styles.searchDropdownItemContent}>
+                    <Text style={styles.searchDropdownItemName} numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    <Text style={styles.searchDropdownItemAddress} numberOfLines={1}>
+                      {item.address}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          ) : searchQuery.length < 2 && searchHistory.length > 0 ? (
+            <View>
+              <View style={styles.searchDropdownHeader}>
+                <Text style={styles.searchDropdownHeaderText}>최근 검색</Text>
+                <TouchableOpacity onPress={clearSearchHistory}>
+                  <Text style={styles.searchDropdownClearText}>전체 삭제</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView
+                style={styles.searchDropdownScroll}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+              >
+                {searchHistory.map((item, index) => (
+                  <TouchableOpacity
+                    key={`history-${index}`}
+                    style={[
+                      styles.searchDropdownItem,
+                      index === searchHistory.length - 1 && styles.searchDropdownItemLast,
+                    ]}
+                    onPress={() => handleSelectSearchResult(item)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.searchDropdownItemIcon}>
+                      <Text style={styles.historyIcon}>H</Text>
+                    </View>
+                    <View style={styles.searchDropdownItemContent}>
+                      <Text style={styles.searchDropdownItemName} numberOfLines={1}>
+                        {item.name}
+                      </Text>
+                      <Text style={styles.searchDropdownItemAddress} numberOfLines={1}>
+                        {item.address}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          ) : searchQuery.length >= 2 && searchSuggestions.length === 0 && !loadingSearchSuggestions ? (
+            <View style={styles.searchDropdownEmpty}>
+              <Text style={styles.searchDropdownEmptyText}>검색 결과가 없습니다</Text>
+            </View>
+          ) : null}
+        </View>
+      )}
 
       <TouchableOpacity
         style={styles.myLocationButton}
@@ -1612,15 +2436,26 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         topInset={StatusBar.currentHeight || 0}
       >
         <View style={styles.bottomSheetContainer}>
-          <TouchableOpacity
-            style={styles.onePayButton}
-            onPress={() => {
-              Keyboard.dismiss();
-              setShowOnePay(true);
-            }}
-          >
-            <Text style={styles.onePayText}>ONE PAY</Text>
-          </TouchableOpacity>
+          {!isCourseMode && (
+            <TouchableOpacity
+              style={styles.onePayButton}
+              onPress={() => {
+                Keyboard.dismiss();
+                // If a store is selected, pass the currently selected card
+                if (selectedStore && userCards.length > 0) {
+                  const selectedCard = userCards[selectedCardIndex];
+                  if (selectedCard) {
+                    setPreSelectedCardIdForOnePay(selectedCard.cid);
+                  }
+                } else {
+                  setPreSelectedCardIdForOnePay(null);
+                }
+                setShowOnePay(true);
+              }}
+            >
+              <Text style={styles.onePayText}>ONE PAY</Text>
+            </TouchableOpacity>
+          )}
 
           {selectedStore ? (
             <>
@@ -1646,36 +2481,59 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                 />
               </View>
 
-              <TouchableOpacity
-                onPress={() => {
-                  Keyboard.dismiss();
-                  setSelectedStore(null);
-                  setRecommendations([]);
-                  setSelectedCardIndex(0);
-                  bottomSheetRef.current?.snapToIndex(1);
+              <Animated.View
+                style={{
+                  transform: [{
+                    translateX: storeDetailSlideAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, 300],
+                    }),
+                  }],
+                  opacity: storeDetailSlideAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [1, 0],
+                  }),
                 }}
-                style={styles.backButton}
               >
-                <Text style={styles.backButtonText}>← 목록으로</Text>
-              </TouchableOpacity>
-
-              <View style={styles.storeHeaderContainer}>
-                <View style={styles.storeNameRow}>
-                  <Text style={styles.storeName}>{selectedStore.name}</Text>
+                <View style={styles.storeDetailHeader}>
                   <TouchableOpacity
-                    onPress={() => toggleFavorite(selectedStore.name)}
-                    activeOpacity={0.7}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    onPress={handleBackToList}
+                    style={styles.backButton}
+                    activeOpacity={0.6}
                   >
-                    <StarIcon
-                      width={24}
-                      height={24}
-                      filled={favoriteStores.has(selectedStore.name)}
-                    />
+                    <BackIcon width={18} height={18} color="#888888" />
+                    <Text style={styles.backButtonText}>목록</Text>
                   </TouchableOpacity>
+
+                  <View style={styles.storeHeaderContainer}>
+                    <View style={styles.storeNameRow}>
+                      <Text style={styles.storeName}>{selectedStore.name}</Text>
+                      <TouchableOpacity
+                        onPress={() => toggleFavorite(selectedStore.name)}
+                        activeOpacity={0.6}
+                        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                        style={styles.favoriteButton}
+                      >
+                        <StarIcon
+                          width={22}
+                          height={22}
+                          filled={favoriteStores.has(selectedStore.name)}
+                        />
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={styles.storeAddress}>{selectedStore.address}</Text>
+                    {selectedStore.place_id && (
+                      <TouchableOpacity
+                        style={styles.viewDetailsButton}
+                        onPress={() => setShowPlaceDetail(true)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={styles.viewDetailsButtonText}>View Details</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </View>
-                <Text style={styles.storeAddress}>{selectedStore.address}</Text>
-              </View>
+              </Animated.View>
             </>
           ) : (
             loading ? renderLoadingDots() : (
@@ -1688,7 +2546,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                   <TouchableOpacity
                     style={[styles.filterButton, filterOpenOnly && styles.filterButtonActive]}
                     onPress={() => setFilterOpenOnly(!filterOpenOnly)}
-                    activeOpacity={0.7}
+                    activeOpacity={0.9}
                   >
                     <Text style={[styles.filterButtonText, filterOpenOnly && styles.filterButtonTextActive]}>
                       영업중
@@ -1697,52 +2555,31 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
                   <TouchableOpacity
                     style={[styles.filterButton, filterSort === 'benefit' && styles.filterButtonActive]}
-                    onPress={() => {
-                      if (filterSort === 'benefit') {
-                        setFilterOrder(filterOrder === 'desc' ? 'asc' : 'desc');
-                      } else {
-                        setFilterSort('benefit');
-                        setFilterOrder('desc');
-                      }
-                    }}
-                    activeOpacity={0.7}
+                    onPress={() => setFilterSort('benefit')}
+                    activeOpacity={0.9}
                   >
                     <Text style={[styles.filterButtonText, filterSort === 'benefit' && styles.filterButtonTextActive]}>
-                      혜택순 {filterSort === 'benefit' && (filterOrder === 'desc' ? '▼' : '▲')}
+                      혜택순
                     </Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
                     style={[styles.filterButton, filterSort === 'distance' && styles.filterButtonActive]}
-                    onPress={() => {
-                      if (filterSort === 'distance') {
-                        setFilterOrder(filterOrder === 'desc' ? 'asc' : 'desc');
-                      } else {
-                        setFilterSort('distance');
-                        setFilterOrder('asc');
-                      }
-                    }}
-                    activeOpacity={0.7}
+                    onPress={() => setFilterSort('distance')}
+                    activeOpacity={0.9}
                   >
                     <Text style={[styles.filterButtonText, filterSort === 'distance' && styles.filterButtonTextActive]}>
-                      거리순 {filterSort === 'distance' && (filterOrder === 'asc' ? '▲' : '▼')}
+                      거리순
                     </Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
                     style={[styles.filterButton, filterSort === 'recommend' && styles.filterButtonActive]}
-                    onPress={() => {
-                      if (filterSort === 'recommend') {
-                        setFilterOrder(filterOrder === 'desc' ? 'asc' : 'desc');
-                      } else {
-                        setFilterSort('recommend');
-                        setFilterOrder('desc');
-                      }
-                    }}
-                    activeOpacity={0.7}
+                    onPress={() => setFilterSort('recommend')}
+                    activeOpacity={0.9}
                   >
                     <Text style={[styles.filterButtonText, filterSort === 'recommend' && styles.filterButtonTextActive]}>
-                      추천순 {filterSort === 'recommend' && (filterOrder === 'desc' ? '▼' : '▲')}
+                      추천순
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -1750,23 +2587,118 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
             )
           )}
 
+          {/* Fixed header for course result */}
+          {isCourseMode && courseResult && !showCourseList && !loadingCourse && !loadingCourseList && !selectedCourseDetail && (
+            <View style={{ paddingHorizontal: 10, backgroundColor: COLORS.background }}>
+              <TouchableOpacity
+                style={styles.backToListButton}
+                onPress={() => {
+                  setShowCourseList(true);
+                  setCourseResult(null);
+                  setCourseRoute(null);
+                  setCourseQuery('');
+                  bottomSheetRef.current?.snapToIndex(2);
+                }}
+                activeOpacity={0.7}
+              >
+                <BackIcon width={20} height={20} color="#666666" />
+                <Text style={styles.backToListButtonText}>뒤로 가기</Text>
+              </TouchableOpacity>
+
+              <View style={styles.courseTitleBlock}>
+                <View style={styles.courseTitleHeader}>
+                  <Text style={styles.courseMainTitle}>
+                    {courseResult.course.title.includes(':')
+                      ? courseResult.course.title.split(':')[0]
+                      : courseResult.course.title}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.saveCourseIconButton}
+                    onPress={handleSaveCourse}
+                    disabled={courseSaved || savingCourse}
+                    activeOpacity={0.7}
+                  >
+                    <SavedCourseIcon
+                      width={18}
+                      height={18}
+                      color={courseSaved ? '#393A39' : savingCourse ? '#CCCCCC' : '#BBBBBB'}
+                      filled={courseSaved}
+                    />
+                  </TouchableOpacity>
+                </View>
+                {courseResult.course.title.includes(':') && (
+                  <Text style={styles.courseTagline}>
+                    {courseResult.course.title.split(':').slice(1).join(':').trim()}
+                  </Text>
+                )}
+              </View>
+
+              <Text style={styles.courseDescription}>{courseResult.course.reasoning}</Text>
+
+              {courseRoute && (
+                <View style={styles.naverRouteContainer}>
+                  <View style={styles.naverRouteSummary}>
+                    <View style={styles.naverRouteSummaryItem}>
+                      <Text style={styles.naverRouteSummaryLabel}>총 시간</Text>
+                      <Text style={styles.naverRouteSummaryValue}>{courseRoute.total_duration_text}</Text>
+                    </View>
+                    <View style={styles.naverRouteDivider} />
+                    <View style={styles.naverRouteSummaryItem}>
+                      <Text style={styles.naverRouteSummaryLabel}>총 거리</Text>
+                      <Text style={styles.naverRouteSummaryValue}>{courseRoute.total_distance_text}</Text>
+                    </View>
+                    {courseRoute.total_fare > 0 && (
+                      <>
+                        <View style={styles.naverRouteDivider} />
+                        <View style={styles.naverRouteSummaryItem}>
+                          <Text style={styles.naverRouteSummaryLabel}>교통비</Text>
+                          <Text style={styles.naverRouteSummaryValue}>{courseRoute.total_fare_text}</Text>
+                        </View>
+                      </>
+                    )}
+                  </View>
+                </View>
+              )}
+            </View>
+          )}
+
+          {/* Fixed header for course list */}
+          {isCourseMode && showCourseList && !loadingCourse && !loadingCourseList && !selectedCourseDetail && !courseResult && (
+            <View style={{ paddingHorizontal: 12, paddingTop: 4, backgroundColor: COLORS.background }}>
+              <View style={styles.courseListHeader}>
+                <Text style={styles.courseListTitle}>추천 코스</Text>
+                <TouchableOpacity
+                  style={styles.friendsButton}
+                  onPress={() => setShowFriends(true)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.friendsButtonText}>친구</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
           <BottomSheetScrollView
             contentContainerStyle={{
-              paddingBottom: insets.bottom + 100,
+              paddingBottom: insets.bottom + 200,
               paddingHorizontal: 10,
               backgroundColor: COLORS.background,
             }}
+            style={{ flex: 1 }}
             showsVerticalScrollIndicator={true}
+            nestedScrollEnabled={true}
+            scrollEnabled={true}
+            bounces={true}
             onScrollBeginDrag={() => Keyboard.dismiss()}
           >
             {isCourseMode ? (
               // Course Mode Content
               <>
-                {loadingCourse || loadingCourseList ? (
+                {loadingCourse ? (
+                  <CourseLoadingView visible={loadingCourse} />
+                ) : loadingCourseList ? (
                   <View style={styles.loadingContainer}>
-                    <Text style={styles.loadingText}>
-                      {loadingCourse ? 'AI 코스 추천 중...' : '코스 목록 불러오는 중...'}
-                    </Text>
+                    <Text style={styles.loadingText}>코스 목록 불러오는 중...</Text>
                   </View>
                 ) : selectedCourseDetail ? (
                   // Course Detail View from Course List
@@ -1863,142 +2795,281 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                         );
                       });
                     })()}
+                    <View style={{ height: 100 }} />
                   </>
                 ) : showCourseList ? (
                   // Course List View
                   <View style={styles.courseListContainer}>
-                    <Text style={styles.courseListTitle}>추천 코스</Text>
-
                     {/* AI 추천 코스 */}
-                    {aiCourses.length > 0 && aiCourses.slice(0, 2).map((course, index) => (
-                      <TouchableOpacity
-                        key={`ai-${index}`}
-                        style={styles.courseCard}
-                        onPress={() => handleCourseSelect(course)}
-                        activeOpacity={0.7}
-                      >
-                        <View style={styles.courseCardHeader}>
-                          <Text style={styles.courseCardTitle}>{course.course.title}</Text>
-                          <View style={styles.courseCardBadge}>
-                            <Text style={styles.courseCardBadgeText}>AI 추천</Text>
-                          </View>
-                        </View>
+                    {aiCourses.length > 0 && aiCourses.slice(0, 2).map((course, index) => {
+                      const cardAnim = getCourseCardAnim(`course-${index}`);
+                      const titleParts = course.course.title.split(':');
+                      const mainTitle = titleParts[0];
+                      const subTitle = titleParts.length > 1 ? titleParts.slice(1).join(':').trim() : null;
 
-                        <View style={styles.courseCardPlaces}>
-                          {course.course.stops.slice(0, 3).map((place, placeIndex) => (
-                            <React.Fragment key={placeIndex}>
-                              <View style={styles.coursePlaceImageContainer}>
-                                <View style={styles.coursePlacePlaceholder}>
-                                  <Text style={styles.coursePlacePlaceholderText}>
-                                    {place.name.substring(0, 1)}
-                                  </Text>
+                      return (
+                        <Animated.View
+                          key={`ai-${index}`}
+                          style={{
+                            opacity: cardAnim,
+                            transform: [
+                              { translateY: cardAnim.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [20, 0],
+                              })},
+                            ],
+                          }}
+                        >
+                          <TouchableOpacity
+                            style={styles.courseCard}
+                            onPress={() => handleCourseSelect(course)}
+                            activeOpacity={0.9}
+                          >
+                            <View style={styles.courseCardHeader}>
+                              <View style={styles.courseCardTitleWrap}>
+                                <View style={styles.courseCardTitleRow}>
+                                  <Text style={styles.courseCardMainTitle}>{mainTitle}</Text>
+                                  <View style={styles.courseCardBadgeAI}>
+                                    <Text style={styles.courseCardBadgeAIText}>AI</Text>
+                                  </View>
                                 </View>
-                                <Text style={styles.courseListPlaceName} numberOfLines={1}>
-                                  {place.name}
+                                {subTitle && (
+                                  <Text style={styles.courseCardSubTitle}>{subTitle}</Text>
+                                )}
+                              </View>
+                            </View>
+
+                            <View style={styles.courseCardPlaces}>
+                              {course.course.stops.slice(0, 3).map((place, placeIndex) => (
+                                <React.Fragment key={placeIndex}>
+                                  <View style={styles.coursePlaceItem}>
+                                    <View style={styles.coursePlaceCircle}>
+                                      <Text style={styles.coursePlaceNumText}>{placeIndex + 1}</Text>
+                                    </View>
+                                    <Text style={styles.courseListPlaceName} numberOfLines={1}>
+                                      {place.name}
+                                    </Text>
+                                  </View>
+                                  {placeIndex < Math.min(course.course.stops.length, 3) - 1 && (
+                                    <View style={styles.courseArrowContainer}>
+                                      <View style={styles.courseArrowLine} />
+                                    </View>
+                                  )}
+                                </React.Fragment>
+                              ))}
+                            </View>
+
+                            <View style={styles.courseCardBenefitWithShare}>
+                              <View style={styles.courseCardBenefit}>
+                                <View style={styles.benefitDot} />
+                                <Text style={styles.courseBenefitText} numberOfLines={1}>
+                                  {course.course.benefit_summary || '카드 혜택 적용 가능'}
                                 </Text>
                               </View>
-                              {placeIndex < Math.min(course.course.stops.length, 3) - 1 && (
-                                <Text style={styles.courseArrow}>→</Text>
-                              )}
-                            </React.Fragment>
-                          ))}
-                        </View>
-
-                        <View style={styles.courseCardFooter}>
-                          <Text style={styles.courseSavingsText}>
-                            {course.course.benefit_summary || '혜택 정보'}
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    ))}
+                              <TouchableOpacity
+                                style={styles.shareButton}
+                                onPress={() => {
+                                  Alert.alert('알림', '코스를 저장한 후 공유할 수 있습니다.');
+                                }}
+                                activeOpacity={0.7}
+                              >
+                                <Text style={styles.shareButtonText}>공유</Text>
+                              </TouchableOpacity>
+                            </View>
+                          </TouchableOpacity>
+                        </Animated.View>
+                      );
+                    })}
 
                     {/* 사용자 저장 코스 */}
-                    {savedCourses.length > 0 && (
-                      <TouchableOpacity
-                        style={styles.courseCard}
-                        onPress={() => handleCourseSelect(savedCourses[0])}
-                        activeOpacity={0.7}
-                      >
-                        <View style={styles.courseCardHeader}>
-                          <Text style={styles.courseCardTitle}>{savedCourses[0].title}</Text>
-                          <View style={[styles.courseCardBadge, styles.courseCardBadgeSaved]}>
-                            <Text style={styles.courseCardBadgeText}>내 코스</Text>
-                          </View>
-                        </View>
+                    {savedCourses.length > 0 && (() => {
+                      const titleParts = savedCourses[0].title.split(':');
+                      const mainTitle = titleParts[0];
+                      const subTitle = titleParts.length > 1 ? titleParts.slice(1).join(':').trim() : null;
 
-                        <View style={styles.courseCardPlaces}>
-                          {savedCourses[0].stops.slice(0, 3).map((place, placeIndex) => (
-                            <React.Fragment key={placeIndex}>
-                              <View style={styles.coursePlaceImageContainer}>
-                                <View style={styles.coursePlacePlaceholder}>
-                                  <Text style={styles.coursePlacePlaceholderText}>
-                                    {place.name.substring(0, 1)}
+                      return (
+                        <TouchableOpacity
+                          style={styles.courseCard}
+                          onPress={() => handleCourseSelect(savedCourses[0])}
+                          activeOpacity={0.9}
+                        >
+                          <View style={styles.courseCardHeader}>
+                            <View style={styles.courseCardTitleWrap}>
+                              <View style={styles.courseCardTitleRow}>
+                                <Text style={styles.courseCardMainTitle}>{mainTitle}</Text>
+                                <View style={styles.courseCardBadgeMy}>
+                                  <Text style={styles.courseCardBadgeMyText}>MY</Text>
+                                </View>
+                              </View>
+                              {subTitle && (
+                                <Text style={styles.courseCardSubTitle}>{subTitle}</Text>
+                              )}
+                            </View>
+                          </View>
+
+                          <View style={styles.courseCardPlaces}>
+                            {savedCourses[0].stops.slice(0, 3).map((place, placeIndex) => (
+                              <React.Fragment key={placeIndex}>
+                                <View style={styles.coursePlaceItem}>
+                                  <View style={styles.coursePlaceCircle}>
+                                    <Text style={styles.coursePlaceNumText}>{placeIndex + 1}</Text>
+                                  </View>
+                                  <Text style={styles.courseListPlaceName} numberOfLines={1}>
+                                    {place.name}
                                   </Text>
                                 </View>
-                                <Text style={styles.courseListPlaceName} numberOfLines={1}>
-                                  {place.name}
-                                </Text>
-                              </View>
-                              {placeIndex < Math.min(savedCourses[0].stops.length, 3) - 1 && (
-                                <Text style={styles.courseArrow}>→</Text>
-                              )}
-                            </React.Fragment>
-                          ))}
-                        </View>
+                                {placeIndex < Math.min(savedCourses[0].stops.length, 3) - 1 && (
+                                  <View style={styles.courseArrowContainer}>
+                                    <View style={styles.courseArrowLine} />
+                                  </View>
+                                )}
+                              </React.Fragment>
+                            ))}
+                          </View>
 
-                        <View style={styles.courseCardFooter}>
-                          <Text style={styles.courseSavingsText}>
-                            {savedCourses[0].stops[0]?.benefits[0]
-                              ? `${savedCourses[0].stops[0].benefits[0].card} ${savedCourses[0].stops[0].benefits[0].benefit}`
-                              : '혜택 정보'}
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    )}
+                          <View style={styles.courseCardBenefitWithShare}>
+                            <View style={styles.courseCardBenefit}>
+                              <View style={styles.benefitDot} />
+                              <Text style={styles.courseBenefitText} numberOfLines={1}>
+                                {savedCourses[0].stops[0]?.benefits[0]
+                                  ? `${savedCourses[0].stops[0].benefits[0].card} ${savedCourses[0].stops[0].benefits[0].benefit}`
+                                  : '카드 혜택 적용 가능'}
+                              </Text>
+                            </View>
+                            <TouchableOpacity
+                              style={styles.shareButton}
+                              onPress={() => {
+                                setSharingCourseId(savedCourses[0].id);
+                                setShowShareModal(true);
+                              }}
+                              activeOpacity={0.7}
+                            >
+                              <Text style={styles.shareButtonText}>공유</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })()}
+
+                    {/* 공유받은 코스 */}
+                    {sharedCourses.length > 0 && (() => {
+                      const titleParts = sharedCourses[0].title.split(':');
+                      const mainTitle = titleParts[0];
+                      const subTitle = titleParts.length > 1 ? titleParts.slice(1).join(':').trim() : null;
+
+                      return (
+                        <TouchableOpacity
+                          style={styles.courseCard}
+                          onPress={() => handleCourseSelect(sharedCourses[0])}
+                          activeOpacity={0.9}
+                        >
+                          <View style={styles.courseCardHeader}>
+                            <View style={styles.courseCardTitleWrap}>
+                              <View style={styles.courseCardTitleRow}>
+                                <Text style={styles.courseCardMainTitle}>{mainTitle}</Text>
+                                <View style={styles.courseCardBadgeShare}>
+                                  <Text style={styles.courseCardBadgeShareText}>
+                                    {sharedCourses[0].shared_by?.user_name || '친구'}
+                                  </Text>
+                                </View>
+                              </View>
+                              {subTitle && (
+                                <Text style={styles.courseCardSubTitle}>{subTitle}</Text>
+                              )}
+                            </View>
+                          </View>
+
+                          <View style={styles.courseCardPlaces}>
+                            {sharedCourses[0].stops.slice(0, 3).map((place, placeIndex) => (
+                              <React.Fragment key={placeIndex}>
+                                <View style={styles.coursePlaceItem}>
+                                  <View style={styles.coursePlaceCircle}>
+                                    <Text style={styles.coursePlaceNumText}>{placeIndex + 1}</Text>
+                                  </View>
+                                  <Text style={styles.courseListPlaceName} numberOfLines={1}>
+                                    {place.name}
+                                  </Text>
+                                </View>
+                                {placeIndex < Math.min(sharedCourses[0].stops.length, 3) - 1 && (
+                                  <View style={styles.courseArrowContainer}>
+                                    <View style={styles.courseArrowLine} />
+                                  </View>
+                                )}
+                              </React.Fragment>
+                            ))}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })()}
 
                     {/* 인기 코스 */}
-                    {popularCourses.length > 0 && (
-                      <TouchableOpacity
-                        style={styles.courseCard}
-                        onPress={() => handleCourseSelect(popularCourses[0])}
-                        activeOpacity={0.7}
-                      >
-                        <View style={styles.courseCardHeader}>
-                          <Text style={styles.courseCardTitle}>{popularCourses[0].title}</Text>
-                          <View style={[styles.courseCardBadge, styles.courseCardBadgePopular]}>
-                            <Text style={styles.courseCardBadgeText}>핫스팟</Text>
-                          </View>
-                        </View>
+                    {popularCourses.length > 0 && (() => {
+                      const titleParts = popularCourses[0].title.split(':');
+                      const mainTitle = titleParts[0];
+                      const subTitle = titleParts.length > 1 ? titleParts.slice(1).join(':').trim() : null;
 
-                        <View style={styles.courseCardPlaces}>
-                          {popularCourses[0].stops.slice(0, 3).map((place, placeIndex) => (
-                            <React.Fragment key={placeIndex}>
-                              <View style={styles.coursePlaceImageContainer}>
-                                <View style={styles.coursePlacePlaceholder}>
-                                  <Text style={styles.coursePlacePlaceholderText}>
-                                    {place.name.substring(0, 1)}
+                      return (
+                        <TouchableOpacity
+                          style={styles.courseCard}
+                          onPress={() => handleCourseSelect(popularCourses[0])}
+                          activeOpacity={0.9}
+                        >
+                          <View style={styles.courseCardHeader}>
+                            <View style={styles.courseCardTitleWrap}>
+                              <View style={styles.courseCardTitleRow}>
+                                <Text style={styles.courseCardMainTitle}>{mainTitle}</Text>
+                                <View style={styles.courseCardBadgeHot}>
+                                  <Text style={styles.courseCardBadgeHotText}>HOT</Text>
+                                </View>
+                              </View>
+                              {subTitle && (
+                                <Text style={styles.courseCardSubTitle}>{subTitle}</Text>
+                              )}
+                            </View>
+                          </View>
+
+                          <View style={styles.courseCardPlaces}>
+                            {popularCourses[0].stops.slice(0, 3).map((place, placeIndex) => (
+                              <React.Fragment key={placeIndex}>
+                                <View style={styles.coursePlaceItem}>
+                                  <View style={styles.coursePlaceCircle}>
+                                    <Text style={styles.coursePlaceNumText}>{placeIndex + 1}</Text>
+                                  </View>
+                                  <Text style={styles.courseListPlaceName} numberOfLines={1}>
+                                    {place.name}
                                   </Text>
                                 </View>
-                                <Text style={styles.courseListPlaceName} numberOfLines={1}>
-                                  {place.name}
-                                </Text>
-                              </View>
-                              {placeIndex < Math.min(popularCourses[0].stops.length, 3) - 1 && (
-                                <Text style={styles.courseArrow}>→</Text>
-                              )}
-                            </React.Fragment>
-                          ))}
-                        </View>
+                                {placeIndex < Math.min(popularCourses[0].stops.length, 3) - 1 && (
+                                  <View style={styles.courseArrowContainer}>
+                                    <View style={styles.courseArrowLine} />
+                                  </View>
+                                )}
+                              </React.Fragment>
+                            ))}
+                          </View>
 
-                        <View style={styles.courseCardFooter}>
-                          <Text style={styles.courseSavingsText}>
-                            {popularCourses[0].stops[0]?.benefits[0]
-                              ? `${popularCourses[0].stops[0].benefits[0].card} ${popularCourses[0].stops[0].benefits[0].benefit}`
-                              : '혜택 정보'}
-                          </Text>
-                        </View>
-                      </TouchableOpacity>
-                    )}
+                          <View style={styles.courseCardBenefitWithShare}>
+                            <View style={styles.courseCardBenefit}>
+                              <View style={styles.benefitDot} />
+                              <Text style={styles.courseBenefitText} numberOfLines={1}>
+                                {popularCourses[0].stops[0]?.benefits[0]
+                                  ? `${popularCourses[0].stops[0].benefits[0].card} ${popularCourses[0].stops[0].benefits[0].benefit}`
+                                  : '카드 혜택 적용 가능'}
+                              </Text>
+                            </View>
+                            <TouchableOpacity
+                              style={styles.shareButton}
+                              onPress={() => {
+                                Alert.alert('알림', '코스를 저장한 후 공유할 수 있습니다.');
+                              }}
+                              activeOpacity={0.7}
+                            >
+                              <Text style={styles.shareButtonText}>공유</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })()}
 
                     {/* Empty state when no courses */}
                     {aiCourses.length === 0 && savedCourses.length === 0 && popularCourses.length === 0 && (
@@ -2010,136 +3081,172 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                   </View>
                 ) : courseResult ? (
                   <>
-                    <TouchableOpacity
-                      style={styles.backToListButton}
-                      onPress={() => {
-                        // First trigger animation
-                        setIsCourseMode(false);
-                        setSelectedCategory(null);
-
-                        // Then update UI after animation completes
-                        setTimeout(() => {
-                          setShowCourseList(true);
-                          setCourseResult(null);
-                          setCourseRoute(null);
-                          setCourseQuery('');
-                          bottomSheetRef.current?.snapToIndex(2);
-                        }, 300); // Match animation duration
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <BackIcon width={20} height={20} color="#666666" />
-                      <Text style={styles.backToListButtonText}>뒤로 가기</Text>
-                    </TouchableOpacity>
-
-                    <View style={styles.courseTitleRow}>
-                      <Text style={styles.recommendationsTitle}>{courseResult.course.title}</Text>
-                      <TouchableOpacity
-                        style={styles.saveCourseIconButton}
-                        onPress={handleSaveCourse}
-                        disabled={courseSaved || savingCourse}
-                        activeOpacity={0.7}
-                      >
-                        <SavedCourseIcon
-                          width={24}
-                          height={24}
-                          color={courseSaved ? '#FFD700' : savingCourse ? '#CCCCCC' : '#666666'}
-                        />
-                      </TouchableOpacity>
-                    </View>
-
-                    <Text style={styles.courseSummary}>{courseResult.course.reasoning}</Text>
-
-                    {courseRoute && (
-                      <View style={styles.naverRouteContainer}>
-                        <View style={styles.naverRouteSummary}>
-                          <View style={styles.naverRouteSummaryItem}>
-                            <Text style={styles.naverRouteSummaryLabel}>총 시간</Text>
-                            <Text style={styles.naverRouteSummaryValue}>{courseRoute.total_duration_text}</Text>
-                          </View>
-                          <View style={styles.naverRouteDivider} />
-                          <View style={styles.naverRouteSummaryItem}>
-                            <Text style={styles.naverRouteSummaryLabel}>총 거리</Text>
-                            <Text style={styles.naverRouteSummaryValue}>{courseRoute.total_distance_text}</Text>
-                          </View>
-                          {courseRoute.total_fare > 0 && (
-                            <>
-                              <View style={styles.naverRouteDivider} />
-                              <View style={styles.naverRouteSummaryItem}>
-                                <Text style={styles.naverRouteSummaryLabel}>교통비</Text>
-                                <Text style={styles.naverRouteSummaryValue}>{courseRoute.total_fare_text}</Text>
-                              </View>
-                            </>
-                          )}
-                        </View>
-                      </View>
-                    )}
-
                     {courseResult.course && courseResult.course.stops && courseResult.course.stops.map((place, index) => {
                       const bestBenefit = place.benefits && place.benefits.length > 0 ? place.benefits[0] : null;
                       const cardImage = bestBenefit ? CARD_IMAGES[bestBenefit.card] : null;
+                      const placeAnim = placeCardAnims[index] || new Animated.Value(1);
+                      const totalStops = courseResult.course.stops.length;
 
                       return (
                         <React.Fragment key={index}>
-                          <View style={styles.naverPlaceCard}>
-                            <View style={styles.naverPlaceNumber}>
-                              <Text style={styles.naverPlaceNumberText}>{index + 1}</Text>
-                            </View>
+                          <Animated.View
+                            style={{
+                              opacity: placeAnim,
+                              transform: [
+                                { translateX: placeAnim.interpolate({
+                                  inputRange: [0, 1],
+                                  outputRange: [-30, 0],
+                                })},
+                                { scale: placeAnim.interpolate({
+                                  inputRange: [0, 1],
+                                  outputRange: [0.9, 1],
+                                })},
+                              ],
+                            }}
+                          >
+                            <View style={styles.naverPlaceCard}>
+                              <Animated.View
+                                style={[
+                                  styles.naverPlaceNumber,
+                                  {
+                                    backgroundColor: routeProgressAnim.interpolate({
+                                      inputRange: [index / totalStops, (index + 0.5) / totalStops, 1],
+                                      outputRange: ['#E8E8E8', '#393A39', '#393A39'],
+                                      extrapolate: 'clamp',
+                                    }),
+                                  }
+                                ]}
+                              >
+                                <Text style={styles.naverPlaceNumberText}>{index + 1}</Text>
+                              </Animated.View>
 
-                            <View style={styles.naverPlaceContent}>
-                              <View style={styles.naverPlaceMerchant}>
-                                <View style={styles.naverMerchantPlaceholder}>
-                                  <Text style={styles.naverMerchantPlaceholderText}>
-                                    {place.name.substring(0, 1)}
-                                  </Text>
-                                </View>
-                              </View>
-
-                              <View style={styles.naverPlaceInfo}>
-                                <Text style={styles.naverPlaceName}>{place.name}</Text>
-                                <Text style={styles.naverPlaceCategory}>{place.category}</Text>
-                                {bestBenefit && (
-                                  <View style={styles.naverBenefitInfo}>
-                                    <Text style={styles.naverBenefitCard}>{bestBenefit.card}</Text>
-                                    <Text style={styles.naverBenefitDetail}>{bestBenefit.benefit}</Text>
+                              <View style={styles.naverPlaceContent}>
+                                <View style={styles.naverPlaceMerchant}>
+                                  <View style={styles.naverMerchantPlaceholder}>
+                                    <Text style={styles.naverMerchantPlaceholderText}>
+                                      {place.name.substring(0, 1)}
+                                    </Text>
                                   </View>
+                                </View>
+
+                                <View style={styles.naverPlaceInfo}>
+                                  <Text style={styles.naverPlaceName}>{place.name}</Text>
+                                  <Text style={styles.naverPlaceCategory}>{place.category}</Text>
+                                  {bestBenefit && (
+                                    <View style={styles.naverBenefitInfo}>
+                                      <Text style={styles.naverBenefitCard}>{bestBenefit.card}</Text>
+                                      <Text style={styles.naverBenefitDetail}>{bestBenefit.benefit}</Text>
+                                    </View>
+                                  )}
+                                </View>
+
+                                {cardImage && (
+                                  <Image
+                                    source={cardImage}
+                                    style={styles.naverCardImage}
+                                    resizeMode="contain"
+                                  />
                                 )}
                               </View>
-
-                              {cardImage && (
-                                <Image
-                                  source={cardImage}
-                                  style={styles.naverCardImage}
-                                  resizeMode="contain"
-                                />
-                              )}
                             </View>
-                          </View>
+                          </Animated.View>
 
                           {courseRoute && courseRoute.legs_summary && courseRoute.legs_summary[index] && index < courseResult.course.stops.length - 1 && (
-                            <View style={styles.naverRouteSegment}>
-                              <View style={styles.naverRouteDots}>
-                                <View style={styles.naverRouteDot} />
-                                <View style={styles.naverRouteDot} />
-                                <View style={styles.naverRouteDot} />
-                              </View>
-                              <View style={styles.naverRouteDetails}>
-                                <View style={styles.naverRouteMode}>
-                                  <Text style={styles.naverRouteModeText}>
-                                    {courseRoute.legs_summary[index].mode === 'walking' ? '도보' :
-                                     courseRoute.legs_summary[index].mode === 'transit' ? '대중교통' : '이동'}
-                                  </Text>
+                            <TouchableOpacity
+                              activeOpacity={0.7}
+                              onPress={() => {
+                                const currentStop = courseResult.course.stops[index];
+                                const nextStop = courseResult.course.stops[index + 1];
+                                setSelectedRouteSegment({
+                                  start: { latitude: currentStop.latitude, longitude: currentStop.longitude },
+                                  end: { latitude: nextStop.latitude, longitude: nextStop.longitude },
+                                  startName: currentStop.name,
+                                  endName: nextStop.name,
+                                  endPlaceId: nextStop.place_id,
+                                });
+                                setShowRouteDetail(true);
+                              }}
+                            >
+                              <Animated.View
+                                style={[
+                                  styles.naverRouteSegment,
+                                  {
+                                    opacity: placeAnim.interpolate({
+                                      inputRange: [0, 0.5, 1],
+                                      outputRange: [0, 0.3, 1],
+                                    }),
+                                  }
+                                ]}
+                              >
+                                <Animated.View
+                                  style={[
+                                    styles.naverRouteDots,
+                                    {
+                                      opacity: routeProgressAnim.interpolate({
+                                        inputRange: [(index + 0.3) / totalStops, (index + 0.8) / totalStops],
+                                        outputRange: [0.3, 1],
+                                        extrapolate: 'clamp',
+                                      }),
+                                    }
+                                  ]}
+                                >
+                                  <View style={styles.naverRouteDot} />
+                                  <View style={styles.naverRouteDot} />
+                                  <View style={styles.naverRouteDot} />
+                                </Animated.View>
+                                <View style={styles.naverRouteDetails}>
+                                  <View style={styles.naverRouteDetailsContent}>
+                                    {courseRoute.legs_summary[index].mode === 'transit' && courseRoute.legs_summary[index].transit_legs ? (
+                                      <>
+                                        <View style={styles.transitLegsInline}>
+                                          {courseRoute.legs_summary[index].transit_legs.map((tLeg: any, tIdx: number) => (
+                                            <React.Fragment key={tIdx}>
+                                              {tIdx > 0 && <Text style={styles.transitLegArrow}> → </Text>}
+                                              <View style={[
+                                                styles.transitLegBadge,
+                                                tLeg.mode === 'WALK' && styles.transitLegBadgeWalk,
+                                                tLeg.mode === 'BUS' && styles.transitLegBadgeBus,
+                                                tLeg.mode === 'SUBWAY' && styles.transitLegBadgeSubway,
+                                                tLeg.routeColor && { backgroundColor: `#${tLeg.routeColor}` }
+                                              ]}>
+                                                <Text style={[
+                                                  styles.transitLegBadgeText,
+                                                  tLeg.mode !== 'WALK' && styles.transitLegBadgeTextWhite
+                                                ]}>
+                                                  {tLeg.mode === 'WALK' ? `도보 ${tLeg.duration_text}` :
+                                                   `${tLeg.name}${tLeg.stopCount ? ` (${tLeg.stopCount}정류장)` : ''}`}
+                                                </Text>
+                                              </View>
+                                            </React.Fragment>
+                                          ))}
+                                        </View>
+                                        <Text style={styles.naverRouteSegmentText}>
+                                          총 {courseRoute.legs_summary[index].duration_text}
+                                          {courseRoute.legs_summary[index].fare && courseRoute.legs_summary[index].fare > 0 && ` · ${courseRoute.legs_summary[index].fare}원`}
+                                        </Text>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <View style={styles.naverRouteMode}>
+                                          <Text style={styles.naverRouteModeText}>
+                                            {courseRoute.legs_summary[index].mode === 'walking' ? '도보' : '이동'}
+                                          </Text>
+                                        </View>
+                                        <Text style={styles.naverRouteSegmentText}>
+                                          {courseRoute.legs_summary[index].distance_text} · {courseRoute.legs_summary[index].duration_text}
+                                        </Text>
+                                      </>
+                                    )}
+                                  </View>
+                                  <ChevronRightIcon width={18} height={18} color="#2E7D32" />
                                 </View>
-                                <Text style={styles.naverRouteSegmentText}>
-                                  {courseRoute.legs_summary[index].distance_text} · {courseRoute.legs_summary[index].duration_text}
-                                  {courseRoute.legs_summary[index].fare && courseRoute.legs_summary[index].fare > 0 && ` · ${courseRoute.legs_summary[index].fare}원`}
-                                </Text>
-                              </View>
-                            </View>
+                              </Animated.View>
+                            </TouchableOpacity>
                           )}
                         </React.Fragment>
                       );
                     })}
+                    <View style={{ height: 100 }} />
                   </>
                 ) : (
                   <View style={styles.emptyState}>
@@ -2149,79 +3256,119 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                 )}
               </>
             ) : selectedStore ? (
-              <>
-
+              <Animated.View
+                style={{
+                  transform: [{
+                    translateX: storeDetailSlideAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0, 300],
+                    }),
+                  }],
+                  opacity: storeDetailSlideAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [1, 0],
+                  }),
+                }}
+              >
                 {loadingRecommendations ? (
-                  <Text style={styles.loadingText}>카드 혜택 조회 중...</Text>
+                  <View style={styles.loadingRecommendations}>
+                    <View style={styles.loadingSpinner}>
+                      <Animated.View style={styles.loadingDotSmall} />
+                      <Animated.View style={[styles.loadingDotSmall, { marginHorizontal: 6 }]} />
+                      <Animated.View style={styles.loadingDotSmall} />
+                    </View>
+                    <Text style={styles.loadingText}>혜택 분석 중</Text>
+                  </View>
                 ) : (
                   <>
-                    <Text style={styles.recommendationsTitle}>내 카드 혜택 순위</Text>
+                    <View style={styles.recommendationsTitleRow}>
+                      <Text style={styles.recommendationsTitle}>내 카드 혜택 순위</Text>
+                      <View style={styles.recommendationsSubtitleBadge}>
+                        <Text style={styles.recommendationsSubtitleText}>{recommendations.length}개 카드</Text>
+                      </View>
+                    </View>
+
                     {recommendations.map((rec) => {
                       const selectedCardName = userCards[selectedCardIndex]?.card_name;
                       const isSelectedCard = rec.card === selectedCardName;
                       const performanceData = getSamplePerformanceData(rec);
+                      const isTopRank = rec.rank === 1;
 
                       return (
-                        <View key={rec.rank}>
+                        <View key={rec.rank} style={styles.recommendationCardWrapper}>
                           <TouchableOpacity
-                            activeOpacity={0.7}
+                            activeOpacity={0.85}
                             onPress={() => handleRecommendationCardClick(rec.card)}
                             style={[
                               styles.recommendationCard,
-                              isSelectedCard && styles.recommendationCardSelected
+                              isSelectedCard && styles.recommendationCardSelected,
+                              isTopRank && styles.recommendationCardTop,
                             ]}
                           >
-                            <View style={styles.rankBadge}>
-                              <Text style={styles.rankText}>{rec.rank}</Text>
-                            </View>
+                            {/* Left: Card Image */}
+                            {CARD_IMAGES[rec.card] ? (
+                              <Image
+                                source={CARD_IMAGES[rec.card]}
+                                style={styles.recommendationCardImage}
+                                resizeMode="contain"
+                              />
+                            ) : (
+                              <CardPlaceholder
+                                cardName={rec.card}
+                                benefit={rec.benefit_summary}
+                                width={72}
+                                height={45}
+                                style={styles.recommendationCardImage}
+                              />
+                            )}
 
+                            {/* Center: Card Info */}
                             <View style={styles.recommendationInfo}>
-                              <Text style={styles.recommendationCardName}>{rec.card}</Text>
-                              <Text style={styles.benefitSummary}>{rec.benefit_summary}</Text>
+                              <Text style={styles.recommendationCardName} numberOfLines={1}>{rec.card}</Text>
+                              <Text style={[
+                                styles.benefitSummary,
+                                isTopRank && styles.benefitSummaryTop,
+                              ]}>{rec.benefit_summary}</Text>
 
-                              <View style={styles.benefitDetails}>
-                                {CARD_IMAGES[rec.card] ? (
-                                  <Image
-                                    source={CARD_IMAGES[rec.card]}
-                                    style={styles.recommendationCardImage}
-                                    resizeMode="contain"
-                                  />
-                                ) : (
-                                  <CardPlaceholder
-                                    cardName={rec.card}
-                                    benefit={rec.benefit_summary}
-                                    width={80}
-                                    height={50}
-                                    style={styles.recommendationCardImage}
-                                  />
+                              <View style={styles.benefitTags}>
+                                {rec.discount_rate > 0 && (
+                                  <View style={styles.benefitTag}>
+                                    <Text style={styles.benefitTagText}>{rec.discount_rate}% 할인</Text>
+                                  </View>
                                 )}
-                                <View style={styles.benefitDetailsText}>
-                                  {rec.discount_rate > 0 && (
-                                    <Text style={styles.benefitDetail}>할인율: {rec.discount_rate}%</Text>
-                                  )}
-                                  {rec.discount_amount > 0 && (
-                                    <Text style={styles.benefitDetail}>
-                                      최대 할인: {rec.discount_amount.toLocaleString()}원
-                                    </Text>
-                                  )}
-                                  {rec.point_rate > 0 && (
-                                    <Text style={styles.benefitDetail}>적립: {rec.point_rate}%</Text>
-                                  )}
-                                  {rec.pre_month_money > 0 && (
-                                    <Text style={styles.benefitDetailCondition}>
-                                      조건: 전월 {(rec.pre_month_money / 10000).toFixed(0)}만원 이상
-                                    </Text>
-                                  )}
-                                </View>
+                                {rec.point_rate > 0 && (
+                                  <View style={styles.benefitTag}>
+                                    <Text style={styles.benefitTagText}>{rec.point_rate}% 적립</Text>
+                                  </View>
+                                )}
+                                {rec.discount_amount > 0 && (
+                                  <View style={styles.benefitTag}>
+                                    <Text style={styles.benefitTagText}>최대 {(rec.discount_amount / 10000).toFixed(0)}만원</Text>
+                                  </View>
+                                )}
                               </View>
+
+                              {rec.pre_month_money > 0 && (
+                                <View style={styles.conditionRow}>
+                                  <View style={styles.conditionDot} />
+                                  <Text style={styles.benefitDetailCondition}>
+                                    전월 {(rec.pre_month_money / 10000).toFixed(0)}만원 이상 실적
+                                  </Text>
+                                </View>
+                              )}
                             </View>
 
+                            {/* Right: Score */}
                             <View style={styles.scoreContainer}>
-                              <Text style={styles.scoreText}>{rec.score}</Text>
+                              <Text style={[
+                                styles.scoreText,
+                                isTopRank && styles.scoreTextTop,
+                              ]}>{rec.score}</Text>
                               <Text style={styles.scoreLabel}>점</Text>
                             </View>
                           </TouchableOpacity>
 
+                          {/* Expandable Progress Section */}
                           {isSelectedCard && (
                             <Animated.View
                               style={[
@@ -2229,7 +3376,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                                 {
                                   maxHeight: progressHeightAnim.interpolate({
                                     inputRange: [0, 1],
-                                    outputRange: [0, 200],
+                                    outputRange: [0, 180],
                                   }),
                                   opacity: progressHeightAnim,
                                 },
@@ -2238,13 +3385,20 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                               <View style={styles.progressRow}>
                                 {/* 실적 Progress */}
                                 <View style={styles.progressItem}>
-                                  <Text style={styles.progressLabel}>실적</Text>
+                                  <View style={styles.progressLabelRow}>
+                                    <Text style={styles.progressLabel}>실적</Text>
+                                    {performanceData.requiredPerformance > 0 && (
+                                      <Text style={styles.progressPercent}>
+                                        {Math.min(Math.round((performanceData.currentPerformance / performanceData.requiredPerformance) * 100), 100)}%
+                                      </Text>
+                                    )}
+                                  </View>
                                   {performanceData.requiredPerformance > 0 ? (
                                     <>
                                       <View style={styles.progressBarContainer}>
                                         <View style={styles.progressBarBackground}>
                                           <LinearGradient
-                                            colors={['#22B573', '#FFFFFF']}
+                                            colors={['#2E7D32', '#4CAF50']}
                                             start={{ x: 0, y: 0 }}
                                             end={{ x: 1, y: 0 }}
                                             style={[
@@ -2262,24 +3416,33 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                                         </View>
                                       </View>
                                       <Text style={styles.progressText}>
-                                        {performanceData.currentPerformance.toLocaleString()}원 /{' '}
-                                        {performanceData.requiredPerformance.toLocaleString()}원
+                                        <Text style={styles.progressTextHighlight}>
+                                          {performanceData.currentPerformance.toLocaleString()}
+                                        </Text>
+                                        원 / {performanceData.requiredPerformance.toLocaleString()}원
                                       </Text>
                                     </>
                                   ) : (
-                                    <Text style={styles.progressTextNoData}>-</Text>
+                                    <Text style={styles.progressTextNoData}>조건 없음</Text>
                                   )}
                                 </View>
 
                                 {/* 혜택한도 Progress */}
                                 <View style={styles.progressItem}>
-                                  <Text style={styles.progressLabel}>혜택한도</Text>
+                                  <View style={styles.progressLabelRow}>
+                                    <Text style={styles.progressLabel}>혜택한도</Text>
+                                    {performanceData.totalBenefitLimit > 0 && (
+                                      <Text style={styles.progressPercent}>
+                                        {Math.min(Math.round((performanceData.usedBenefit / performanceData.totalBenefitLimit) * 100), 100)}%
+                                      </Text>
+                                    )}
+                                  </View>
                                   {performanceData.totalBenefitLimit > 0 ? (
                                     <>
                                       <View style={styles.progressBarContainer}>
                                         <View style={styles.progressBarBackground}>
                                           <LinearGradient
-                                            colors={['#FCC490', '#8586CA']}
+                                            colors={['#8B5CF6', '#A78BFA']}
                                             start={{ x: 0, y: 0 }}
                                             end={{ x: 1, y: 0 }}
                                             style={[
@@ -2297,12 +3460,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                                         </View>
                                       </View>
                                       <Text style={styles.progressText}>
-                                        잔여 {performanceData.remainingBenefit.toLocaleString()}원 /{' '}
-                                        {performanceData.totalBenefitLimit.toLocaleString()}원
+                                        잔여 <Text style={styles.progressTextHighlight}>
+                                          {performanceData.remainingBenefit.toLocaleString()}
+                                        </Text>원
                                       </Text>
                                     </>
                                   ) : (
-                                    <Text style={styles.progressTextNoData}>-</Text>
+                                    <Text style={styles.progressTextNoData}>한도 없음</Text>
                                   )}
                                 </View>
                               </View>
@@ -2313,13 +3477,19 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                     })}
                   </>
                 )}
-              </>
+              </Animated.View>
             ) : (
               <>
                 {stores
                   .filter(store => {
                     // 카테고리 필터
-                    if (selectedCategory && store.category !== selectedCategory) return false;
+                    if (selectedCategory) {
+                      if (selectedCategory === 'favorites') {
+                        if (!favoriteStores.has(store.name)) return false;
+                      } else if (store.category !== selectedCategory) {
+                        return false;
+                      }
+                    }
 
                     // 영업중 필터 (현재는 모든 가게가 영업중이라고 가정)
                     // TODO: 백엔드에서 영업시간 데이터 받아와서 필터링
@@ -2329,22 +3499,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                   .sort((a, b) => {
                     // 정렬
                     if (filterSort === 'distance') {
-                      return filterOrder === 'asc'
-                        ? a.distance - b.distance
-                        : b.distance - a.distance;
+                      // 거리순: 항상 가까운 순
+                      return a.distance - b.distance;
                     } else if (filterSort === 'benefit') {
+                      // 혜택순: 항상 높은 순
                       const scoreA = a.top_card?.score || 0;
                       const scoreB = b.top_card?.score || 0;
-                      return filterOrder === 'desc'
-                        ? scoreB - scoreA
-                        : scoreA - scoreB;
+                      return scoreB - scoreA;
                     } else if (filterSort === 'recommend') {
-                      // 추천순은 기본적으로 top_card의 score 기준
+                      // 추천순: 혜택과 거리의 가중치 합산 (혜택 70%, 거리 30%)
                       const scoreA = a.top_card?.score || 0;
                       const scoreB = b.top_card?.score || 0;
-                      return filterOrder === 'desc'
-                        ? scoreB - scoreA
-                        : scoreA - scoreB;
+                      // 거리 점수: 1km 이내 100점, 멀수록 감소 (최대 10km 기준)
+                      const distanceScoreA = Math.max(0, 100 - (a.distance / 100));
+                      const distanceScoreB = Math.max(0, 100 - (b.distance / 100));
+                      // 가중치 합산 점수
+                      const weightedA = (scoreA * 0.7) + (distanceScoreA * 0.3);
+                      const weightedB = (scoreB * 0.7) + (distanceScoreB * 0.3);
+                      return weightedB - weightedA;
                     }
                     return 0;
                   })
@@ -2356,12 +3528,19 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                         Keyboard.dismiss();
                         handleMarkerClick(store);
                       }}
+                      activeOpacity={0.85}
                     >
                       {getMerchantLogo(store.name) ? (
                         <Image
                           source={getMerchantLogo(store.name)}
                           style={styles.merchantLogo}
                           resizeMode="contain"
+                        />
+                      ) : store.photo_url ? (
+                        <Image
+                          source={{ uri: store.photo_url }}
+                          style={styles.storePhoto}
+                          resizeMode="cover"
                         />
                       ) : (
                         <View style={styles.storePlaceholder}>
@@ -2422,12 +3601,99 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       </TouchableWithoutFeedback>
       {showProfile && (
         <View style={styles.profileOverlay}>
-          <ProfileScreen onBack={() => setShowProfile(false)} onLogout={onLogout} />
+          <ProfileScreen onBack={() => {
+            setShowProfile(false);
+            // 카드 등록 후 지도에도 반영되도록 새로고침
+            fetchUserCards();
+          }} onLogout={onLogout} />
         </View>
       )}
       {showOnePay && (
         <View style={styles.profileOverlay}>
-          <OnePayScreen onBack={() => setShowOnePay(false)} />
+          <OnePayScreen
+            onBack={() => {
+              setShowOnePay(false);
+              setPreSelectedCardIdForOnePay(null);
+            }}
+            preSelectedCardId={preSelectedCardIdForOnePay}
+          />
+        </View>
+      )}
+      {showFriends && (
+        <View style={styles.profileOverlay}>
+          <FriendsScreen onBack={() => setShowFriends(false)} />
+        </View>
+      )}
+      {showPlaceDetail && selectedStore && selectedStore.place_id && (
+        <Modal
+          visible={showPlaceDetail}
+          animationType="slide"
+          presentationStyle="pageSheet"
+          onRequestClose={() => setShowPlaceDetail(false)}
+        >
+          <PlaceDetailView
+            placeId={selectedStore.place_id}
+            storeName={selectedStore.name}
+            storeCategory={selectedStore.category}
+            onClose={() => setShowPlaceDetail(false)}
+          />
+        </Modal>
+      )}
+      {selectedRouteSegment && (
+        <RouteDetailView
+          visible={showRouteDetail}
+          start={selectedRouteSegment.start}
+          end={selectedRouteSegment.end}
+          startName={selectedRouteSegment.startName}
+          endName={selectedRouteSegment.endName}
+          endPlaceId={selectedRouteSegment.endPlaceId}
+          onClose={() => {
+            setShowRouteDetail(false);
+            setSelectedRouteSegment(null);
+          }}
+          onRouteSelect={(polyline, mode) => {
+            console.log('[RouteDetail] Selected route:', mode, polyline.substring(0, 50));
+            setShowRouteDetail(false);
+            setSelectedRouteSegment(null);
+            // Auto-minimize bottom sheet when navigation starts
+            bottomSheetRef.current?.snapToIndex(0);
+          }}
+        />
+      )}
+      {showShareModal && sharingCourseId && (
+        <View style={styles.profileOverlay}>
+          <FriendsScreen
+            onBack={() => {
+              setShowShareModal(false);
+              setSharingCourseId(null);
+            }}
+            shareMode={true}
+            courseTitle={savedCourses.find(c => c.id === sharingCourseId)?.title}
+            onShareCourse={(friendIds) => handleShareCourse(sharingCourseId, friendIds)}
+          />
+        </View>
+      )}
+      {showChatList && (
+        <View style={styles.profileOverlay}>
+          <ChatListScreen
+            onBack={() => setShowChatList(false)}
+            onOpenChat={(conversation) => {
+              setSelectedConversation(conversation);
+              setShowChatRoom(true);
+            }}
+          />
+        </View>
+      )}
+      {showChatRoom && selectedConversation && (
+        <View style={styles.profileOverlay}>
+          <ChatRoomScreen
+            conversation={selectedConversation}
+            onBack={() => {
+              setShowChatRoom(false);
+              setSelectedConversation(null);
+            }}
+            onViewCourse={handleViewSharedCourse}
+          />
         </View>
       )}
       <LocationDebugModal
@@ -2443,84 +3709,54 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       <Modal
         visible={showPeoplePicker}
         transparent={true}
-        animationType="fade"
+        animationType="slide"
         onRequestClose={() => setShowPeoplePicker(false)}
       >
-        <TouchableWithoutFeedback onPress={() => setShowPeoplePicker(false)}>
-          <View style={styles.pickerModalOverlay}>
-            <TouchableWithoutFeedback>
-              <View style={styles.pickerModalContent}>
-                <Text style={styles.pickerModalTitle}>인원 선택</Text>
-                <ScrollView style={styles.pickerScrollView}>
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
-                    <TouchableOpacity
-                      key={num}
-                      style={[
-                        styles.pickerOption,
-                        numPeople === num && styles.pickerOptionActive,
-                      ]}
-                      onPress={() => {
-                        setNumPeople(num);
-                        setShowPeoplePicker(false);
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.pickerOptionText,
-                          numPeople === num && styles.pickerOptionTextActive,
-                        ]}
-                      >
-                        {num}명
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
-            </TouchableWithoutFeedback>
+        <View style={styles.pickerModalOverlay}>
+          <View style={styles.wheelPickerModalContent}>
+            <View style={styles.wheelPickerHeader}>
+              <TouchableOpacity onPress={() => setShowPeoplePicker(false)}>
+                <Text style={styles.wheelPickerDone}>완료</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.wheelPickerContainer}>
+              <WheelPicker
+                selectedIndex={[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20].indexOf(numPeople)}
+                options={[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20].map(num => `${num}명`)}
+                onChange={(index) => setNumPeople([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20][index])}
+                itemTextStyle={styles.wheelPickerItemText}
+                selectedIndicatorStyle={styles.wheelPickerIndicator}
+              />
+            </View>
           </View>
-        </TouchableWithoutFeedback>
+        </View>
       </Modal>
 
       {/* Budget Picker Modal */}
       <Modal
         visible={showBudgetPicker}
         transparent={true}
-        animationType="fade"
+        animationType="slide"
         onRequestClose={() => setShowBudgetPicker(false)}
       >
-        <TouchableWithoutFeedback onPress={() => setShowBudgetPicker(false)}>
-          <View style={styles.pickerModalOverlay}>
-            <TouchableWithoutFeedback>
-              <View style={styles.pickerModalContent}>
-                <Text style={styles.pickerModalTitle}>예산 선택</Text>
-                <ScrollView style={styles.pickerScrollView}>
-                  {[5, 10, 15, 20, 25, 30, 35, 40, 45, 50].map((amount) => (
-                    <TouchableOpacity
-                      key={amount}
-                      style={[
-                        styles.pickerOption,
-                        budget === amount * 10000 && styles.pickerOptionActive,
-                      ]}
-                      onPress={() => {
-                        setBudget(amount * 10000);
-                        setShowBudgetPicker(false);
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.pickerOptionText,
-                          budget === amount * 10000 && styles.pickerOptionTextActive,
-                        ]}
-                      >
-                        {amount}만 원
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
-            </TouchableWithoutFeedback>
+        <View style={styles.pickerModalOverlay}>
+          <View style={styles.wheelPickerModalContent}>
+            <View style={styles.wheelPickerHeader}>
+              <TouchableOpacity onPress={() => setShowBudgetPicker(false)}>
+                <Text style={styles.wheelPickerDone}>완료</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.wheelPickerContainer}>
+              <WheelPicker
+                selectedIndex={[5, 10, 15, 20, 25, 30, 35, 40, 45, 50].indexOf(budget / 10000)}
+                options={[5, 10, 15, 20, 25, 30, 35, 40, 45, 50].map(amount => `${amount}만 원`)}
+                onChange={(index) => setBudget([5, 10, 15, 20, 25, 30, 35, 40, 45, 50][index] * 10000)}
+                itemTextStyle={styles.wheelPickerItemText}
+                selectedIndicatorStyle={styles.wheelPickerIndicator}
+              />
+            </View>
           </View>
-        </TouchableWithoutFeedback>
+        </View>
       </Modal>
     </View>
   );
@@ -2539,10 +3775,60 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 60,
     left: 20,
-    right: 20,
+    right: 12,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+  },
+  searchBarWrapper: {
+    flex: 1,
+    position: 'relative',
+  },
+  neonBorderContainer: {
+    position: 'absolute',
+    top: -1.5,
+    left: -1.5,
+    right: -1.5,
+    bottom: -1.5,
+    borderRadius: 13.5,
+    borderWidth: 1,
+    borderColor: 'rgba(150, 150, 150, 0.25)',
+    zIndex: 0,
+    shadowColor: '#888888',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+  },
+  neonEdge: {
+    position: 'absolute',
+    borderRadius: 1,
+  },
+  neonEdgeTop: {
+    top: -1.5,
+    left: 20,
+    right: 20,
+    height: 1.5,
+  },
+  neonEdgeBottom: {
+    bottom: -1.5,
+    left: 20,
+    right: 20,
+    height: 1.5,
+  },
+  neonEdgeLeft: {
+    left: -1.5,
+    top: 10,
+    bottom: 10,
+    width: 1.5,
+  },
+  neonEdgeRight: {
+    right: -1.5,
+    top: 10,
+    bottom: 10,
+    width: 1.5,
+  },
+  neonGradient: {
+    flex: 1,
   },
   searchBar: {
     flex: 1,
@@ -2569,9 +3855,9 @@ const styles = StyleSheet.create({
     right: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    zIndex: 10,
+    justifyContent: 'flex-start',
+    paddingHorizontal: 16,
+    gap: 8,
   },
   filterButtonsLeft: {
     flexDirection: 'row',
@@ -2579,38 +3865,204 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   courseFilterButton: {
-    backgroundColor: '#E5EDF4',
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
   },
   courseFilterButtonText: {
-    fontSize: 14,
-    fontFamily: FONTS.regular,
-    color: '#212121',
+    fontSize: 13,
+    fontFamily: FONTS.medium,
+    color: '#666666',
   },
   courseFilterButtonTextBold: {
     fontFamily: FONTS.bold,
+    color: '#212121',
   },
   myCoursesButton: {
-    backgroundColor: '#FFF0B3',
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 999,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
   },
   myCoursesButtonText: {
-    fontSize: 14,
-    fontFamily: FONTS.regular,
-    color: '#212121',
+    fontSize: 13,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+  },
+  rightButtonsContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  chatButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  chatBadge: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    backgroundColor: '#1A1A1A',
+    borderRadius: 9,
+    minWidth: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  chatBadgeText: {
+    fontSize: 10,
+    fontFamily: FONTS.semiBold,
+    color: '#FFFFFF',
+  },
+  myPageButtonWrapper: {
+    overflow: 'hidden',
   },
   myPageButton: {
     width: 48,
     height: 48,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  notificationBadge: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    backgroundColor: '#EF4444',
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  notificationBadgeText: {
+    fontSize: 10,
+    fontFamily: FONTS.semiBold,
+    color: '#FFFFFF',
+  },
+  searchDropdown: {
+    position: 'absolute',
+    top: 107,
+    left: 20,
+    right: 138,
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+    maxHeight: 350,
+    borderTopWidth: 1,
+    borderTopColor: '#EEEEEE',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 6,
+      },
+    }),
+    zIndex: 1000,
+  },
+  searchDropdownScroll: {
+    maxHeight: 300,
+  },
+  searchDropdownLoading: {
+    padding: 20,
+    alignItems: 'center',
+  },
+  searchDropdownLoadingText: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#888888',
+  },
+  searchDropdownHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  searchDropdownHeaderText: {
+    fontSize: 13,
+    fontFamily: FONTS.semiBold,
+    color: '#1A1A1A',
+  },
+  searchDropdownClearText: {
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#888888',
+  },
+  searchDropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F5F5F5',
+  },
+  searchDropdownItemLast: {
+    borderBottomWidth: 0,
+  },
+  searchDropdownItemIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  historyIcon: {
+    fontSize: 14,
+    fontFamily: FONTS.medium,
+    color: '#888888',
+  },
+  searchDropdownItemContent: {
+    flex: 1,
+  },
+  searchDropdownItemName: {
+    fontSize: 15,
+    fontFamily: FONTS.medium,
+    color: '#1A1A1A',
+    marginBottom: 2,
+  },
+  searchDropdownItemAddress: {
+    fontSize: 12,
+    fontFamily: FONTS.regular,
+    color: '#888888',
+  },
+  searchDropdownEmpty: {
+    padding: 20,
+    alignItems: 'center',
+  },
+  searchDropdownEmptyText: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#888888',
   },
   searchInput: {
     flex: 1,
@@ -2620,9 +4072,13 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
   },
   clearButton: {
-    fontSize: 20,
-    color: '#000000',
-    marginRight: 8,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#EEEEEE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 4,
   },
   categoryWrapper: {
     position: 'absolute',
@@ -2640,17 +4096,17 @@ const styles = StyleSheet.create({
   categoryButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: COLORS.background,
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#F5F5F5',
     borderWidth: 1,
-    borderColor: '#E0E0E0',
+    borderColor: '#D0D0D0',
   },
   categoryButtonActive: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
+    backgroundColor: '#393A39',
+    borderColor: '#393A39',
   },
   categoryText: {
     fontSize: 13,
@@ -2665,37 +4121,57 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 14,
+    paddingHorizontal: 16,
     paddingVertical: 8,
-    borderRadius: 999,
+    borderRadius: 20,
+    backgroundColor: '#1A1A1A',
+    marginRight: 12,
+    borderWidth: 1,
+    borderColor: '#3D3D3D',
+  },
+  courseButtonActive: {
+    backgroundColor: '#000000',
+    borderColor: '#D4A853',
   },
   courseText: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FONTS.semiBold,
-    color: '#000000',
+    color: '#FFFFFF',
+  },
+  courseTextActive: {
+    color: '#FFFFFF',
+    fontFamily: FONTS.semiBold,
   },
   bottomSheetContainer: {
     flex: 1,
     backgroundColor: COLORS.background,
   },
   onePayButton: {
-    backgroundColor: '#000000',
-    marginHorizontal: 20,
-    marginTop: 16,
-    marginBottom: 12,
-    paddingVertical: 16,
-    borderRadius: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
+    backgroundColor: '#1A1A1A',
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 16,
+    paddingVertical: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#333333',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.2,
+        shadowRadius: 12,
+      },
+      android: {
+        elevation: 8,
+      },
+    }),
   },
   onePayText: {
-    fontSize: 24,
+    fontSize: 22,
     fontFamily: FONTS.museoModerno,
-    color: COLORS.background,
-    letterSpacing: 1.5,
+    color: '#FFFFFF',
+    letterSpacing: 2,
     textAlign: 'center',
   },
   bottomSheetContent: {
@@ -2709,54 +4185,130 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     marginHorizontal: 20,
   },
+  storeDetailHeader: {
+    backgroundColor: '#FAFAFA',
+    marginHorizontal: 12,
+    borderRadius: 16,
+    marginBottom: 16,
+    paddingTop: 4,
+    paddingBottom: 16,
+  },
   backButton: {
-    marginLeft: 10,
-    marginRight: 20,
-    marginBottom: 8,
-    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
     alignSelf: 'flex-start',
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 10,
+    gap: 4,
   },
   backButtonText: {
     fontSize: 14,
     fontFamily: FONTS.medium,
-    color: '#666666',
+    color: '#888888',
   },
   storeHeaderContainer: {
-    marginHorizontal: 20,
-    marginBottom: 12,
+    paddingHorizontal: 16,
   },
   storeNameRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 4,
+    marginBottom: 6,
   },
   storeName: {
-    fontSize: 18,
+    fontSize: 22,
     fontFamily: FONTS.bold,
-    color: '#333333',
+    color: '#1A1A1A',
     flex: 1,
+    letterSpacing: -0.3,
+  },
+  favoriteButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.08,
+        shadowRadius: 3,
+      },
+      android: {
+        elevation: 2,
+      },
+    }),
   },
   storeAddress: {
-    fontSize: 13,
-    fontFamily: FONTS.regular,
-    color: COLORS.gray,
-  },
-  loadingText: {
     fontSize: 14,
     fontFamily: FONTS.regular,
-    color: COLORS.gray,
+    color: '#888888',
+    letterSpacing: -0.2,
+  },
+  viewDetailsButton: {
+    marginTop: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  viewDetailsButtonText: {
+    fontSize: 13,
+    fontFamily: FONTS.medium,
+    color: '#007AFF',
+  },
+  loadingText: {
+    fontSize: 15,
+    fontFamily: FONTS.medium,
+    color: '#888888',
     textAlign: 'center',
-    marginTop: 20,
+    marginTop: 8,
+  },
+  loadingRecommendations: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+  },
+  loadingSpinner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  loadingDotSmall: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#CCCCCC',
+  },
+  recommendationsTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 16,
+    marginTop: 4,
+    marginBottom: 16,
   },
   recommendationsTitle: {
-    fontSize: 15,
-    fontFamily: FONTS.semiBold,
-    color: '#333333',
-    marginHorizontal: 12,
-    marginTop: 8,
+    fontSize: 20,
+    fontFamily: FONTS.bold,
+    color: '#1A1A1A',
+    letterSpacing: -0.4,
+  },
+  recommendationsSubtitleBadge: {
+    backgroundColor: '#F0F0F0',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  recommendationsSubtitleText: {
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#888888',
+  },
+  recommendationCardWrapper: {
     marginBottom: 12,
   },
   cardSelectorWrapper: {
@@ -2816,57 +4368,110 @@ const styles = StyleSheet.create({
   },
   recommendationCard: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+    borderRadius: 16,
     padding: 16,
     marginHorizontal: 12,
-    marginBottom: 12,
-    zIndex: 10,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.15,
-        shadowRadius: 3,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.04,
+        shadowRadius: 8,
       },
       android: {
-        elevation: 3,
+        elevation: 2,
       },
     }),
   },
   recommendationCardSelected: {
-    borderWidth: 2,
-    borderColor: '#000000',
+    borderWidth: 1.5,
+    borderColor: '#1A1A1A',
+    backgroundColor: '#FAFAFA',
+  },
+  recommendationCardTop: {
+    backgroundColor: '#FAFBFC',
+    borderColor: '#E8E8E8',
+  },
+  recommendationLeft: {
+    alignItems: 'center',
+    marginRight: 14,
   },
   rankBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#333333',
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#E8E8E8',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginBottom: 8,
+  },
+  rankBadgeTop: {
+    backgroundColor: '#1A1A1A',
+  },
+  rankBadgeSelected: {
+    backgroundColor: '#1A1A1A',
   },
   rankText: {
-    fontSize: 16,
+    fontSize: 13,
     fontFamily: FONTS.bold,
+    color: '#666666',
+  },
+  rankTextTop: {
     color: '#FFFFFF',
   },
   recommendationInfo: {
     flex: 1,
+    minWidth: 0,
   },
   recommendationCardName: {
-    fontSize: 18,
+    fontSize: 15,
     fontFamily: FONTS.bold,
-    color: '#333333',
-    marginBottom: 6,
+    color: '#1A1A1A',
+    marginBottom: 4,
+    letterSpacing: -0.2,
   },
   benefitSummary: {
     fontSize: 14,
     fontFamily: FONTS.semiBold,
-    color: '#4AA63C',
+    color: '#2E7D32',
     marginBottom: 8,
+    letterSpacing: -0.2,
+  },
+  benefitSummaryTop: {
+    color: '#1B5E20',
+  },
+  benefitTags: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 6,
+  },
+  benefitTag: {
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  benefitTagText: {
+    fontSize: 11,
+    fontFamily: FONTS.medium,
+    color: '#6B7280',
+  },
+  conditionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  conditionDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#B91C1C',
+    marginRight: 6,
   },
   benefitDetails: {
     flexDirection: 'row',
@@ -2874,9 +4479,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   recommendationCardImage: {
-    width: 80,
-    height: 50,
-    borderRadius: 6,
+    width: 72,
+    height: 45,
+    borderRadius: 8,
+    backgroundColor: '#F5F5F5',
+    marginRight: 14,
   },
   benefitDetailsText: {
     flex: 1,
@@ -2888,59 +4495,61 @@ const styles = StyleSheet.create({
     color: '#666666',
   },
   benefitDetailCondition: {
-    fontSize: 13,
-    fontFamily: FONTS.semiBold,
-    color: '#C23E38',
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#B91C1C',
   },
   storeCard: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 16,
+    borderRadius: 16,
+    padding: 14,
     marginHorizontal: 12,
-    marginBottom: 12,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.15,
-        shadowRadius: 3,
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
       },
       android: {
-        elevation: 3,
+        elevation: 2,
       },
     }),
   },
   storePlaceholder: {
-    width: 64,
-    height: 64,
-    borderRadius: 12,
-    backgroundColor: '#E0E0E0',
+    width: 56,
+    height: 56,
+    borderRadius: 14,
+    backgroundColor: '#F5F5F5',
     alignItems: 'center',
     justifyContent: 'center',
   },
   storePlaceholderText: {
-    fontSize: 28,
+    fontSize: 24,
     fontFamily: FONTS.bold,
-    color: '#666666',
+    color: '#AAAAAA',
   },
   storeInfo: {
     flex: 1,
-    marginLeft: 12,
-    marginRight: 12,
+    marginLeft: 14,
+    marginRight: 10,
   },
   storeCardName: {
-    fontSize: 16,
+    fontSize: 15,
     fontFamily: FONTS.bold,
-    color: '#333333',
-    marginBottom: 4,
+    color: '#222222',
+    marginBottom: 2,
   },
   storeDistance: {
     fontSize: 12,
     fontFamily: FONTS.regular,
-    color: COLORS.gray,
-    marginBottom: 6,
+    color: '#999999',
+    marginBottom: 4,
   },
   benefitRow: {
     flexDirection: 'row',
@@ -2948,125 +4557,141 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   cardName: {
-    fontSize: 13,
-    fontFamily: FONTS.semiBold,
-    color: '#333333',
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#555555',
   },
   benefitText: {
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: FONTS.bold,
-    color: '#4AA63C',
-    marginTop: 2,
+    color: '#2E7D32',
+    marginTop: 1,
   },
   noBenefitText: {
     fontSize: 12,
     fontFamily: FONTS.regular,
-    color: COLORS.gray,
+    color: '#BBBBBB',
   },
   scoreContainer: {
-    alignItems: 'center',
+    alignItems: 'flex-end',
     justifyContent: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingLeft: 12,
+    minWidth: 60,
   },
   scoreText: {
-    fontSize: 32,
+    fontSize: 28,
     fontFamily: FONTS.bold,
-    color: '#333333',
+    color: '#1A1A1A',
+    letterSpacing: -0.5,
+  },
+  scoreTextTop: {
+    color: '#1A1A1A',
   },
   scoreLabel: {
-    fontSize: 14,
-    fontFamily: FONTS.regular,
-    color: '#666666',
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#9CA3AF',
+    marginTop: -2,
   },
   cardImage: {
-    width: 100,
-    height: 64,
-    borderRadius: 8,
-    backgroundColor: '#FFFFFF',
+    width: 90,
+    height: 56,
+    borderRadius: 10,
+    backgroundColor: '#FAFAFA',
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
   },
   merchantLogo: {
-    width: 64,
-    height: 64,
-    borderRadius: 12,
+    width: 56,
+    height: 56,
+    borderRadius: 14,
     backgroundColor: '#FFFFFF',
   },
+  storePhoto: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
+    backgroundColor: '#F5F5F5',
+  },
   progressSection: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12,
-    padding: 16,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 14,
     marginHorizontal: 12,
-    marginBottom: 32,
-    marginTop: -20,
-    borderTopWidth: 1,
-    borderTopColor: '#E0E0E0',
-    zIndex: 1,
+    marginTop: 8,
     overflow: 'hidden',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.15,
-        shadowRadius: 3,
-      },
-      android: {
-        elevation: 2,
-      },
-    }),
+  },
+  progressDivider: {
+    height: 1,
+    backgroundColor: '#E5E7EB',
+    marginBottom: 14,
   },
   progressRow: {
     flexDirection: 'row',
-    gap: 16,
+    gap: 20,
   },
   progressItem: {
     flex: 1,
   },
-  progressLabel: {
-    fontSize: 14,
-    fontFamily: FONTS.semiBold,
-    color: '#333333',
+  progressLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 8,
+  },
+  progressLabel: {
+    fontSize: 13,
+    fontFamily: FONTS.semiBold,
+    color: '#374151',
+  },
+  progressPercent: {
+    fontSize: 12,
+    fontFamily: FONTS.bold,
+    color: '#6B7280',
   },
   progressBarContainer: {
     marginBottom: 6,
   },
   progressBarBackground: {
-    height: 12,
-    backgroundColor: '#E0E0E0',
-    borderRadius: 6,
+    height: 8,
+    backgroundColor: '#E5E7EB',
+    borderRadius: 4,
     overflow: 'hidden',
   },
   progressBarFill: {
     height: '100%',
-    borderRadius: 6,
+    borderRadius: 4,
   },
   progressText: {
     fontSize: 12,
     fontFamily: FONTS.regular,
-    color: '#666666',
+    color: '#9CA3AF',
+  },
+  progressTextHighlight: {
+    fontFamily: FONTS.semiBold,
+    color: '#374151',
   },
   progressTextNoData: {
-    fontSize: 14,
+    fontSize: 12,
     fontFamily: FONTS.regular,
-    color: '#999999',
-    marginTop: 4,
+    color: '#D1D5DB',
+    marginTop: 8,
   },
   loadingContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 20,
+    gap: 10,
+    paddingVertical: 48,
     marginHorizontal: 20,
   },
   loadingDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#333333',
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#212121',
   },
   profileOverlay: {
     position: 'absolute',
@@ -3100,28 +4725,32 @@ const styles = StyleSheet.create({
   },
   filterContainer: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     gap: 8,
     flexWrap: 'wrap',
     justifyContent: 'center',
+    backgroundColor: '#FAFAFA',
+    marginHorizontal: 12,
+    borderRadius: 12,
+    marginBottom: 8,
   },
   filterButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: '#F5F5F5',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#E0E0E0',
+    borderColor: '#E8E8E8',
   },
   filterButtonActive: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
+    backgroundColor: '#393A39',
+    borderColor: '#393A39',
   },
   filterButtonText: {
     fontSize: 13,
     fontFamily: FONTS.medium,
-    color: '#666666',
+    color: '#777777',
   },
   filterButtonTextActive: {
     color: '#FFFFFF',
@@ -3196,32 +4825,57 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginBottom: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    marginBottom: 8,
   },
   backToListButtonText: {
-    fontSize: 15,
+    fontSize: 14,
     fontFamily: FONTS.medium,
     color: '#666666',
   },
-  courseTitleRow: {
+  courseTitleBlock: {
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  courseTitleHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    marginBottom: 8,
+    gap: 6,
+  },
+  courseMainTitle: {
+    fontSize: 18,
+    fontFamily: FONTS.bold,
+    color: '#222222',
+  },
+  courseTagline: {
+    fontSize: 13,
+    fontFamily: FONTS.medium,
+    color: '#888888',
+    marginTop: 2,
   },
   saveCourseIconButton: {
-    padding: 8,
+    padding: 4,
+  },
+  courseDescription: {
+    fontSize: 13,
+    fontFamily: FONTS.regular,
+    color: '#555555',
+    lineHeight: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#F8F8F8',
+    borderRadius: 8,
+    marginHorizontal: 10,
+    marginBottom: 12,
   },
   courseSummary: {
-    fontSize: 15,
+    fontSize: 14,
     fontFamily: FONTS.regular,
     color: '#666666',
-    marginBottom: 16,
-    paddingHorizontal: 12,
-    lineHeight: 22,
+    marginBottom: 20,
+    paddingHorizontal: 10,
+    lineHeight: 21,
   },
   routeInfo: {
     backgroundColor: '#F8F8F8',
@@ -3237,28 +4891,17 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   naverRouteContainer: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    marginHorizontal: 12,
-    marginBottom: 16,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-      },
-      android: {
-        elevation: 3,
-      },
-    }),
+    backgroundColor: '#F8F9FA',
+    borderRadius: 14,
+    marginHorizontal: 8,
+    marginBottom: 20,
   },
   naverRouteSummary: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    paddingVertical: 16,
-    paddingHorizontal: 8,
+    paddingVertical: 18,
+    paddingHorizontal: 12,
   },
   naverRouteSummaryItem: {
     flex: 1,
@@ -3266,21 +4909,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   naverRouteSummaryLabel: {
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: FONTS.regular,
     color: '#999999',
-    marginBottom: 4,
+    marginBottom: 6,
   },
   naverRouteSummaryValue: {
-    fontSize: 16,
+    fontSize: 17,
     fontFamily: FONTS.bold,
-    color: '#333333',
+    color: '#212121',
   },
   naverRouteDivider: {
     width: 1,
-    height: 28,
+    height: 32,
     backgroundColor: '#E0E0E0',
-    marginHorizontal: 4,
+    marginHorizontal: 8,
   },
   coursePlaceCard: {
     backgroundColor: '#FFFFFF',
@@ -3378,33 +5021,36 @@ const styles = StyleSheet.create({
     color: '#666666',
   },
   emptyState: {
-    padding: 40,
+    padding: 48,
     alignItems: 'center',
   },
   emptyStateText: {
-    fontSize: 16,
-    fontFamily: FONTS.medium,
-    color: '#666666',
-    marginBottom: 8,
+    fontSize: 17,
+    fontFamily: FONTS.semiBold,
+    color: '#212121',
+    marginBottom: 10,
   },
   emptyStateHint: {
-    fontSize: 13,
+    fontSize: 14,
     fontFamily: FONTS.regular,
     color: '#999999',
     textAlign: 'center',
+    lineHeight: 20,
   },
   // Naver-style Course Place Cards
   naverPlaceCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    marginHorizontal: 12,
+    borderRadius: 18,
+    marginHorizontal: 6,
     marginBottom: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.03)',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.08,
+        shadowRadius: 10,
       },
       android: {
         elevation: 3,
@@ -3413,43 +5059,43 @@ const styles = StyleSheet.create({
   },
   naverPlaceNumber: {
     position: 'absolute',
-    top: 16,
-    left: 16,
+    top: 18,
+    left: 18,
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: '#4AA63C',
+    backgroundColor: '#393A39',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 10,
   },
   naverPlaceNumberText: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: FONTS.bold,
     color: '#FFFFFF',
   },
   naverPlaceContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
-    paddingLeft: 52,
-    gap: 12,
+    padding: 18,
+    paddingLeft: 56,
+    gap: 14,
   },
   naverPlaceMerchant: {
-    marginRight: 4,
+    marginRight: 2,
   },
   naverMerchantPlaceholder: {
-    width: 56,
-    height: 56,
-    borderRadius: 12,
+    width: 52,
+    height: 52,
+    borderRadius: 14,
     backgroundColor: '#F5F5F5',
     justifyContent: 'center',
     alignItems: 'center',
   },
   naverMerchantPlaceholderText: {
-    fontSize: 24,
+    fontSize: 20,
     fontFamily: FONTS.bold,
-    color: '#999999',
+    color: '#BDBDBD',
   },
   naverPlaceInfo: {
     flex: 1,
@@ -3464,13 +5110,14 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: FONTS.regular,
     color: '#999999',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   naverBenefitInfo: {
-    backgroundColor: '#F0F8EE',
+    backgroundColor: '#F8FBF7',
     paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 6,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
   },
   naverBenefitCard: {
     fontSize: 12,
@@ -3484,47 +5131,110 @@ const styles = StyleSheet.create({
     color: '#666666',
   },
   naverCardImage: {
-    width: 70,
-    height: 44,
+    width: 64,
+    height: 40,
     borderRadius: 6,
   },
   // Naver-style Route Segment
   naverRouteSegment: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingLeft: 40,
+    paddingLeft: 36,
     paddingRight: 20,
     paddingVertical: 8,
-    marginHorizontal: 12,
+    marginHorizontal: 6,
   },
   naverRouteDots: {
-    width: 20,
+    width: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 3,
-    marginRight: 12,
+    gap: 5,
+    marginRight: 14,
   },
   naverRouteDot: {
     width: 4,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#D0D0D0',
+    backgroundColor: '#C4C4C4',
   },
   naverRouteDetails: {
     flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1.5,
+    borderColor: '#2E7D32',
+    flexDirection: 'row',
+    alignItems: 'center',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#2E7D32',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.15,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 3,
+      },
+    }),
+  },
+  naverRouteDetailsContent: {
+    flex: 1,
   },
   naverRouteMode: {
-    marginBottom: 4,
+    marginBottom: 3,
   },
   naverRouteModeText: {
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: FONTS.semiBold,
-    color: '#666666',
+    color: '#555555',
   },
   naverRouteSegmentText: {
-    fontSize: 12,
+    fontSize: 11,
+    fontFamily: FONTS.medium,
+    color: '#888888',
+  },
+  routeDetailHint: {
+    fontSize: 10,
+    fontFamily: FONTS.regular,
+    color: '#007AFF',
+    marginTop: 4,
+  },
+  transitLegsInline: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    marginBottom: 4,
+    gap: 2,
+  },
+  transitLegArrow: {
+    fontSize: 11,
     fontFamily: FONTS.regular,
     color: '#999999',
+  },
+  transitLegBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    backgroundColor: '#E8E8E8',
+  },
+  transitLegBadgeWalk: {
+    backgroundColor: '#F5F5F5',
+  },
+  transitLegBadgeBus: {
+    backgroundColor: '#4CAF50',
+  },
+  transitLegBadgeSubway: {
+    backgroundColor: '#2196F3',
+  },
+  transitLegBadgeText: {
+    fontSize: 10,
+    fontFamily: FONTS.medium,
+    color: '#555555',
+  },
+  transitLegBadgeTextWhite: {
+    color: '#FFFFFF',
   },
   pickerModalOverlay: {
     flex: 1,
@@ -3569,131 +5279,316 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.bold,
     color: '#000000',
   },
+  // Wheel Picker Styles
+  wheelPickerModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: 20,
+    width: '100%',
+    position: 'absolute',
+    bottom: 0,
+  },
+  wheelPickerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  wheelPickerDone: {
+    fontSize: 17,
+    fontFamily: FONTS.semiBold,
+    color: '#007AFF',
+  },
+  wheelPickerContainer: {
+    height: 220,
+    paddingVertical: 10,
+  },
+  wheelPickerItemText: {
+    fontSize: 20,
+    fontFamily: FONTS.medium,
+    color: '#000000',
+  },
+  wheelPickerIndicator: {
+    backgroundColor: 'rgba(0, 122, 255, 0.1)',
+    borderRadius: 8,
+  },
   // Course List Styles
   backToCourseListButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    marginBottom: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    marginBottom: 8,
   },
   backToCourseListText: {
-    fontSize: 15,
-    fontFamily: FONTS.semiBold,
-    color: '#4AA63C',
+    fontSize: 14,
+    fontFamily: FONTS.medium,
+    color: '#666666',
   },
   courseListContainer: {
-    paddingTop: 8,
+    paddingTop: 4,
+    paddingHorizontal: 2,
+    paddingBottom: 100,
+  },
+  courseListHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+    paddingHorizontal: 2,
   },
   courseListTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontFamily: FONTS.bold,
     color: '#212121',
-    marginBottom: 16,
-    paddingHorizontal: 4,
+  },
+  friendsButton: {
+    backgroundColor: '#F5F5F5',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  friendsButtonText: {
+    fontSize: 14,
+    fontFamily: FONTS.semiBold,
+    color: '#666666',
   },
   courseCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
+    borderRadius: 20,
+    padding: 20,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
+        shadowOffset: { width: 0, height: 6 },
         shadowOpacity: 0.1,
-        shadowRadius: 8,
+        shadowRadius: 16,
       },
       android: {
-        elevation: 4,
+        elevation: 6,
       },
     }),
   },
   courseCardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     marginBottom: 16,
+  },
+  courseCardTitleWrap: {
+    flex: 1,
+  },
+  courseCardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
+  },
+  courseCardMainTitle: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#222222',
+  },
+  courseCardSubTitle: {
+    fontSize: 13,
+    fontFamily: FONTS.medium,
+    color: '#7A7570',
+  },
+  courseCardBadgeAI: {
+    backgroundColor: '#393A39',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  courseCardBadgeAIText: {
+    fontSize: 10,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
+  },
+  courseCardBadgeMy: {
+    backgroundColor: '#F0F0F0',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  courseCardBadgeMyText: {
+    fontSize: 10,
+    fontFamily: FONTS.bold,
+    color: '#666666',
+  },
+  courseCardBadgeShare: {
+    backgroundColor: '#E8F4FD',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  courseCardBadgeShareText: {
+    fontSize: 10,
+    fontFamily: FONTS.bold,
+    color: '#4A90D9',
+  },
+  courseCardBadgeHot: {
+    backgroundColor: '#FFE8E8',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  courseCardBadgeHotText: {
+    fontSize: 10,
+    fontFamily: FONTS.bold,
+    color: '#E85A5A',
   },
   courseCardTitle: {
     flex: 1,
     fontSize: 17,
     fontFamily: FONTS.bold,
     color: '#212121',
-    marginRight: 8,
+    marginRight: 12,
+    lineHeight: 24,
   },
   courseCardBadge: {
-    backgroundColor: '#E8F5E9',
+    backgroundColor: '#F0F8EE',
     paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
+    paddingVertical: 5,
+    borderRadius: 6,
   },
   courseCardBadgeSaved: {
-    backgroundColor: '#FFF0B3',
+    backgroundColor: '#FFF8E7',
   },
   courseCardBadgePopular: {
-    backgroundColor: '#FFE5E5',
+    backgroundColor: '#FFF0F0',
+  },
+  courseCardBadgeShared: {
+    backgroundColor: '#E3F2FD',
   },
   courseCardBadgeText: {
-    fontSize: 12,
+    fontSize: 11,
     fontFamily: FONTS.semiBold,
     color: '#4AA63C',
+  },
+  courseCardBadgeSolid: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#393A39',
+  },
+  courseCardBadgeTextWhite: {
+    fontSize: 11,
+    fontFamily: FONTS.semiBold,
+    color: '#FFFFFF',
   },
   courseCardPlaces: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     marginBottom: 16,
+    paddingHorizontal: 8,
+  },
+  coursePlaceItem: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  coursePlaceCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F8F5F0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 6,
+    borderWidth: 1.5,
+    borderColor: '#E8E2D9',
+  },
+  coursePlaceNumText: {
+    fontSize: 15,
+    fontFamily: FONTS.bold,
+    color: '#5C5347',
   },
   coursePlaceImageContainer: {
     alignItems: 'center',
     flex: 1,
   },
   coursePlacePlaceholder: {
-    width: 80,
-    height: 80,
-    borderRadius: 6,
+    width: 64,
+    height: 64,
+    borderRadius: 16,
     backgroundColor: '#F5F5F5',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: 8,
   },
   coursePlacePlaceholderText: {
-    fontSize: 28,
+    fontSize: 22,
     fontFamily: FONTS.bold,
-    color: '#999999',
+    color: '#BDBDBD',
   },
   courseListPlaceName: {
-    fontSize: 12,
-    fontFamily: FONTS.regular,
-    color: '#666666',
+    fontSize: 11,
+    fontFamily: FONTS.medium,
+    color: '#6B6560',
     textAlign: 'center',
+    maxWidth: 80,
+  },
+  courseArrowContainer: {
+    width: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingBottom: 20,
+  },
+  courseArrowLine: {
+    width: 20,
+    height: 2,
+    backgroundColor: '#E0DCD6',
+    borderRadius: 1,
   },
   courseArrow: {
-    fontSize: 20,
-    color: '#CCCCCC',
-    marginHorizontal: 4,
-  },
-  courseCardFooter: {
-    borderTopWidth: 1,
-    borderTopColor: '#F0F0F0',
-    paddingTop: 12,
-  },
-  courseSavingsText: {
     fontSize: 14,
-    fontFamily: FONTS.semiBold,
-    color: '#22B573',
+    color: '#D0D0D0',
+    marginTop: 24,
+    marginHorizontal: 2,
   },
-  saveCourseButton: {
-    backgroundColor: '#22B573',
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    borderRadius: 12,
+  courseCardBenefit: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#FAF8F5',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    gap: 8,
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#F0EDE8',
+  },
+  courseCardBenefitWithShare: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginVertical: 16,
+    gap: 10,
+  },
+  benefitDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: '#C9A854',
+    marginTop: 6,
+  },
+  courseBenefitText: {
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#5C5347',
+    flex: 1,
+    lineHeight: 18,
+  },
+  shareButton: {
+    backgroundColor: '#212121',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
+        shadowOpacity: 0.15,
         shadowRadius: 4,
       },
       android: {
@@ -3701,38 +5596,75 @@ const styles = StyleSheet.create({
       },
     }),
   },
+  shareButtonText: {
+    fontSize: 12,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
+  },
+  courseCardFooter: {
+    borderTopWidth: 1,
+    borderTopColor: '#F5F5F5',
+    paddingTop: 14,
+  },
+  courseSavingsText: {
+    fontSize: 14,
+    fontFamily: FONTS.semiBold,
+    color: '#4AA63C',
+    flex: 1,
+  },
+  shareIconButton: {
+    backgroundColor: '#F0F0F0',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    marginLeft: 8,
+  },
+  shareIconText: {
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+  },
+  sharedByText: {
+    fontSize: 13,
+    fontFamily: FONTS.medium,
+    color: '#2196F3',
+  },
+  saveCourseButton: {
+    backgroundColor: '#212121',
+    paddingVertical: 18,
+    borderRadius: 14,
+    alignItems: 'center',
+    marginTop: 24,
+    marginBottom: 20,
+    marginHorizontal: 2,
+  },
   saveCourseButtonDisabled: {
-    backgroundColor: '#B0B0B0',
-    opacity: 0.6,
+    backgroundColor: '#E0E0E0',
   },
   saveCourseButtonText: {
     fontSize: 16,
     fontFamily: FONTS.bold,
     color: '#FFFFFF',
-    letterSpacing: -0.3,
   },
   backFromCourseButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E5E5',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
+        shadowOpacity: 0.08,
         shadowRadius: 4,
       },
       android: {
-        elevation: 3,
+        elevation: 2,
       },
     }),
-  },
-  backFromCourseButtonText: {
-    fontSize: 24,
-    fontFamily: FONTS.bold,
-    color: '#393A39',
   },
 });

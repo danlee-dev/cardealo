@@ -9,11 +9,12 @@ import {
   Animated,
   Dimensions,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import { AuthStorage } from '../utils/auth';
+import { API_URL } from '../utils/api';
 
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 interface CardBenefit {
@@ -35,6 +36,7 @@ interface CardBenefitScreenProps {
 }
 
 export const CardBenefitScreen: React.FC<CardBenefitScreenProps> = ({ onBack }) => {
+  const insets = useSafeAreaInsets();
   const [benefits, setBenefits] = useState<Record<string, CardBenefit[]>>({});
   const [isLoading, setIsLoading] = useState(true);
   const slideAnim = React.useRef(new Animated.Value(SCREEN_WIDTH)).current;
@@ -58,7 +60,7 @@ export const CardBenefitScreen: React.FC<CardBenefitScreenProps> = ({ onBack }) 
         return;
       }
 
-      const response = await fetch(`${BACKEND_URL}/api/card/benefit`, {
+      const response = await fetch(`${API_URL}/api/card/benefit`, {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -115,6 +117,7 @@ export const CardBenefitScreen: React.FC<CardBenefitScreenProps> = ({ onBack }) 
       ) : (
         <ScrollView
           style={styles.scrollView}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}
           showsVerticalScrollIndicator={false}
         >
           {Object.keys(benefits).length === 0 ? (
@@ -128,21 +131,29 @@ export const CardBenefitScreen: React.FC<CardBenefitScreenProps> = ({ onBack }) 
                 {cardBenefits.map((benefit, index) => (
                   <View key={index} style={styles.benefitItem}>
                     <View style={styles.benefitHeader}>
-                      <Text style={styles.benefitPlaces}>{benefit.places_display}</Text>
+                      <Text style={styles.benefitPlaces} numberOfLines={0}>
+                        {benefit.places_display}
+                      </Text>
                       <Text style={styles.benefitDiscount}>
                         {benefit.discount_display}
                       </Text>
                     </View>
                     <View style={styles.benefitDetails}>
                       {benefit.max_discount_display && (
-                        <Text style={styles.benefitDetailText}>
-                          {benefit.max_discount_display}
-                        </Text>
+                        <View style={styles.benefitDetailRow}>
+                          <Text style={styles.benefitBullet}>-</Text>
+                          <Text style={styles.benefitDetailText} numberOfLines={0}>
+                            {benefit.max_discount_display}
+                          </Text>
+                        </View>
                       )}
                       {benefit.limit_display && (
-                        <Text style={styles.benefitDetailText}>
-                          {benefit.limit_display}
-                        </Text>
+                        <View style={styles.benefitDetailRow}>
+                          <Text style={styles.benefitBullet}>-</Text>
+                          <Text style={styles.benefitDetailText} numberOfLines={0}>
+                            {benefit.limit_display}
+                          </Text>
+                        </View>
                       )}
                     </View>
                   </View>
@@ -231,11 +242,25 @@ const styles = StyleSheet.create({
     color: '#4AA63C',
   },
   benefitDetails: {
-    gap: 4,
+    gap: 8,
+    marginTop: 4,
+  },
+  benefitDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  benefitBullet: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#666666',
+    marginRight: 8,
+    marginTop: 1,
   },
   benefitDetailText: {
     fontSize: 14,
     fontFamily: FONTS.regular,
     color: '#666666',
+    flex: 1,
+    lineHeight: 20,
   },
 });

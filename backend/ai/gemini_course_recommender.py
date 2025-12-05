@@ -37,6 +37,13 @@ class GeminiCourseRecommender:
         self.backend_url = os.getenv('BACKEND_API_URL', 'http://localhost:5001')
         self.google_api_key = os.getenv('GOOGLE_MAPS_API_KEY')
 
+        # Naver Cloud Platform API (Directions)
+        self.ncp_client_id = os.getenv('NCP_CLIENT_ID')
+        self.ncp_client_secret = os.getenv('NCP_CLIENT_SECRET')
+
+        # TMAP API (SK OpenAPI)
+        self.tmap_api_key = os.getenv('TMAP_API_KEY')
+
     def recommend_course_with_benefits(
         self,
         user_input: str,
@@ -457,31 +464,254 @@ class GeminiCourseRecommender:
                 )
             }
 
+    def _get_tmap_directions(
+        self,
+        start: Dict[str, float],
+        goal: Dict[str, float],
+        waypoints: List[Dict[str, float]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        TMAP API를 사용하여 자동차 경로 정보 가져오기 (한국 전용)
+
+        Args:
+            start: {'latitude': float, 'longitude': float}
+            goal: {'latitude': float, 'longitude': float}
+            waypoints: 경유지 리스트 (선택)
+
+        Returns:
+            {
+                'distance': int (미터),
+                'duration': int (분),
+                'polyline': str  # Google Polyline Encoding
+            }
+        """
+        if not self.tmap_api_key or self.tmap_api_key == 'your_tmap_api_key_here':
+            print("[TMAP] API 키가 설정되지 않았습니다.")
+            return None
+
+        try:
+            url = "https://apis.openapi.sk.com/tmap/routes"
+
+            headers = {
+                'appKey': self.tmap_api_key,
+                'Content-Type': 'application/json'
+            }
+
+            # TMAP은 startX/endX가 경도(longitude), startY/endY가 위도(latitude)
+            body = {
+                'startX': str(start['longitude']),
+                'startY': str(start['latitude']),
+                'endX': str(goal['longitude']),
+                'endY': str(goal['latitude']),
+                'reqCoordType': 'WGS84GEO',
+                'resCoordType': 'WGS84GEO',
+                'searchOption': '0'  # 0: 추천경로
+            }
+
+            # 경유지 추가 (최대 5개)
+            if waypoints and len(waypoints) > 0:
+                via_points = []
+                for idx, wp in enumerate(waypoints[:5]):
+                    via_points.append({
+                        'viaPointId': str(idx + 1),
+                        'viaPointName': f'경유지{idx + 1}',
+                        'viaX': str(wp['longitude']),
+                        'viaY': str(wp['latitude'])
+                    })
+                body['viaPoints'] = via_points
+
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+
+            if response.status_code != 200:
+                print(f"[TMAP] API 오류: {response.status_code} - {response.text[:200]}")
+                return None
+
+            data = response.json()
+
+            features = data.get('features', [])
+            if not features:
+                print("[TMAP] 경로를 찾을 수 없습니다.")
+                return None
+
+            # 전체 경로 정보 추출 (첫 번째 feature의 properties에 있음)
+            total_distance = 0
+            total_duration = 0
+            coordinates = []
+
+            for feature in features:
+                properties = feature.get('properties', {})
+                geometry = feature.get('geometry', {})
+
+                # totalDistance, totalTime은 첫 번째 Point feature에 있음
+                if properties.get('totalDistance'):
+                    total_distance = properties['totalDistance']
+                if properties.get('totalTime'):
+                    total_duration = properties['totalTime'] // 60  # 초 → 분
+
+                # LineString geometry에서 좌표 추출
+                if geometry.get('type') == 'LineString':
+                    coords = geometry.get('coordinates', [])
+                    coordinates.extend(coords)
+
+            # 좌표를 Google Polyline Encoding으로 변환
+            polyline = self._encode_polyline(coordinates)
+
+            print(f"[TMAP] 경로 조회 성공 - 거리: {total_distance}m, 시간: {total_duration}분")
+
+            return {
+                'distance': total_distance,
+                'duration': total_duration,
+                'polyline': polyline
+            }
+
+        except Exception as e:
+            print(f"[TMAP] 예외 발생: {e}")
+            return None
+
+    def _get_driving_directions(
+        self,
+        start: Dict[str, float],
+        goal: Dict[str, float],
+        waypoints: List[Dict[str, float]] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        자동차 경로 정보 가져오기 (TMAP 우선, Google 폴백)
+
+        Args:
+            start: {'latitude': float, 'longitude': float}
+            goal: {'latitude': float, 'longitude': float}
+            waypoints: 경유지 리스트 (선택)
+
+        Returns:
+            {
+                'distance': int (미터),
+                'duration': int (분),
+                'polyline': str  # Google Polyline Encoding
+            }
+        """
+        # 1순위: TMAP API (한국에서 가장 정확)
+        result = self._get_tmap_directions(start, goal, waypoints)
+        if result:
+            return result
+
+        # 2순위: Google Directions API (한국 driving mode 제한적)
+        if not self.google_api_key:
+            print("[Directions] 사용 가능한 API 키가 없습니다.")
+            return None
+
+        try:
+            url = "https://maps.googleapis.com/maps/api/directions/json"
+
+            origin = f"{start['latitude']},{start['longitude']}"
+            destination = f"{goal['latitude']},{goal['longitude']}"
+
+            params = {
+                'origin': origin,
+                'destination': destination,
+                'mode': 'driving',
+                'key': self.google_api_key,
+                'language': 'ko'
+            }
+
+            if waypoints and len(waypoints) > 0:
+                waypoint_strs = [f"{wp['latitude']},{wp['longitude']}" for wp in waypoints]
+                params['waypoints'] = '|'.join(waypoint_strs)
+
+            response = requests.get(url, params=params, timeout=10)
+
+            if response.status_code != 200:
+                print(f"[Google Directions] API 오류: {response.status_code}")
+                return None
+
+            data = response.json()
+
+            if data.get('status') != 'OK':
+                print(f"[Google Directions] 응답 오류: {data.get('status')}")
+                return None
+
+            routes = data.get('routes', [])
+            if not routes:
+                print("[Google Directions] 경로를 찾을 수 없습니다.")
+                return None
+
+            route = routes[0]
+            legs = route.get('legs', [])
+
+            total_distance = sum(leg.get('distance', {}).get('value', 0) for leg in legs)
+            total_duration = sum(leg.get('duration', {}).get('value', 0) for leg in legs)
+            polyline = route.get('overview_polyline', {}).get('points', '')
+
+            return {
+                'distance': total_distance,
+                'duration': total_duration // 60,
+                'polyline': polyline
+            }
+
+        except Exception as e:
+            print(f"[Google Directions] 예외 발생: {e}")
+            return None
+
+    def _encode_polyline(self, coordinates: List[List[float]]) -> str:
+        """
+        좌표 리스트를 Google Polyline Encoding으로 변환
+        coordinates: [[lng, lat], [lng, lat], ...]
+        """
+        if not coordinates:
+            return ""
+
+        def encode_value(value: int) -> str:
+            """단일 값을 인코딩"""
+            value = ~(value << 1) if value < 0 else (value << 1)
+            chunks = []
+            while value >= 0x20:
+                chunks.append(chr((0x20 | (value & 0x1f)) + 63))
+                value >>= 5
+            chunks.append(chr(value + 63))
+            return ''.join(chunks)
+
+        encoded = []
+        prev_lat = 0
+        prev_lng = 0
+
+        for coord in coordinates:
+            lng, lat = coord[0], coord[1]
+
+            # 좌표를 정수로 변환 (1e5 정밀도)
+            lat_int = round(lat * 1e5)
+            lng_int = round(lng * 1e5)
+
+            # 이전 좌표와의 차이 계산
+            d_lat = lat_int - prev_lat
+            d_lng = lng_int - prev_lng
+
+            prev_lat = lat_int
+            prev_lng = lng_int
+
+            encoded.append(encode_value(d_lat))
+            encoded.append(encode_value(d_lng))
+
+        return ''.join(encoded)
+
     def _enrich_with_route_info(
         self,
         course: Dict[str, Any],
         start_location: Dict[str, float]
     ) -> Dict[str, Any]:
         """
-        Step 5: 경로 및 시간 보강 (Google Directions API)
+        Step 5: 경로 및 시간 보강 (TMAP/Google Directions API - 자동차 경로)
         """
-        print(f"\n[Step 5/5] 경로 및 시간 계산...")
+        print(f"\n[Step 5/5] 경로 및 시간 계산 (TMAP/Google Directions)...")
 
         stops = course.get('stops', [])
         if not stops:
             return course
 
-        # Google Directions API를 사용하여 경로 정보 계산
-        waypoints = [
-            {'latitude': stop['latitude'], 'longitude': stop['longitude']}
-            for stop in stops
-        ]
-
         total_distance = 0
         total_duration = 0
         routes = []
+        legs_summary = []
 
-        # 시작점 → 첫 번째 장소
+        # 시작점 → 첫 번째 장소 → ... → 마지막 장소
         prev_point = start_location
 
         for idx, stop in enumerate(stops):
@@ -490,23 +720,59 @@ class GeminiCourseRecommender:
                 'longitude': stop['longitude']
             }
 
-            # 간단한 거리 계산 (Haversine)
-            distance = self._calculate_distance(
-                prev_point['latitude'],
-                prev_point['longitude'],
-                current_point['latitude'],
-                current_point['longitude']
-            )
+            # Google Directions API로 경로 조회
+            route_result = self._get_driving_directions(prev_point, current_point)
 
-            # 도보 시간 추정 (시속 4km 기준)
-            duration = int(distance / 1000 * 15)  # 분 단위
+            if route_result:
+                distance = route_result['distance']
+                duration = route_result['duration']  # 이미 분 단위
+                polyline = route_result['polyline']
+            else:
+                # 폴백: Haversine 거리 계산
+                distance = self._calculate_distance(
+                    prev_point['latitude'],
+                    prev_point['longitude'],
+                    current_point['latitude'],
+                    current_point['longitude']
+                )
+                duration = int(distance / 1000 * 2)  # 자동차 시속 30km 기준
+                polyline = ""
 
-            routes.append({
-                'from': f"지점 {idx}" if idx == 0 else stops[idx-1]['name'],
+            route_info = {
+                'from': "현재 위치" if idx == 0 else stops[idx-1]['name'],
                 'to': stop['name'],
                 'distance': int(distance),
                 'duration': duration,
-                'mode': 'WALK'
+                'mode': 'DRIVE'
+            }
+            routes.append(route_info)
+
+            # 프론트엔드용 legs_summary 추가 (polyline 포함)
+            # 거리 텍스트 포맷
+            if distance >= 1000:
+                distance_text = f"{distance / 1000:.1f}km"
+            else:
+                distance_text = f"{int(distance)}m"
+
+            # 시간 텍스트 포맷
+            if duration >= 60:
+                hours = duration // 60
+                mins = duration % 60
+                duration_text = f"{hours}시간 {mins}분" if mins > 0 else f"{hours}시간"
+            else:
+                duration_text = f"{duration}분"
+
+            legs_summary.append({
+                'from': route_info['from'],
+                'to': route_info['to'],
+                'distance': int(distance),
+                'duration': duration,
+                'distance_text': distance_text,
+                'duration_text': duration_text,
+                'mode': 'driving',
+                'fare': None,
+                'fare_text': None,
+                'polyline': polyline
             })
 
             total_distance += distance
@@ -515,6 +781,7 @@ class GeminiCourseRecommender:
             prev_point = current_point
 
         course['routes'] = routes
+        course['legs_summary'] = legs_summary
         course['total_distance'] = int(total_distance)
         course['total_duration'] = total_duration
 
@@ -531,7 +798,7 @@ class GeminiCourseRecommender:
             if 'benefit' in stop:
                 del stop['benefit']
 
-        print(f"[Route] 총 거리: {total_distance}m, 총 시간: {total_duration}분")
+        print(f"[Route] 총 거리: {total_distance}m, 총 시간: {total_duration}분 (자동차)")
 
         return course
 

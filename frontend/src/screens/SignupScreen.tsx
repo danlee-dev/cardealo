@@ -15,8 +15,7 @@ import {
 import { LogoBlack, BackIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import { AuthAPI } from '../utils/auth';
-
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
+import { API_URL } from '../utils/api';
 
 interface SignupScreenProps {
   onSignupSuccess: () => void;
@@ -70,7 +69,7 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onB
 
     setIsSearching(true);
     try {
-      const response = await fetch(`${BACKEND_URL}/api/card/list?keyword=${encodeURIComponent(query)}&page=1`);
+      const response = await fetch(`${API_URL}/api/card/list?keyword=${encodeURIComponent(query)}&page=1`);
       const data = await response.json();
 
       if (data.success && data.cards) {
@@ -112,6 +111,16 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onB
 
     if (!password.trim() || password.length < 8) {
       Alert.alert('오류', '비밀번호는 8자 이상이어야 합니다.');
+      return false;
+    }
+
+    // 영문, 숫자, 특수문자 포함 검사
+    const hasLetter = /[a-zA-Z]/.test(password);
+    const hasNumber = /[0-9]/.test(password);
+    const hasSpecial = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password);
+
+    if (!hasLetter || !hasNumber || !hasSpecial) {
+      Alert.alert('오류', '비밀번호는 영문, 숫자, 특수문자를 모두 포함해야 합니다.');
       return false;
     }
 

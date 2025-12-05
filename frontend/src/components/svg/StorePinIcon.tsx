@@ -4,7 +4,7 @@ import Svg, { Circle, Path, G, Defs, Filter, FeFlood, FeBlend, FeGaussianBlur } 
 interface StorePinIconProps {
   width?: number;
   height?: number;
-  benefitLevel?: 'high' | 'medium' | 'low';
+  benefitLevel?: 'high' | 'medium' | 'low' | 'none';
 }
 
 export const StorePinIcon: React.FC<StorePinIconProps> = ({
@@ -17,6 +17,7 @@ export const StorePinIcon: React.FC<StorePinIconProps> = ({
     high: { color: '#C20000', blur: '2.5', filterSize: { x: 4.84375, y: 2.59375, w: 17.3125, h: 17.3125 } },
     medium: { color: '#FF8400', blur: '1.5', filterSize: { x: 6.84375, y: 4.59375, w: 13.3125, h: 13.3125 } },
     low: { color: '#237300', blur: '2', filterSize: { x: 5.84375, y: 3.59375, w: 15.3125, h: 15.3125 } },
+    none: { color: '#999999', blur: '1', filterSize: { x: 6.84375, y: 4.59375, w: 13.3125, h: 13.3125 } },
   };
 
   const { color, blur, filterSize } = config[benefitLevel];

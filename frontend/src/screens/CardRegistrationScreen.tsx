@@ -13,15 +13,16 @@ import {
   ScrollView,
   TextInput,
   FlatList,
+  Platform,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { BackIcon, CameraIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import * as FileSystem from 'expo-file-system/legacy';
 import { AuthStorage } from '../utils/auth';
+import { API_URL } from '../utils/api';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
-const BACKEND_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:5001';
 
 interface CardRegistrationScreenProps {
   onBack: () => void;
@@ -41,8 +42,17 @@ interface OCRResult {
 }
 
 type RegistrationMode = 'ocr' | 'search';
+type CardType = 'personal' | 'corporate';
+
+interface CorporateCardOption {
+  id: number;
+  card_name: string;
+  card_company: string;
+  benefit_summary: string;
+}
 
 export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ onBack }) => {
+  const [cardType, setCardType] = useState<CardType>('personal');
   const [mode, setMode] = useState<RegistrationMode>('ocr');
   const [cardImage, setCardImage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -52,13 +62,19 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<CardMatch[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [corporateCardName, setCorporateCardName] = useState('');
+  const [corporateCardNumber, setCorporateCardNumber] = useState('');
+  const [corporateCardCompany, setCorporateCardCompany] = useState('');
+  const [isRegisteringCorporate, setIsRegisteringCorporate] = useState(false);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
+  const scaleAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     requestCameraPermission();
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: 0,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start();
   }, []);
@@ -87,7 +103,7 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
 
     setIsSearching(true);
     try {
-      const response = await fetch(`${BACKEND_URL}/api/card/list?keyword=${encodeURIComponent(query)}&page=1`);
+      const response = await fetch(`${API_URL}/api/card/list?keyword=${encodeURIComponent(query)}&page=1`);
       const data = await response.json();
 
       if (data.success && data.cards) {
@@ -104,13 +120,32 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
   };
 
   const handleBack = () => {
-    Animated.timing(slideAnim, {
+    Animated.spring(slideAnim, {
       toValue: SCREEN_WIDTH,
-      duration: 300,
+      tension: 65,
+      friction: 11,
       useNativeDriver: true,
     }).start(() => {
       onBack();
     });
+  };
+
+  const handlePressIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.98,
+      tension: 100,
+      friction: 10,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      tension: 100,
+      friction: 10,
+      useNativeDriver: true,
+    }).start();
   };
 
   const takePicture = async () => {
@@ -148,7 +183,7 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
       const imageFormat = imageUri.split('.').pop()?.toLowerCase() || 'jpg';
 
       // OCR API 호출
-      const response = await fetch(`${BACKEND_URL}/api/ocr/card`, {
+      const response = await fetch(`${API_URL}/api/ocr/card`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -196,7 +231,7 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
         return;
       }
 
-      const response = await fetch(`${BACKEND_URL}/api/card/add`, {
+      const response = await fetch(`${API_URL}/api/card/add`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -224,6 +259,63 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
     }
   };
 
+  const handleCorporateCardRegister = async () => {
+    if (!corporateCardName.trim()) {
+      Alert.alert('입력 오류', '카드 이름을 입력해주세요.');
+      return;
+    }
+    if (!corporateCardNumber.trim()) {
+      Alert.alert('입력 오류', '카드 번호를 입력해주세요.');
+      return;
+    }
+    if (!corporateCardCompany.trim()) {
+      Alert.alert('입력 오류', '카드사를 선택해주세요.');
+      return;
+    }
+
+    setIsRegisteringCorporate(true);
+
+    try {
+      const token = await AuthStorage.getToken();
+      if (!token) {
+        Alert.alert('오류', '로그인이 필요합니다.');
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/api/corporate/cards`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          card_name: corporateCardName,
+          card_number: corporateCardNumber,
+          card_company: corporateCardCompany,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        Alert.alert(
+          '등록 완료',
+          '법인카드가 등록되었습니다.\n관리자 페이지에서 부서 및 직원을 관리할 수 있습니다.',
+          [{ text: '확인', onPress: handleBack }]
+        );
+      } else {
+        Alert.alert('등록 실패', data.error || '법인카드 등록에 실패했습니다.');
+      }
+    } catch (error) {
+      console.error('Corporate card registration error:', error);
+      Alert.alert('오류', '법인카드 등록 중 오류가 발생했습니다.');
+    } finally {
+      setIsRegisteringCorporate(false);
+    }
+  };
+
+  const cardCompanies = ['신한카드', '삼성카드', '현대카드', 'KB국민카드', '우리카드', '하나카드', 'NH농협카드', 'IBK기업은행'];
+
   return (
     <Animated.View
       style={[
@@ -246,55 +338,88 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
       </View>
 
       <View style={styles.content}>
-        {/* 모드 선택 탭 */}
-        <View style={styles.modeTabContainer}>
+        {/* 카드 타입 선택 탭 */}
+        <View style={styles.cardTypeTabContainer}>
           <TouchableOpacity
-            style={[styles.modeTab, mode === 'ocr' && styles.modeTabActive]}
-            onPress={() => setMode('ocr')}
+            style={[styles.cardTypeTab, cardType === 'personal' && styles.cardTypeTabActive]}
+            onPress={() => setCardType('personal')}
             activeOpacity={0.8}
           >
-            <Text style={[styles.modeTabText, mode === 'ocr' && styles.modeTabTextActive]}>
-              카메라 촬영
+            <Text style={[styles.cardTypeTabText, cardType === 'personal' && styles.cardTypeTabTextActive]}>
+              개인카드
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.modeTab, mode === 'search' && styles.modeTabActive]}
-            onPress={() => setMode('search')}
+            style={[styles.cardTypeTab, cardType === 'corporate' && styles.cardTypeTabActive]}
+            onPress={() => setCardType('corporate')}
             activeOpacity={0.8}
           >
-            <Text style={[styles.modeTabText, mode === 'search' && styles.modeTabTextActive]}>
-              카드 검색
+            <Text style={[styles.cardTypeTabText, cardType === 'corporate' && styles.cardTypeTabTextActive]}>
+              법인카드
             </Text>
           </TouchableOpacity>
         </View>
 
-        {mode === 'ocr' ? (
+        {cardType === 'personal' ? (
+          <>
+            {/* 모드 선택 탭 */}
+            <View style={styles.modeTabContainer}>
+              <TouchableOpacity
+                style={[styles.modeTab, mode === 'ocr' && styles.modeTabActive]}
+                onPress={() => setMode('ocr')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.modeTabText, mode === 'ocr' && styles.modeTabTextActive]}>
+                  카메라 촬영
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modeTab, mode === 'search' && styles.modeTabActive]}
+                onPress={() => setMode('search')}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.modeTabText, mode === 'search' && styles.modeTabTextActive]}>
+                  카드 검색
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {mode === 'ocr' ? (
           <>
             <Text style={styles.instruction}>카드를 촬영해주세요</Text>
 
         <TouchableOpacity
-          style={[
-            styles.cameraBox,
-            cardImage && styles.cameraBoxWithImage
-          ]}
           onPress={takePicture}
-          activeOpacity={0.8}
+          onPressIn={handlePressIn}
+          onPressOut={handlePressOut}
+          activeOpacity={1}
           disabled={isProcessing}
         >
-          {cardImage ? (
-            <Image source={{ uri: cardImage }} style={styles.cardImage} />
-          ) : (
-            <View style={styles.cameraIconContainer}>
-              <CameraIcon width={80} height={80} color="#999999" />
-              <Text style={styles.cameraText}>카드 촬영하기</Text>
-            </View>
-          )}
-          {isProcessing && (
-            <View style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color="#4AA63C" />
-              <Text style={styles.loadingText}>카드 정보 인식 중...</Text>
-            </View>
-          )}
+          <Animated.View
+            style={[
+              styles.cameraBox,
+              cardImage && styles.cameraBoxWithImage,
+              { transform: [{ scale: scaleAnim }] }
+            ]}
+          >
+            {cardImage ? (
+              <Image source={{ uri: cardImage }} style={styles.cardImage} />
+            ) : (
+              <View style={styles.cameraIconContainer}>
+                <View style={styles.cameraIconCircle}>
+                  <CameraIcon width={36} height={36} color="#666666" />
+                </View>
+                <Text style={styles.cameraText}>카드 촬영하기</Text>
+                <Text style={styles.cameraSubtext}>카드 앞면을 촬영해주세요</Text>
+              </View>
+            )}
+            {isProcessing && (
+              <View style={styles.loadingOverlay}>
+                <ActivityIndicator size="large" color="#212121" />
+                <Text style={styles.loadingText}>카드 정보 인식 중...</Text>
+              </View>
+            )}
+          </Animated.View>
         </TouchableOpacity>
 
             {cardImage && !isProcessing && (
@@ -358,7 +483,80 @@ export const CardRegistrationScreen: React.FC<CardRegistrationScreenProps> = ({ 
                 <Text style={styles.noResultsSubtext}>다른 키워드로 검색해보세요</Text>
               </View>
             )}
+            </>
+          )}
           </>
+        ) : (
+          /* 법인카드 등록 */
+          <ScrollView style={styles.corporateFormContainer} showsVerticalScrollIndicator={false}>
+            <Text style={styles.corporateTitle}>법인카드 등록</Text>
+            <Text style={styles.corporateSubtitle}>
+              법인카드를 등록하면 관리자로서{'\n'}부서와 직원을 관리할 수 있습니다.
+            </Text>
+
+            <View style={styles.corporateInputGroup}>
+              <Text style={styles.corporateInputLabel}>카드 이름</Text>
+              <TextInput
+                style={styles.corporateInput}
+                placeholder="예: 마케팅팀 법인카드"
+                placeholderTextColor="#C7C7C7"
+                value={corporateCardName}
+                onChangeText={setCorporateCardName}
+              />
+            </View>
+
+            <View style={styles.corporateInputGroup}>
+              <Text style={styles.corporateInputLabel}>카드 번호</Text>
+              <TextInput
+                style={styles.corporateInput}
+                placeholder="1234-5678-9012-3456"
+                placeholderTextColor="#C7C7C7"
+                value={corporateCardNumber}
+                onChangeText={setCorporateCardNumber}
+                keyboardType="numeric"
+              />
+            </View>
+
+            <View style={styles.corporateInputGroup}>
+              <Text style={styles.corporateInputLabel}>카드사</Text>
+              <View style={styles.cardCompanyGrid}>
+                {cardCompanies.map((company) => (
+                  <TouchableOpacity
+                    key={company}
+                    style={[
+                      styles.cardCompanyChip,
+                      corporateCardCompany === company && styles.cardCompanyChipActive
+                    ]}
+                    onPress={() => setCorporateCardCompany(company)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[
+                      styles.cardCompanyChipText,
+                      corporateCardCompany === company && styles.cardCompanyChipTextActive
+                    ]}>
+                      {company}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={[
+                styles.corporateRegisterButton,
+                (!corporateCardName || !corporateCardNumber || !corporateCardCompany) && styles.corporateRegisterButtonDisabled
+              ]}
+              onPress={handleCorporateCardRegister}
+              activeOpacity={0.8}
+              disabled={isRegisteringCorporate || !corporateCardName || !corporateCardNumber || !corporateCardCompany}
+            >
+              {isRegisteringCorporate ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.corporateRegisterButtonText}>법인카드 등록</Text>
+              )}
+            </TouchableOpacity>
+          </ScrollView>
         )}
       </View>
 
@@ -458,28 +656,74 @@ const styles = StyleSheet.create({
   cameraBox: {
     width: '100%',
     height: 240,
-    backgroundColor: '#F5F5F5',
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: '#E0E0E0',
-    borderStyle: 'dashed',
+    backgroundColor: '#FAFBFC',
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#E8EAED',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 20,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.04,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 1,
+      },
+    }),
   },
   cameraBoxWithImage: {
     borderColor: '#212121',
-    borderStyle: 'solid',
+    borderWidth: 2,
     backgroundColor: '#FFFFFF',
+    ...Platform.select({
+      ios: {
+        shadowOpacity: 0.1,
+        shadowRadius: 12,
+      },
+      android: {
+        elevation: 3,
+      },
+    }),
   },
   cameraIconContainer: {
     alignItems: 'center',
   },
+  cameraIconCircle: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
+    marginBottom: 16,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.08,
+        shadowRadius: 12,
+      },
+      android: {
+        elevation: 3,
+      },
+    }),
+  },
   cameraText: {
     fontSize: 16,
-    fontFamily: FONTS.medium,
+    fontFamily: FONTS.semiBold,
+    color: '#212121',
+    marginBottom: 6,
+  },
+  cameraSubtext: {
+    fontSize: 13,
+    fontFamily: FONTS.regular,
     color: '#999999',
-    marginTop: 16,
   },
   cardImage: {
     width: '100%',
@@ -525,7 +769,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
     fontFamily: FONTS.medium,
-    color: '#4AA63C',
+    color: '#212121',
   },
   modalContainer: {
     flex: 1,
@@ -704,5 +948,114 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: FONTS.regular,
     color: '#CCCCCC',
+  },
+  // Card type tab styles
+  cardTypeTabContainer: {
+    flexDirection: 'row',
+    backgroundColor: '#212121',
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 20,
+  },
+  cardTypeTab: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  cardTypeTabActive: {
+    backgroundColor: '#FFFFFF',
+  },
+  cardTypeTabText: {
+    fontSize: 14,
+    fontFamily: FONTS.medium,
+    color: '#888888',
+  },
+  cardTypeTabTextActive: {
+    color: '#212121',
+    fontFamily: FONTS.semiBold,
+  },
+  // Corporate card registration styles
+  corporateFormContainer: {
+    flex: 1,
+  },
+  corporateTitle: {
+    fontSize: 24,
+    fontFamily: FONTS.bold,
+    color: '#212121',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  corporateSubtitle: {
+    fontSize: 14,
+    fontFamily: FONTS.regular,
+    color: '#888888',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 32,
+  },
+  corporateInputGroup: {
+    marginBottom: 20,
+  },
+  corporateInputLabel: {
+    fontSize: 14,
+    fontFamily: FONTS.semiBold,
+    color: '#212121',
+    marginBottom: 8,
+  },
+  corporateInput: {
+    width: '100%',
+    height: 52,
+    backgroundColor: '#F8F8F8',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    fontSize: 15,
+    fontFamily: FONTS.regular,
+    color: '#212121',
+    borderWidth: 1,
+    borderColor: '#E8E8E8',
+  },
+  cardCompanyGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  cardCompanyChip: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E8E8E8',
+  },
+  cardCompanyChipActive: {
+    backgroundColor: '#212121',
+    borderColor: '#212121',
+  },
+  cardCompanyChipText: {
+    fontSize: 13,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+  },
+  cardCompanyChipTextActive: {
+    color: '#FFFFFF',
+  },
+  corporateRegisterButton: {
+    height: 54,
+    backgroundColor: '#212121',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 24,
+    marginBottom: 40,
+  },
+  corporateRegisterButtonDisabled: {
+    backgroundColor: '#CCCCCC',
+  },
+  corporateRegisterButtonText: {
+    fontSize: 16,
+    fontFamily: FONTS.bold,
+    color: '#FFFFFF',
   },
 });

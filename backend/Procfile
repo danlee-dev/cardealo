@@ -1,2 +1,2 @@
 release: flask db upgrade && python -c "from services.database import init_db; init_db()"
-web: gunicorn app:app --timeout 180 --workers 2
+web: gunicorn app:app --worker-class eventlet --timeout 300 --workers 2

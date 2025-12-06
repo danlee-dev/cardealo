@@ -3232,7 +3232,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                                     {courseRoute.legs_summary[index + 1].mode === 'transit' && courseRoute.legs_summary[index + 1].transit_legs ? (
                                       <>
                                         <View style={styles.transitLegsInline}>
-                                          {courseRoute.legs_summary[index + 1].transit_legs.map((tLeg: any, tIdx: number) => (
+                                          {courseRoute.legs_summary[index + 1].transit_legs!.map((tLeg: any, tIdx: number) => (
                                             <React.Fragment key={tIdx}>
                                               {tIdx > 0 && <Text style={styles.transitLegArrow}> → </Text>}
                                               <View style={[
@@ -3255,7 +3255,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                                         </View>
                                         <Text style={styles.naverRouteSegmentText}>
                                           총 {courseRoute.legs_summary[index + 1].duration_text}
-                                          {courseRoute.legs_summary[index + 1].fare && courseRoute.legs_summary[index + 1].fare > 0 && ` · ${courseRoute.legs_summary[index + 1].fare}원`}
+                                          {(courseRoute.legs_summary[index + 1].fare ?? 0) > 0 && ` · ${courseRoute.legs_summary[index + 1].fare}원`}
                                         </Text>
                                       </>
                                     ) : (

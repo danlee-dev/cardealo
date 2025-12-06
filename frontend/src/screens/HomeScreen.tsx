@@ -1406,24 +1406,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
     setCourseResult(courseResult);
     setShowCourseList(false);
-    setCourseSaved(false);
+    // SavedCourse (no 'course' property) means it's already saved in DB
+    setCourseSaved(!('course' in course));
 
     // Reset route progress animation
     routeProgressAnim.setValue(0);
 
     // Check if we already have legs_summary with polylines from TMAP
-    const existingLegsSummary = 'course' in course
+    // For AICourseResult (new recommendation), use cached data
+    // For SavedCourse (from database), always recalculate based on current user location
+    const isAICourseResult = 'course' in course;
+    const existingLegsSummary = isAICourseResult
       ? course.course.legs_summary
-      : course.route_info?.legs_summary;
+      : null; // Don't use saved legs_summary - user location may have changed
 
     const hasValidPolylines = existingLegsSummary?.some(leg => leg.polyline && leg.polyline.length > 0);
 
     // Get stops
-    const stops = 'course' in course ? course.course.stops : course.stops;
+    const stops = isAICourseResult ? course.course.stops : course.stops;
 
     if (stops && stops.length > 0) {
       if (hasValidPolylines && existingLegsSummary) {
-        // Use existing TMAP polylines directly
+        // Use existing TMAP polylines directly (only for fresh AI recommendations)
         console.log('[Course Route] 기존 TMAP polyline 사용');
         const existingRoute: CourseRoute = {
           status: 'OK',
@@ -1437,7 +1441,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
         };
         setCourseRoute(existingRoute);
       } else {
-        // No existing polylines, fetch from API
+        // For saved courses or if no polylines, recalculate with current user location
+        console.log('[Course Route] 현재 위치 기준 경로 재계산');
         await fetchCourseRoute(stops);
       }
 
@@ -2757,12 +2762,12 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
                         return (
                           <React.Fragment key={index}>
-                            <View style={styles.naverPlaceCard}>
+                            <View style={styles.naverPlaceCard} pointerEvents="box-none">
                               <View style={styles.naverPlaceNumber}>
                                 <Text style={styles.naverPlaceNumberText}>{index + 1}</Text>
                               </View>
 
-                              <View style={styles.naverPlaceContent}>
+                              <View style={styles.naverPlaceContent} pointerEvents="box-none">
                                 <View style={styles.naverPlaceMerchant}>
                                   {place.photo_url ? (
                                     <Image
@@ -3123,7 +3128,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                               ],
                             }}
                           >
-                            <View style={styles.naverPlaceCard}>
+                            <View style={styles.naverPlaceCard} pointerEvents="box-none">
                               <Animated.View
                                 style={[
                                   styles.naverPlaceNumber,
@@ -3139,7 +3144,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                                 <Text style={styles.naverPlaceNumberText}>{index + 1}</Text>
                               </Animated.View>
 
-                              <View style={styles.naverPlaceContent}>
+                              <View style={styles.naverPlaceContent} pointerEvents="box-none">
                                 <View style={styles.naverPlaceMerchant}>
                                   {place.photo_url ? (
                                     <Image
@@ -3178,7 +3183,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                             </View>
                           </Animated.View>
 
-                          {courseRoute && courseRoute.legs_summary && courseRoute.legs_summary[index] && index < courseResult.course.stops.length - 1 && (
+                          {/* Route segment card: shows route from place[index] to place[index+1], which is legs_summary[index+1] */}
+                          {courseRoute && courseRoute.legs_summary && courseRoute.legs_summary[index + 1] && index < courseResult.course.stops.length - 1 && (
                             <TouchableOpacity
                               activeOpacity={0.7}
                               onPress={() => {
@@ -3223,10 +3229,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                                 </Animated.View>
                                 <View style={styles.naverRouteDetails}>
                                   <View style={styles.naverRouteDetailsContent}>
-                                    {courseRoute.legs_summary[index].mode === 'transit' && courseRoute.legs_summary[index].transit_legs ? (
+                                    {courseRoute.legs_summary[index + 1].mode === 'transit' && courseRoute.legs_summary[index + 1].transit_legs ? (
                                       <>
                                         <View style={styles.transitLegsInline}>
-                                          {courseRoute.legs_summary[index].transit_legs.map((tLeg: any, tIdx: number) => (
+                                          {courseRoute.legs_summary[index + 1].transit_legs.map((tLeg: any, tIdx: number) => (
                                             <React.Fragment key={tIdx}>
                                               {tIdx > 0 && <Text style={styles.transitLegArrow}> → </Text>}
                                               <View style={[
@@ -3248,19 +3254,19 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                                           ))}
                                         </View>
                                         <Text style={styles.naverRouteSegmentText}>
-                                          총 {courseRoute.legs_summary[index].duration_text}
-                                          {courseRoute.legs_summary[index].fare && courseRoute.legs_summary[index].fare > 0 && ` · ${courseRoute.legs_summary[index].fare}원`}
+                                          총 {courseRoute.legs_summary[index + 1].duration_text}
+                                          {courseRoute.legs_summary[index + 1].fare && courseRoute.legs_summary[index + 1].fare > 0 && ` · ${courseRoute.legs_summary[index + 1].fare}원`}
                                         </Text>
                                       </>
                                     ) : (
                                       <>
                                         <View style={styles.naverRouteMode}>
                                           <Text style={styles.naverRouteModeText}>
-                                            {courseRoute.legs_summary[index].mode === 'walking' ? '도보' : '이동'}
+                                            {courseRoute.legs_summary[index + 1].mode === 'walking' ? '도보' : '이동'}
                                           </Text>
                                         </View>
                                         <Text style={styles.naverRouteSegmentText}>
-                                          {courseRoute.legs_summary[index].distance_text} · {courseRoute.legs_summary[index].duration_text}
+                                          {courseRoute.legs_summary[index + 1].distance_text} · {courseRoute.legs_summary[index + 1].duration_text}
                                         </Text>
                                       </>
                                     )}

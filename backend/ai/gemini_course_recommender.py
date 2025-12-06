@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import requests
 import google.generativeai as genai
@@ -11,6 +12,15 @@ from pathlib import Path
 ai_dir = Path(__file__).parent
 env_path = ai_dir / '.env'
 load_dotenv(dotenv_path=env_path)
+
+# Add parent directory to path for importing services
+backend_dir = ai_dir.parent
+if str(backend_dir) not in sys.path:
+    sys.path.insert(0, str(backend_dir))
+
+# Import services directly instead of making HTTP requests
+from services.location_service import LocationService
+from services.benefit_lookup_service import BenefitLookupService
 
 
 class GeminiCourseRecommender:
@@ -33,8 +43,6 @@ class GeminiCourseRecommender:
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel('gemini-2.5-flash')
 
-        # Backend URL
-        self.backend_url = os.getenv('BACKEND_API_URL', 'http://localhost:5001')
         self.google_api_key = os.getenv('GOOGLE_MAPS_API_KEY')
 
         # Naver Cloud Platform API (Directions)
@@ -43,6 +51,10 @@ class GeminiCourseRecommender:
 
         # TMAP API (SK OpenAPI)
         self.tmap_api_key = os.getenv('TMAP_API_KEY')
+
+        # Initialize services directly (no HTTP requests needed)
+        self.location_service = LocationService()
+        self.benefit_service = BenefitLookupService()
 
     def recommend_course_with_benefits(
         self,
@@ -243,44 +255,38 @@ class GeminiCourseRecommender:
         max_distance: int
     ) -> List[Dict[str, Any]]:
         """
-        Step 2: 후보 장소 검색 (Places API via Backend)
+        Step 2: 후보 장소 검색 (LocationService 직접 호출)
         """
         print(f"\n[Step 2/5] 후보 장소 검색...")
 
         all_places = []
         categories = intent.get('categories', ['cafe', 'restaurant'])
 
-        # Backend API를 통해 각 카테고리별로 장소 검색
+        # LocationService를 직접 사용하여 각 카테고리별로 장소 검색
         for category in categories:
             try:
-                response = requests.get(
-                    f"{self.backend_url}/api/nearby-recommendations",
-                    params={
-                        'lat': user_location['latitude'],
-                        'lng': user_location['longitude'],
-                        'radius': max_distance,
-                        'category': category
-                    },
-                    timeout=120
+                result = self.location_service.search_nearby_stores(
+                    lat=user_location['latitude'],
+                    lng=user_location['longitude'],
+                    radius=max_distance,
+                    category=category
                 )
 
-                if response.status_code == 200:
-                    data = response.json()
-                    stores = data.get('stores', [])
+                stores = result.get('stores', [])
 
-                    # 각 카테고리에서 상위 5개만
-                    for store in stores[:5]:
-                        all_places.append({
-                            'place_id': store.get('place_id', ''),
-                            'name': store.get('name', ''),
-                            'category': store.get('category', category),
-                            'address': store.get('address', ''),
-                            'latitude': store.get('latitude'),
-                            'longitude': store.get('longitude'),
-                            'distance': store.get('distance', 0)
-                        })
+                # 각 카테고리에서 상위 5개만
+                for store in stores[:5]:
+                    all_places.append({
+                        'place_id': store.get('place_id', ''),
+                        'name': store.get('name', ''),
+                        'category': store.get('category', category),
+                        'address': store.get('address', ''),
+                        'latitude': store.get('latitude'),
+                        'longitude': store.get('longitude'),
+                        'distance': store.get('distance', 0)
+                    })
 
-                    print(f"[Search] {category}: {len(stores[:5])} places")
+                print(f"[Search] {category}: {len(stores[:5])} places")
 
             except Exception as e:
                 print(f"[Error] {category} 검색 실패: {e}")
@@ -294,40 +300,32 @@ class GeminiCourseRecommender:
         user_cards: List[str]
     ) -> List[Dict[str, Any]]:
         """
-        Step 3: 카드 혜택 매칭 (자체 DB)
+        Step 3: 카드 혜택 매칭 (BenefitLookupService 직접 호출)
         """
         print(f"\n[Step 3/5] 카드 혜택 매칭...")
 
         places_with_benefits = []
 
         for place in places:
-            # Backend API를 통해 해당 장소의 카드 혜택 조회
+            # BenefitLookupService를 직접 사용하여 혜택 조회
             try:
-                response = requests.post(
-                    f"{self.backend_url}/api/merchant-recommendations",
-                    json={
-                        'merchant_name': place['name'],
-                        'category': place['category'],
-                        'user_cards': user_cards
-                    },
-                    timeout=120
+                recommendations = self.benefit_service.get_recommendations(
+                    merchant_name=place['name'],
+                    category=place['category'],
+                    user_cards=user_cards
                 )
 
-                if response.status_code == 200:
-                    data = response.json()
-                    recommendations = data.get('recommendations', [])
-
-                    # 최고 혜택 카드 선택
-                    if recommendations:
-                        best_benefit = recommendations[0]
-                        place['benefit'] = {
-                            'card': best_benefit.get('card', ''),
-                            'summary': best_benefit.get('benefit_summary', ''),
-                            'score': best_benefit.get('score', 0),
-                            'discount_rate': best_benefit.get('discount_rate', 0)
-                        }
-                    else:
-                        place['benefit'] = None
+                # 최고 혜택 카드 선택
+                if recommendations:
+                    best_benefit = recommendations[0]
+                    # Format benefit summary
+                    summary = self._format_benefit(best_benefit)
+                    place['benefit'] = {
+                        'card': best_benefit.get('card', ''),
+                        'summary': summary,
+                        'score': best_benefit.get('score', 0),
+                        'discount_rate': best_benefit.get('discount_rate', 0)
+                    }
                 else:
                     place['benefit'] = None
 
@@ -342,6 +340,19 @@ class GeminiCourseRecommender:
         print(f"[Benefits] {benefit_count}/{len(places_with_benefits)} 장소에 혜택 발견")
 
         return places_with_benefits
+
+    def _format_benefit(self, benefit: Dict) -> str:
+        """Format benefit data into human-readable summary"""
+        parts = []
+        if benefit.get('discount_rate'):
+            parts.append(f"{benefit['discount_rate']}% 할인")
+        if benefit.get('discount_amount'):
+            parts.append(f"{benefit['discount_amount']:,}원 할인")
+        if benefit.get('point_rate'):
+            parts.append(f"{benefit['point_rate']}% 적립")
+        if benefit.get('monthly_limit'):
+            parts.append(f"월 {benefit['monthly_limit']:,}원 한도")
+        return ', '.join(parts) if parts else '혜택 정보'
 
     def _plan_course_with_gemini(
         self,

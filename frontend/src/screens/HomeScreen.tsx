@@ -107,6 +107,7 @@ interface CoursePlace {
   latitude: number;
   longitude: number;
   place_id?: string;
+  photo_url?: string;
   benefits: Array<{
     card: string;
     benefit: string;
@@ -1332,6 +1333,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       setCourseRoute(null);
       setShowCourseList(true);
 
+      // Trigger animation for AI course cards
+      setTimeout(() => {
+        animateCourseCards(2);
+      }, 100);
+
       bottomSheetRef.current?.snapToIndex(2);
     } catch (error) {
       console.error('[Course] AI 코스 추천 실패:', error);
@@ -1544,6 +1550,10 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
       console.log('[Course] 코스 저장 완료:', response.data);
       setCourseSaved(true);
+
+      // AI 코스 목록 초기화 (저장된 코스는 savedCourses에서 표시됨)
+      setAiCourses([]);
+
       Alert.alert('성공', '코스가 저장되었습니다.');
 
       // 저장 후 코스 리스트 새로고침
@@ -2754,11 +2764,19 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
                               <View style={styles.naverPlaceContent}>
                                 <View style={styles.naverPlaceMerchant}>
-                                  <View style={styles.naverMerchantPlaceholder}>
-                                    <Text style={styles.naverMerchantPlaceholderText}>
-                                      {place.name.substring(0, 1)}
-                                    </Text>
-                                  </View>
+                                  {place.photo_url ? (
+                                    <Image
+                                      source={{ uri: place.photo_url }}
+                                      style={styles.naverPlacePhoto}
+                                      resizeMode="cover"
+                                    />
+                                  ) : (
+                                    <View style={styles.naverMerchantPlaceholder}>
+                                      <Text style={styles.naverMerchantPlaceholderText}>
+                                        {place.name.substring(0, 1)}
+                                      </Text>
+                                    </View>
+                                  )}
                                 </View>
 
                                 <View style={styles.naverPlaceInfo}>
@@ -3090,6 +3108,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                       return (
                         <React.Fragment key={index}>
                           <Animated.View
+                            pointerEvents="box-none"
                             style={{
                               opacity: placeAnim,
                               transform: [
@@ -3122,11 +3141,19 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
                               <View style={styles.naverPlaceContent}>
                                 <View style={styles.naverPlaceMerchant}>
-                                  <View style={styles.naverMerchantPlaceholder}>
-                                    <Text style={styles.naverMerchantPlaceholderText}>
-                                      {place.name.substring(0, 1)}
-                                    </Text>
-                                  </View>
+                                  {place.photo_url ? (
+                                    <Image
+                                      source={{ uri: place.photo_url }}
+                                      style={styles.naverPlacePhoto}
+                                      resizeMode="cover"
+                                    />
+                                  ) : (
+                                    <View style={styles.naverMerchantPlaceholder}>
+                                      <Text style={styles.naverMerchantPlaceholderText}>
+                                        {place.name.substring(0, 1)}
+                                      </Text>
+                                    </View>
+                                  )}
                                 </View>
 
                                 <View style={styles.naverPlaceInfo}>
@@ -5091,6 +5118,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#F5F5F5',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  naverPlacePhoto: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
   },
   naverMerchantPlaceholderText: {
     fontSize: 20,

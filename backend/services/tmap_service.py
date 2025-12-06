@@ -228,7 +228,8 @@ class TmapService:
             }
         """
         if not self.api_key:
-            return None
+            print("[TMAP Transit] Error: TMAP_API_KEY not set")
+            return {"error": "TMAP_API_KEY not configured", "itineraries": []}
 
         import time
 
@@ -263,11 +264,11 @@ class TmapService:
                         continue
                     else:
                         print(f"[TMAP Transit] Rate limit (429) - max retries exceeded")
-                        return None
+                        return {"error": "Rate limit exceeded", "itineraries": []}
 
                 if response.status_code != 200:
-                    print(f"[TMAP Transit] API Error: {response.status_code}")
-                    return None
+                    print(f"[TMAP Transit] API Error: {response.status_code} - {response.text[:200]}")
+                    return {"error": f"TMAP API Error: {response.status_code}", "itineraries": []}
 
                 break  # Success, exit retry loop
             except requests.exceptions.Timeout:
@@ -277,7 +278,10 @@ class TmapService:
                     continue
                 else:
                     print(f"[TMAP Transit] Timeout - max retries exceeded")
-                    return None
+                    return {"error": "Request timeout", "itineraries": []}
+            except requests.exceptions.RequestException as e:
+                print(f"[TMAP Transit] Request exception: {e}")
+                return {"error": f"Network error: {str(e)}", "itineraries": []}
 
         # Process response data (outside retry loop)
         try:
@@ -287,7 +291,8 @@ class TmapService:
             itineraries = plan.get('itineraries', [])
 
             if not itineraries:
-                return None
+                print(f"[TMAP Transit] No routes found for coordinates: {start} -> {end}")
+                return {"error": "No transit routes found", "itineraries": []}
 
             result_itineraries = []
 
@@ -416,7 +421,7 @@ class TmapService:
             print(f"[TMAP Transit] Exception: {e}")
             import traceback
             traceback.print_exc()
-            return None
+            return {"error": f"Processing error: {str(e)}", "itineraries": []}
 
     def get_pedestrian_route(
         self,

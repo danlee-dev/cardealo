@@ -1967,6 +1967,16 @@ def get_route_detail():
                 'error': 'Failed to get route'
             }), 500
 
+        # Check for transit-specific errors
+        if isinstance(result, dict) and result.get('error'):
+            print(f"[Route Detail] Transit error: {result.get('error')}")
+            # Still return success but with error info for frontend to handle
+            return jsonify({
+                'success': True,
+                'route': result,
+                'warning': result.get('error')
+            }), 200
+
         return jsonify({
             'success': True,
             'route': result
@@ -4332,8 +4342,10 @@ def get_departments(card_id):
         for dept in card.departments:
             members = [m for m in card.members if m.department_id == dept.id]
             # Calculate benefit for this department's payments
-            dept_payments = [p for p in card.payments if p.department_id == dept.id]
-            dept_benefit = sum(p.benefit_amount for p in dept_payments)
+            # Get member IDs for this department
+            dept_member_ids = [m.id for m in members]
+            dept_payments = [p for p in card.payments if p.member_id in dept_member_ids]
+            dept_benefit = sum(p.discount_amount or 0 for p in dept_payments)
             departments_data.append({
                 'id': dept.id,
                 'name': dept.name,

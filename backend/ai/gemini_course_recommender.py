@@ -283,7 +283,8 @@ class GeminiCourseRecommender:
                         'address': store.get('address', ''),
                         'latitude': store.get('latitude'),
                         'longitude': store.get('longitude'),
-                        'distance': store.get('distance', 0)
+                        'distance': store.get('distance', 0),
+                        'photo_url': store.get('photo_url')
                     })
 
                 print(f"[Search] {category}: {len(stores[:5])} places")

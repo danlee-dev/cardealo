@@ -489,19 +489,20 @@ def create_test_user():
 
 
 def init_db():
-    """데이터베이스 초기 데이터를 시딩합니다 (스키마는 마이그레이션이 담당)"""
-    # Note: create_all() 제거됨 - Flask-Migrate가 스키마 관리
+    """데이터베이스 초기화 및 시딩"""
     from sqlalchemy import inspect
 
-    # 필요한 테이블들이 모두 존재하는지 확인 (마이그레이션 전이면 스킵)
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
     required_tables = ['card', 'card_benefit', 'user', 'mycard', 'corporate_card']
 
     missing_tables = [t for t in required_tables if t not in existing_tables]
     if missing_tables:
-        print(f'[DB] Tables not yet created: {missing_tables}. Skipping data seeding (run migrations first).')
-        return
+        print(f'[DB] Creating missing tables: {missing_tables}')
+        Base.metadata.create_all(engine)
+        print('[DB] All tables created successfully')
+        # Re-inspect after creation
+        inspector = inspect(engine)
 
     # Auto-migration: Add balance column if not exists
     try:

@@ -21,9 +21,6 @@ module.exports = {
     ios: {
       supportsTablet: true,
       usesNonExemptEncryption: false,
-      config: {
-        googleMapsApiKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY
-      },
       infoPlist: {
         NMFClientId: process.env.EXPO_PUBLIC_NAVER_MAP_CLIENT_ID,
         NMFClientSecret: process.env.EXPO_PUBLIC_NAVER_MAP_CLIENT_SECRET,
@@ -40,11 +37,6 @@ module.exports = {
       },
       edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,
-      config: {
-        googleMaps: {
-          apiKey: process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY
-        }
-      },
       permissions: [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION"

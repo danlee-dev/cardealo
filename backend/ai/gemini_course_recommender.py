@@ -8,9 +8,10 @@ from datetime import datetime
 from dotenv import load_dotenv
 from pathlib import Path
 
-# Load environment variables from ai/.env
+# Load environment variables from backend/.env (parent directory)
 ai_dir = Path(__file__).parent
-env_path = ai_dir / '.env'
+backend_dir = ai_dir.parent
+env_path = backend_dir / '.env'
 load_dotenv(dotenv_path=env_path)
 
 # Add parent directory to path for importing services
@@ -131,6 +132,18 @@ class GeminiCourseRecommender:
         course = self._plan_course_with_gemini(
             places_with_benefits, intent, user_location, user_cards, num_people, budget
         )
+
+        # Step 4.5: 최종 코스 장소만 사진 가져오기 (비용 절감)
+        if course and course.get('stops'):
+            print(f"[Step 4.5/5] 최종 장소 사진 조회 ({len(course['stops'])}개)...")
+            for stop in course['stops']:
+                if not stop.get('photo_url') and stop.get('place_id'):
+                    photo_url = self.location_service.get_place_photo_url(stop['place_id'])
+                    if photo_url:
+                        stop['photo_url'] = photo_url
+                        print(f"[Photo] {stop['name']}: OK")
+                    else:
+                        print(f"[Photo] {stop['name']}: No photo")
 
         # Step 5: 경로 및 시간 보강 (Directions API)
         if course and course.get('stops'):

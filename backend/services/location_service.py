@@ -34,6 +34,10 @@ class LocationService:
         if not self.google_api_key:
             raise ValueError("GOOGLE_MAPS_API_KEY must be set")
 
+        # In-memory cache for photo URLs (place_id -> photo_url)
+        # Reduces API calls for repeated requests within same session
+        self._photo_cache: Dict[str, Optional[str]] = {}
+
     def calculate_distance(self, lat1: float, lng1: float, lat2: float, lng2: float) -> float:
         """Calculate distance between two points in meters using Haversine formula"""
         R = 6371000  # Earth radius in meters
@@ -313,11 +317,12 @@ class LocationService:
     def _search_single_type(self, lat: float, lng: float, radius: int, included_types: List[str]) -> Dict:
         """
         Search a single type using Nearby Search API (New)
+        Note: photos are NOT fetched here to reduce API costs. Photos are fetched separately only for final course places.
         """
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self.google_api_key,
-            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos"
+            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types"
         }
 
         all_stores = []
@@ -365,19 +370,6 @@ class LocationService:
                 display_name = place.get("displayName", {})
                 name = display_name.get("text", "") if isinstance(display_name, dict) else str(display_name)
 
-                # Extract photo URL if available
-                photo_url = None
-                photos = place.get("photos", [])
-                if photos and len(photos) > 0:
-                    photo_name = photos[0].get("name", "")
-                    if photo_name:
-                        photo_url = f"https://places.googleapis.com/v1/{photo_name}/media?maxHeightPx=400&maxWidthPx=400&key={self.google_api_key}"
-                        print(f"[Photo] {name}: OK ({len(photos)} photos)")
-                    else:
-                        print(f"[Photo] {name}: photo_name empty")
-                else:
-                    print(f"[Photo] {name}: No photos returned")
-
                 store = {
                     'name': name,
                     'category': detected_category,
@@ -386,7 +378,7 @@ class LocationService:
                     'longitude': place_lng,
                     'distance': int(distance),
                     'place_id': place.get('id', ''),
-                    'photo_url': photo_url
+                    'photo_url': None  # Photos fetched separately for final course places only
                 }
                 all_stores.append(store)
 
@@ -432,7 +424,7 @@ class LocationService:
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self.google_api_key,
-            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types,places.photos"
+            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types"
         }
 
         print(f"[Building Stores New] 건물 내 가맹점 검색: {building_name}")
@@ -477,14 +469,6 @@ class LocationService:
                 display_name = place.get("displayName", {})
                 name = display_name.get("text", "") if isinstance(display_name, dict) else str(display_name)
 
-                # Extract photo URL if available
-                photo_url = None
-                photos = place.get("photos", [])
-                if photos and len(photos) > 0:
-                    photo_name = photos[0].get("name", "")
-                    if photo_name:
-                        photo_url = f"https://places.googleapis.com/v1/{photo_name}/media?maxHeightPx=400&maxWidthPx=400&key={self.google_api_key}"
-
                 store = {
                     'name': name,
                     'category': category,
@@ -494,7 +478,7 @@ class LocationService:
                     'distance': int(distance),
                     'place_id': place.get('id', ''),
                     'building': building_name,
-                    'photo_url': photo_url
+                    'photo_url': None  # Photos fetched separately for final course places only
                 }
                 stores.append(store)
                 print(f"[Building Stores New] - {name} ({distance:.1f}m)")
@@ -673,4 +657,57 @@ class LocationService:
 
         except Exception as e:
             print(f"[Place Details Error] {place_id}: {e}")
+            return None
+
+    def get_place_photo_url(self, place_id: str) -> Optional[str]:
+        """
+        Get only the first photo URL for a place (cost-effective).
+        Uses in-memory cache to avoid repeated API calls.
+        Used for final course places only.
+
+        Args:
+            place_id: Google Place ID
+
+        Returns:
+            Photo URL string or None
+        """
+        # Check cache first
+        if place_id in self._photo_cache:
+            cached = self._photo_cache[place_id]
+            print(f"[Photo Cache Hit] {place_id}")
+            return cached
+
+        BASE_URL_PLACE_DETAILS = "https://places.googleapis.com/v1/places"
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": self.google_api_key,
+            "X-Goog-FieldMask": "photos"  # Only request photos field
+        }
+
+        try:
+            response = requests.get(
+                f"{BASE_URL_PLACE_DETAILS}/{place_id}",
+                headers=headers,
+                timeout=5
+            )
+            response.raise_for_status()
+
+            data = response.json()
+            photos = data.get("photos", [])
+
+            photo_url = None
+            if photos and len(photos) > 0:
+                photo_name = photos[0].get("name", "")
+                if photo_name:
+                    photo_url = f"https://places.googleapis.com/v1/{photo_name}/media?maxHeightPx=400&maxWidthPx=400&key={self.google_api_key}"
+
+            # Cache the result (even if None, to avoid repeated failed lookups)
+            self._photo_cache[place_id] = photo_url
+            return photo_url
+
+        except Exception as e:
+            print(f"[Photo Fetch Error] {place_id}: {e}")
+            # Cache None on error to avoid repeated failed requests
+            self._photo_cache[place_id] = None
             return None

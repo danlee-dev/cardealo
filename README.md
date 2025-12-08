@@ -27,7 +27,11 @@
 
 ## Demo
 
-https://github.com/danlee-dev/cardealo/raw/develop/images/Cardealo-Demo.mp4
+<div align="center">
+
+[![Demo Video](https://img.shields.io/badge/Demo_Video-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/mdwlk5bpd7w)
+
+</div>
 
 ---
 

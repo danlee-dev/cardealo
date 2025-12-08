@@ -4,9 +4,9 @@ import os
 from dotenv import load_dotenv
 from pathlib import Path
 
-# Load env
-ai_dir = Path(__file__).parent / 'ai'
-env_path = ai_dir / '.env'
+# Load env from backend/.env
+backend_dir = Path(__file__).parent
+env_path = backend_dir / '.env'
 load_dotenv(dotenv_path=env_path)
 
 TMAP_API_KEY = os.getenv('TMAP_API_KEY')

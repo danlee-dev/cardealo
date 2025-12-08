@@ -2622,7 +2622,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
 
               <View style={styles.courseTitleBlock}>
                 <View style={styles.courseTitleHeader}>
-                  <Text style={styles.courseMainTitle}>
+                  <Text style={styles.courseMainTitle} numberOfLines={1}>
                     {courseResult.course.title.includes(':')
                       ? courseResult.course.title.split(':')[0]
                       : courseResult.course.title}
@@ -2851,7 +2851,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                             <View style={styles.courseCardHeader}>
                               <View style={styles.courseCardTitleWrap}>
                                 <View style={styles.courseCardTitleRow}>
-                                  <Text style={styles.courseCardMainTitle}>{mainTitle}</Text>
+                                  <Text style={styles.courseCardMainTitle} numberOfLines={1}>{mainTitle}</Text>
                                   <View style={styles.courseCardBadgeAI}>
                                     <Text style={styles.courseCardBadgeAIText}>AI</Text>
                                   </View>
@@ -2919,7 +2919,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                           <View style={styles.courseCardHeader}>
                             <View style={styles.courseCardTitleWrap}>
                               <View style={styles.courseCardTitleRow}>
-                                <Text style={styles.courseCardMainTitle}>{mainTitle}</Text>
+                                <Text style={styles.courseCardMainTitle} numberOfLines={1}>{mainTitle}</Text>
                                 <View style={styles.courseCardBadgeMy}>
                                   <Text style={styles.courseCardBadgeMyText}>MY</Text>
                                 </View>
@@ -2989,7 +2989,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                           <View style={styles.courseCardHeader}>
                             <View style={styles.courseCardTitleWrap}>
                               <View style={styles.courseCardTitleRow}>
-                                <Text style={styles.courseCardMainTitle}>{mainTitle}</Text>
+                                <Text style={styles.courseCardMainTitle} numberOfLines={1}>{mainTitle}</Text>
                                 <View style={styles.courseCardBadgeShare}>
                                   <Text style={styles.courseCardBadgeShareText}>
                                     {sharedCourses[0].shared_by?.user_name || '친구'}
@@ -3040,7 +3040,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
                           <View style={styles.courseCardHeader}>
                             <View style={styles.courseCardTitleWrap}>
                               <View style={styles.courseCardTitleRow}>
-                                <Text style={styles.courseCardMainTitle}>{mainTitle}</Text>
+                                <Text style={styles.courseCardMainTitle} numberOfLines={1}>{mainTitle}</Text>
                                 <View style={styles.courseCardBadgeHot}>
                                   <Text style={styles.courseCardBadgeHotText}>HOT</Text>
                                 </View>
@@ -4877,6 +4877,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   courseMainTitle: {
+    flex: 1,
     fontSize: 18,
     fontFamily: FONTS.bold,
     color: '#222222',
@@ -5424,6 +5425,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   courseCardMainTitle: {
+    flex: 1,
     fontSize: 16,
     fontFamily: FONTS.bold,
     color: '#222222',

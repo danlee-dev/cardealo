@@ -30,3 +30,4 @@ benefits_db_old.json
 !backend/ai/cards.json
 !backend/ai/card_benefits.csv
 .claude/
+*.db

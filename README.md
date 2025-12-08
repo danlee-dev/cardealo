@@ -25,6 +25,12 @@
 
 ---
 
+## Demo
+
+https://github.com/danlee-dev/cardealo/raw/develop/images/Cardealo-Demo.mp4
+
+---
+
 ## 목차
 
 1. [프로젝트 개요](#프로젝트-개요)

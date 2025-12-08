@@ -272,10 +272,12 @@ AI 기반 코스 추천, OCR 카드 등록, 실시간 위치 기반 혜택 분�
 <tr>
 <td align="center"><b>관리자 전환</b></td>
 <td align="center"><b>관리자 대시보드</b></td>
+<td align="center"><b>사용자 대시보드</b></td>
 </tr>
 <tr>
-<td><img src="./images/9_마이페이지-관리자.png" width="300"/></td>
-<td><img src="./images/9_마이페이지-관리자-대시보드.png" width="300"/></td>
+<td><img src="./images/9_마이페이지-관리자.png" width="250"/></td>
+<td><img src="./images/9_마이페이지-관리자-대시보드.png" width="250"/></td>
+<td><img src="./images/9_마이페이지-법인카드사용자(관리자아님)-법인카드대쉬보드.png" width="250"/></td>
 </tr>
 </table>
 </div>
@@ -296,6 +298,7 @@ AI 기반 코스 추천, OCR 카드 등록, 실시간 위치 기반 혜택 분�
 </div>
 
 - 법인카드 소유자 전용 관리자 대시보드
+- 법인카드 사용자(직원)용 개인 대시보드
 - 부서별 사용 현황 바 그래프
 - 직원 추가/제거 및 한도 설정
 - 영수증 OCR 스캔 및 자동 사용액 반영
@@ -305,11 +308,26 @@ AI 기반 코스 추천, OCR 카드 등록, 실시간 위치 기반 혜택 분�
 <div align="center">
 <table>
 <tr>
-<td align="center"><b>코스 추천 모드</b></td>
+<td align="center"><b>코스 추천중 (1)</b></td>
+<td align="center"><b>코스 추천중 (2)</b></td>
+<td align="center"><b>코스 추천중 (3)</b></td>
+</tr>
+<tr>
+<td><img src="./images/10_코스추천모드-코스추천중-1.png" width="250"/></td>
+<td><img src="./images/10_코스추천모드-코스추천중-2.png" width="250"/></td>
+<td><img src="./images/10_코스추천모드-코스추천중-3.png" width="250"/></td>
+</tr>
+</table>
+</div>
+
+<div align="center">
+<table>
+<tr>
+<td align="center"><b>코스 추천 완료</b></td>
 <td align="center"><b>코스 안내</b></td>
 </tr>
 <tr>
-<td><img src="./images/10_코스추천모드.png" width="300"/></td>
+<td><img src="./images/10_코스추천모드-코스추천완료.png" width="300"/></td>
 <td><img src="./images/11_코스안내.png" width="300"/></td>
 </tr>
 </table>

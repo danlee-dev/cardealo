@@ -34,9 +34,24 @@ class LocationService:
         if not self.google_api_key:
             raise ValueError("GOOGLE_MAPS_API_KEY must be set")
 
+        # Enable store photos in home list (for demo purposes)
+        # Set ENABLE_STORE_PHOTOS=true in .env to enable
+        self.enable_store_photos = os.getenv("ENABLE_STORE_PHOTOS", "false").lower() == "true"
+        if self.enable_store_photos:
+            print("[LocationService] Store photos enabled for home list")
+
         # In-memory cache for photo URLs (place_id -> photo_url)
         # Reduces API calls for repeated requests within same session
         self._photo_cache: Dict[str, Optional[str]] = {}
+
+    def _extract_photo_url(self, place: Dict) -> Optional[str]:
+        """Extract first photo URL from place data"""
+        photos = place.get("photos", [])
+        if photos and len(photos) > 0:
+            photo_name = photos[0].get("name", "")
+            if photo_name:
+                return f"https://places.googleapis.com/v1/{photo_name}/media?maxHeightPx=400&maxWidthPx=400&key={self.google_api_key}"
+        return None
 
     def calculate_distance(self, lat1: float, lng1: float, lat2: float, lng2: float) -> float:
         """Calculate distance between two points in meters using Haversine formula"""
@@ -317,12 +332,17 @@ class LocationService:
     def _search_single_type(self, lat: float, lng: float, radius: int, included_types: List[str]) -> Dict:
         """
         Search a single type using Nearby Search API (New)
-        Note: photos are NOT fetched here to reduce API costs. Photos are fetched separately only for final course places.
+        Note: photos are NOT fetched by default to reduce API costs.
+        Set ENABLE_STORE_PHOTOS=true to include photos (for demos).
         """
+        field_mask = "places.id,places.displayName,places.formattedAddress,places.location,places.types"
+        if self.enable_store_photos:
+            field_mask += ",places.photos"
+
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self.google_api_key,
-            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types"
+            "X-Goog-FieldMask": field_mask
         }
 
         all_stores = []
@@ -370,6 +390,9 @@ class LocationService:
                 display_name = place.get("displayName", {})
                 name = display_name.get("text", "") if isinstance(display_name, dict) else str(display_name)
 
+                # Extract photo URL if enabled
+                photo_url = self._extract_photo_url(place) if self.enable_store_photos else None
+
                 store = {
                     'name': name,
                     'category': detected_category,
@@ -378,7 +401,7 @@ class LocationService:
                     'longitude': place_lng,
                     'distance': int(distance),
                     'place_id': place.get('id', ''),
-                    'photo_url': None  # Photos fetched separately for final course places only
+                    'photo_url': photo_url
                 }
                 all_stores.append(store)
 
@@ -421,10 +444,14 @@ class LocationService:
             "languageCode": "ko"
         }
 
+        field_mask = "places.id,places.displayName,places.formattedAddress,places.location,places.types"
+        if self.enable_store_photos:
+            field_mask += ",places.photos"
+
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self.google_api_key,
-            "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.types"
+            "X-Goog-FieldMask": field_mask
         }
 
         print(f"[Building Stores New] 건물 내 가맹점 검색: {building_name}")
@@ -469,6 +496,9 @@ class LocationService:
                 display_name = place.get("displayName", {})
                 name = display_name.get("text", "") if isinstance(display_name, dict) else str(display_name)
 
+                # Extract photo URL if enabled
+                photo_url = self._extract_photo_url(place) if self.enable_store_photos else None
+
                 store = {
                     'name': name,
                     'category': category,
@@ -478,7 +508,7 @@ class LocationService:
                     'distance': int(distance),
                     'place_id': place.get('id', ''),
                     'building': building_name,
-                    'photo_url': None  # Photos fetched separately for final course places only
+                    'photo_url': photo_url
                 }
                 stores.append(store)
                 print(f"[Building Stores New] - {name} ({distance:.1f}m)")

@@ -15,7 +15,11 @@
 
 **개발기간**: 2025.10 ~ 2025.12
 
-**기술 스택**: React Native | Flask | FastAPI | PostgreSQL | Google Gemini AI
+![React Native](https://img.shields.io/badge/React_Native-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)
+![Flask](https://img.shields.io/badge/Flask-000000?style=for-the-badge&logo=flask&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-316192?style=for-the-badge&logo=postgresql&logoColor=white)
+![Google Gemini](https://img.shields.io/badge/Google_Gemini-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white)
 
 </div>
 
@@ -675,30 +679,51 @@ cardealo/
 
 ## 참여자
 
+### 기획
+
+| 이름 | 소속 | 역할 | 연락처 |
+|------|------|------|--------|
+| 송치언 | 건축사회환경공학부 | 팀장, 기획 | rbkhan0229@korea.ac.kr |
+| 정은수 | 경영학과 | 기획, 마케팅 | nsoodang1110@gmail.com |
+| 차수진 | 경영학과 | 기획, 마케팅 | nerissa.cha71@gmail.com |
+
+### 개발
+
 <div align="center">
 <table>
 <tr>
-<td align="center"><b>이성민 (Seongmin Lee)</b></td>
-<td align="center"><b>민제민 (Jemin Min)</b></td>
+<td align="center"><b>이성민</b></td>
+<td align="center"><b>민제민</b></td>
 </tr>
 <tr>
-<td align="center"><img src="https://avatars.githubusercontent.com/danlee-dev" width="160px" alt="Seongmin Lee" /></td>
-<td align="center"><img src="https://avatars.githubusercontent.com/AliceLacie" width="160px" alt="Jemin Min" /></td>
+<td align="center"><img src="https://avatars.githubusercontent.com/danlee-dev" width="140px" alt="이성민" /></td>
+<td align="center"><img src="https://avatars.githubusercontent.com/AliceLacie" width="140px" alt="민제민" /></td>
 </tr>
 <tr>
 <td align="center"><a href="https://github.com/danlee-dev">@danlee-dev</a></td>
 <td align="center"><a href="https://github.com/AliceLacie">@AliceLacie</a></td>
 </tr>
 <tr>
-<td align="center">프론트엔드, AI/ML</td>
-<td align="center">백엔드, AI/ML</td>
+<td align="center">개발 팀장, 프론트엔드, AI/ML</td>
+<td align="center">백엔드</td>
 </tr>
 <tr>
-<td align="center">고려대학교 컴퓨터학과</td>
-<td align="center">고려대학교 컴퓨터학과</td>
+<td align="center">컴퓨터학과</td>
+<td align="center">인공지능사이버보안학과</td>
+</tr>
+<tr>
+<td align="center">hi.danleedev@gmail.com</td>
+<td align="center">gottisttot4678@gmail.com</td>
 </tr>
 </table>
 </div>
+
+### 디자인
+
+| 이름 | 소속 | 역할 | 연락처 |
+|------|------|------|--------|
+| 이정은 | 불어불문학과 | 디자인 | ljellen15@gmail.com |
+| 장추우 | 미디어학부 | 디자인 | qiuyuu1020@gmail.com |
 
 ---
 

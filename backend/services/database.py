@@ -499,7 +499,7 @@ def init_db():
     missing_tables = [t for t in required_tables if t not in existing_tables]
     if missing_tables:
         print(f'[DB] Creating missing tables: {missing_tables}')
-        Base.metadata.create_all(engine)
+        Base.metadata.create_all(engine, checkfirst=True)
         print('[DB] All tables created successfully')
         # Re-inspect after creation
         inspector = inspect(engine)

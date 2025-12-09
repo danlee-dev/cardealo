@@ -9,16 +9,15 @@ import {
   Linking,
   ActivityIndicator,
   Dimensions,
-  Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import axios from 'axios';
 import { StarIcon, CloseIcon, ClockIcon, ChevronRightIcon } from './svg';
 import { FONTS } from '../constants/theme';
+import { API_URL } from '../utils/api';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const API_URL = Platform.OS === 'android' ? 'http://10.0.2.2:5001' : 'http://localhost:5001';
 
 interface PlaceDetails {
   place_id: string;

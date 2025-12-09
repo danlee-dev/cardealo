@@ -32,6 +32,7 @@ import { CorporateCardRegistrationScreen } from './CorporateCardRegistrationScre
 import { AuthStorage } from '../utils/auth';
 import { CardEditModal } from '../components/CardEditModal';
 import { CardPlaceholder } from '../components/CardPlaceholder';
+import { CorporateCardPlaceholder } from '../components/CorporateCardPlaceholder';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { API_URL } from '../utils/api';
 
@@ -125,6 +126,21 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
       last_used_date?: string | null;
       reset_date?: string | null;
     }>;
+    corporate_cards?: Array<{
+      cid: string;
+      card_id: number;
+      card_name: string;
+      card_company?: string;
+      card_benefit?: string;
+      is_corporate: boolean;
+      role: string;
+      department?: string;
+      monthly_limit: number;
+      used_amount: number;
+      remaining: number;
+      card_monthly_limit: number;
+      card_used_amount: number;
+    }>;
   } | null>(null);
   const [showChargeModal, setShowChargeModal] = useState(false);
   const [chargeAmount, setChargeAmount] = useState('');
@@ -191,6 +207,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
           isCorporateUser: data.user.is_corporate_user || false,
           isBusiness: data.user.isBusiness || false,
           cards: data.user.cards || [],
+          corporate_cards: data.user.corporate_cards || [],
         });
       }
     } catch (error) {
@@ -343,6 +360,29 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
       // Original card data for CardPlaceholder
       cardBenefit: card.card_benefit,
       cardPreMoney: card.card_pre_month_money,
+      isCorporate: false,
+    };
+  }) || [];
+
+  // 법인카드 데이터 처리
+  const corporateCardDetails = userData?.corporate_cards?.map((card: any) => {
+    return {
+      id: card.cid,
+      cardId: card.card_id,
+      name: card.card_name,
+      cardCompany: card.card_company,
+      department: card.department,
+      role: card.role,
+      benefitLimit: {
+        used: card.used_amount || 0,
+        total: card.monthly_limit || 500000,
+      },
+      cardLimit: {
+        used: card.card_used_amount || 0,
+        total: card.card_monthly_limit || 10000000,
+      },
+      cardBenefit: card.card_benefit,
+      isCorporate: true,
     };
   }) || [];
 
@@ -599,6 +639,90 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
               </View>
             )}
           </View>
+
+          {/* Corporate Cards Section */}
+          {corporateCardDetails.length > 0 && (
+            <View style={styles.corporateCardsSection}>
+              <Text style={styles.corporateCardsSectionTitle}>법인카드</Text>
+              <FlatList
+                data={corporateCardDetails}
+                renderItem={({ item, index }) => {
+                  const limitPercent = (item.benefitLimit.used / item.benefitLimit.total) * 100;
+                  const isLastItem = index === corporateCardDetails.length - 1;
+
+                  return (
+                    <View style={[styles.cardSection, isLastItem && styles.cardSectionLast]}>
+                      <View style={styles.cardTopArea}>
+                        <CorporateCardPlaceholder
+                          cardName={item.name}
+                          cardCompany={item.cardCompany}
+                          department={item.department}
+                          role={item.role}
+                          monthlyLimit={item.benefitLimit.total}
+                          usedAmount={item.benefitLimit.used}
+                          width={120}
+                          height={75}
+                          style={styles.cardImage}
+                        />
+                        <View style={styles.cardInfo}>
+                          <View style={styles.cardNameRow}>
+                            <Text style={styles.cardName}>{item.name}</Text>
+                            <View style={styles.corporateBadgeSmall}>
+                              <Text style={styles.corporateBadgeSmallText}>법인</Text>
+                            </View>
+                          </View>
+                          <View style={styles.discountList}>
+                            {item.department && (
+                              <View style={styles.discountItemWrapper}>
+                                <View style={[styles.discountDot, { backgroundColor: '#C9A962' }]} />
+                                <Text style={styles.discountItem}>{item.department} 소속</Text>
+                              </View>
+                            )}
+                            <View style={styles.discountItemWrapper}>
+                              <View style={[styles.discountDot, { backgroundColor: '#C9A962' }]} />
+                              <Text style={styles.discountItem}>
+                                잔여 한도: {(item.benefitLimit.total - item.benefitLimit.used).toLocaleString()}원
+                              </Text>
+                            </View>
+                          </View>
+                        </View>
+                      </View>
+
+                      <View style={styles.cardBottomArea}>
+                        <View style={styles.limitSection}>
+                          <View style={styles.limitHeader}>
+                            <Text style={styles.limitLabel}>개인 한도</Text>
+                            <Text style={styles.limitValue}>
+                              {item.benefitLimit.used.toLocaleString()} / {item.benefitLimit.total.toLocaleString()}원
+                            </Text>
+                          </View>
+                          <View style={styles.corporateProgressBar}>
+                            <View
+                              style={[
+                                styles.corporateProgressFill,
+                                {
+                                  width: `${Math.min(limitPercent, 100)}%`,
+                                  backgroundColor: limitPercent > 85 ? '#FF6B6B' : '#C9A962'
+                                },
+                              ]}
+                            />
+                          </View>
+                        </View>
+                      </View>
+                    </View>
+                  );
+                }}
+                keyExtractor={(item) => item.id}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                snapToInterval={CARD_SECTION_WIDTH + 16}
+                snapToAlignment="start"
+                decelerationRate="fast"
+                contentContainerStyle={styles.deckReportList}
+                style={styles.deckReportFlatList}
+              />
+            </View>
+          )}
         </View>
 
         {/* Receipt Scan - Corporate Users Only */}
@@ -1097,6 +1221,60 @@ const styles = StyleSheet.create({
   paginationDotActive: {
     backgroundColor: '#1A1A1A',
     width: 16,
+  },
+  corporateCardsSection: {
+    marginTop: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E5E5E5',
+  },
+  corporateCardsSectionTitle: {
+    fontSize: 14,
+    fontFamily: FONTS.bold,
+    color: '#1A1A2E',
+    marginBottom: 8,
+    marginLeft: 20,
+  },
+  corporateBadgeSmall: {
+    backgroundColor: '#1A1A2E',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  corporateBadgeSmallText: {
+    color: '#C9A962',
+    fontSize: 10,
+    fontFamily: FONTS.bold,
+  },
+  limitSection: {
+    marginTop: 8,
+  },
+  limitHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  limitLabel: {
+    fontSize: 12,
+    fontFamily: FONTS.medium,
+    color: '#666666',
+  },
+  limitValue: {
+    fontSize: 12,
+    fontFamily: FONTS.semiBold,
+    color: '#1A1A1A',
+  },
+  corporateProgressBar: {
+    height: 6,
+    backgroundColor: '#E5E5E5',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  corporateProgressFill: {
+    height: '100%',
+    borderRadius: 3,
   },
   cardSection: {
     width: CARD_SECTION_WIDTH,

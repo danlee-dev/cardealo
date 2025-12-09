@@ -262,7 +262,7 @@ def mypage():
                 'reset_date': card.reset_date.isoformat() if card.reset_date else None
             })
 
-        # 법인카드 멤버 여부 확인
+        # 법인카드 멤버 여부 확인 및 법인카드 정보 추가
         corporate_memberships = db.scalars(
             select(CorporateCardMember).where(
                 CorporateCardMember.user_id == user_id,
@@ -270,6 +270,38 @@ def mypage():
             )
         ).all()
         user_data['is_corporate_user'] = len(corporate_memberships) > 0
+
+        # 법인카드 정보를 cards 배열에 추가 (is_corporate 플래그로 구분)
+        user_data['corporate_cards'] = []
+        for membership in corporate_memberships:
+            corp_card = db.scalars(
+                select(CorporateCard).where(CorporateCard.id == membership.corporate_card_id)
+            ).first()
+            if corp_card:
+                # 부서 정보 조회
+                dept_name = None
+                if membership.department_id:
+                    dept = db.scalars(
+                        select(Department).where(Department.id == membership.department_id)
+                    ).first()
+                    if dept:
+                        dept_name = dept.name
+
+                user_data['corporate_cards'].append({
+                    'cid': f"corp_{corp_card.id}",  # 일반 카드와 구분을 위해 prefix 추가
+                    'card_id': corp_card.id,
+                    'card_name': corp_card.card_name,
+                    'card_company': corp_card.card_company,
+                    'card_benefit': corp_card.benefit_summary,
+                    'is_corporate': True,
+                    'role': membership.role,
+                    'department': dept_name,
+                    'monthly_limit': membership.monthly_limit,
+                    'used_amount': membership.used_amount,
+                    'remaining': membership.monthly_limit - membership.used_amount,
+                    'card_monthly_limit': corp_card.monthly_limit,
+                    'card_used_amount': corp_card.used_amount
+                })
 
         return jsonify({'success':True, 'msg': 'mypage', 'user':user_data}), 200
     except Exception as e:

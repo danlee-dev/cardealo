@@ -283,9 +283,11 @@ def mypage():
 
         # 법인카드 정보를 cards 배열에 추가 (is_corporate 플래그로 구분)
         user_data['corporate_cards'] = []
+        added_card_ids = set()  # 중복 방지용
 
         # 1. 소유자(관리자)로서 보유한 법인카드 추가
         for corp_card in owned_corporate_cards:
+            added_card_ids.add(corp_card.id)
             user_data['corporate_cards'].append({
                 'cid': f"corp_{corp_card.id}",
                 'card_id': corp_card.id,
@@ -302,8 +304,10 @@ def mypage():
                 'card_used_amount': corp_card.used_amount
             })
 
-        # 2. 멤버(직원)로서 등록된 법인카드 추가
+        # 2. 멤버(직원)로서 등록된 법인카드 추가 (소유자로 이미 추가된 카드는 제외)
         for membership in corporate_memberships:
+            if membership.corporate_card_id in added_card_ids:
+                continue  # 이미 소유자로 추가된 카드는 스킵
             corp_card = db.scalars(
                 select(CorporateCard).where(CorporateCard.id == membership.corporate_card_id)
             ).first()

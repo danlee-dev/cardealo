@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator, Modal } from 'react-native';
-import { LogoBlack, KakaoLogo, NaverLogo, GoogleLogo, AppleLogo } from '../components/svg';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform, ScrollView, Alert, ActivityIndicator, Modal, Image } from 'react-native';
+import { KakaoLogo, NaverLogo, GoogleLogo, AppleLogo } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import { AuthAPI } from '../utils/auth';
 
@@ -82,7 +82,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onSignup }) =
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.logoContainer}>
-          <LogoBlack width={60} height={76} />
+          <Image
+            source={require('../../assets/icon.png')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
         </View>
 
         <View style={styles.formContainer}>
@@ -238,6 +242,11 @@ const styles = StyleSheet.create({
   logoContainer: {
     alignItems: 'center',
     marginBottom: 48,
+  },
+  logo: {
+    width: 80,
+    height: 80,
+    borderRadius: 16,
   },
   formContainer: {
     width: '100%',

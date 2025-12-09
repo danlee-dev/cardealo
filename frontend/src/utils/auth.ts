@@ -54,6 +54,45 @@ export const AuthStorage = {
     const token = await this.getToken();
     return token !== null;
   },
+
+  async validateToken(): Promise<{ valid: boolean; error?: string }> {
+    const token = await this.getToken();
+    if (!token) {
+      return { valid: false, error: 'no_token' };
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/api/user/me`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        return { valid: true };
+      }
+
+      const data = await response.json();
+
+      if (data.error === 'token_expired') {
+        await this.clearAuth();
+        return { valid: false, error: 'token_expired' };
+      }
+
+      if (data.error === 'invalid_token') {
+        await this.clearAuth();
+        return { valid: false, error: 'invalid_token' };
+      }
+
+      return { valid: false, error: data.error || 'unknown_error' };
+    } catch (error) {
+      // 네트워크 에러 - 서버 연결 불가
+      console.error('Token validation error:', error);
+      return { valid: false, error: 'network_error' };
+    }
+  },
 };
 
 export interface LoginRequest {

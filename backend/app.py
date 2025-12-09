@@ -62,7 +62,11 @@ def login_required(f):
         try:
             result = jwt_service.verify_token(token)
             if not result:
-                return jsonify({'error': 'Invalid token'}), 401
+                return jsonify({'error': 'invalid_token'}), 401
+            if result.get('error') == 'token_expired':
+                return jsonify({'error': 'token_expired', 'message': '토큰이 만료되었습니다. 다시 로그인해주세요.'}), 401
+            if result.get('error') == 'invalid_token':
+                return jsonify({'error': 'invalid_token', 'message': '유효하지 않은 토큰입니다.'}), 401
             return f(*args, **kwargs)
         except Exception as e:
             return jsonify({'error': str(e)}), 500

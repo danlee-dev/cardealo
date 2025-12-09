@@ -11,8 +11,9 @@ import {
   Alert,
   ActivityIndicator,
   FlatList,
+  Image,
 } from 'react-native';
-import { LogoBlack, BackIcon } from '../components/svg';
+import { BackIcon } from '../components/svg';
 import { FONTS } from '../constants/theme';
 import { AuthAPI } from '../utils/auth';
 import { API_URL } from '../utils/api';
@@ -199,7 +200,11 @@ export const SignupScreen: React.FC<SignupScreenProps> = ({ onSignupSuccess, onB
         </View>
 
         <View style={styles.logoContainer}>
-          <LogoBlack width={50} height={63} />
+          <Image
+            source={require('../../assets/icon.png')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
         </View>
 
         <View style={styles.formContainer}>
@@ -403,6 +408,11 @@ const styles = StyleSheet.create({
   logoContainer: {
     alignItems: 'center',
     marginBottom: 32,
+  },
+  logo: {
+    width: 60,
+    height: 60,
+    borderRadius: 12,
   },
   formContainer: {
     width: '100%',

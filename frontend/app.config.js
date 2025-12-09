@@ -16,7 +16,7 @@ module.exports = {
     splash: {
       image: "./assets/splash-icon.png",
       resizeMode: "contain",
-      backgroundColor: "#ffffff"
+      backgroundColor: "#2D2D2D"
     },
     ios: {
       supportsTablet: true,
@@ -33,7 +33,7 @@ module.exports = {
     android: {
       adaptiveIcon: {
         foregroundImage: "./assets/adaptive-icon.png",
-        backgroundColor: "#ffffff"
+        backgroundColor: "#292929"
       },
       edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,
@@ -50,6 +50,15 @@ module.exports = {
       "expo-font",
       "expo-dev-client",
       "expo-updates",
+      [
+        "expo-splash-screen",
+        {
+          image: "./assets/splash-icon.png",
+          imageWidth: 200,
+          backgroundColor: "#2D2D2D",
+          resizeMode: "contain"
+        }
+      ],
       "./plugins/withNaverMaps",
       "./plugins/withNaverMapsGradle",
       "./plugins/withPodfileSource"

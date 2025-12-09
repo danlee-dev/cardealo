@@ -218,25 +218,20 @@ export default function PaymentPage() {
             </div>
           ) : (
             <div className="bg-white rounded-subtle shadow-lg p-6">
-              {scanType === 'qr' ? (
-                <>
-                  <div className="mb-6">
-                    <h3 className="text-sm font-semibold text-text-secondary mb-1">사용자</h3>
-                    <p className="text-lg">{userData?.user_name || '-'}</p>
-                  </div>
+              {/* 사용자 정보: QR은 바로 표시, 바코드는 API 응답 후 표시 */}
+              <div className="mb-6">
+                <h3 className="text-sm font-semibold text-text-secondary mb-1">사용자</h3>
+                <p className="text-lg">
+                  {benefit?.user_name || userData?.user_name || (scanType === 'barcode' ? '금액 입력 후 표시됩니다' : '-')}
+                </p>
+              </div>
 
-                  <div className="mb-6">
-                    <h3 className="text-sm font-semibold text-text-secondary mb-1">카드</h3>
-                    <p className="text-lg">{userData?.card_name || '-'}</p>
-                  </div>
-                </>
-              ) : (
-                <div className="mb-6 bg-gray-50 rounded-subtle p-4">
-                  <p className="text-sm text-text-secondary">
-                    바코드 스캔됨 - 금액 입력 후 정보가 표시됩니다
-                  </p>
-                </div>
-              )}
+              <div className="mb-6">
+                <h3 className="text-sm font-semibold text-text-secondary mb-1">카드</h3>
+                <p className="text-lg">
+                  {benefit?.card_name || userData?.card_name || (scanType === 'barcode' ? '금액 입력 후 표시됩니다' : '-')}
+                </p>
+              </div>
 
               <div className="mb-6">
                 <h3 className="text-sm font-semibold text-text-secondary mb-1">결제 금액</h3>

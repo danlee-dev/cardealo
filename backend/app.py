@@ -121,6 +121,42 @@ def register():
         db.add(mycard)
         db.add(user)
         db.commit()
+
+        # 법인카드 pending 초대 자동 활성화
+        pending_memberships = db.scalars(
+            select(CorporateCardMember).where(
+                CorporateCardMember.invited_email == user_email,
+                CorporateCardMember.status == 'pending'
+            )
+        ).all()
+
+        for membership in pending_memberships:
+            membership.user_id = user_id
+            membership.status = 'active'
+            membership.joined_at = datetime.utcnow()
+
+            # 법인카드 정보 조회하여 알림 생성
+            corp_card = db.scalars(
+                select(CorporateCard).where(CorporateCard.id == membership.corporate_card_id)
+            ).first()
+
+            if corp_card:
+                notification = Notification(
+                    user_id=user_id,
+                    type='corporate_card',
+                    title='법인카드 등록 완료',
+                    message=f'{corp_card.card_name} 법인카드가 등록되었습니다.',
+                    data=json.dumps({
+                        'card_id': corp_card.id,
+                        'card_name': corp_card.card_name,
+                        'monthly_limit': membership.monthly_limit
+                    }, ensure_ascii=False)
+                )
+                db.add(notification)
+
+        if pending_memberships:
+            db.commit()
+
         return jsonify({'success':True, 'msg': 'registered'}), 200
     except Exception as e:
         db.rollback()
@@ -2202,6 +2238,233 @@ def require_admin_auth(f):
     return decorated_function
 
 
+@app.route('/api/balance/check-for-admin', methods=['POST'])
+@require_admin_auth
+def check_balance_for_admin():
+    """관리자 백엔드에서 호출하는 잔액 확인 API"""
+    data = request.get_json()
+    user_id = data.get('user_id')
+    amount = data.get('amount', 0)
+
+    if not user_id:
+        return jsonify({'success': False, 'error': 'user_id is required'}), 400
+
+    try:
+        db = get_db()
+        user = db.query(User).filter(User.user_id == user_id).first()
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+
+        current_balance = user.balance or 0
+        has_sufficient = current_balance >= amount
+
+        return jsonify({
+            'success': True,
+            'sufficient': has_sufficient,
+            'balance': current_balance,
+            'required': amount,
+            'shortage': max(0, amount - current_balance)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+
+@app.route('/api/payment/failure', methods=['POST'])
+@require_admin_auth
+def payment_failure():
+    """
+    결제 실패 알림 API (관리자 백엔드가 호출)
+
+    Request:
+    {
+        "user_id": "hong_gildong",
+        "reason": "insufficient_balance",
+        "balance": 5000,
+        "required": 10000,
+        "merchant_name": "스타벅스"
+    }
+    """
+    data = request.get_json()
+    user_id = data.get('user_id')
+    reason = data.get('reason', 'unknown')
+    balance = data.get('balance', 0)
+    required = data.get('required', 0)
+    merchant_name = data.get('merchant_name', 'Unknown')
+
+    if not user_id:
+        return jsonify({'error': 'user_id is required'}), 400
+
+    try:
+        db = get_db()
+
+        # 결제 실패 알림 메시지 생성
+        if reason == 'insufficient_balance':
+            shortage = required - balance
+            title = '결제 실패'
+            message = f'{merchant_name}에서 결제 실패: 잔액 부족 (부족 금액: {shortage:,}원)'
+        elif reason == 'card_limit_exceeded':
+            title = '결제 실패'
+            message = f'{merchant_name}에서 결제 실패: 카드 한도 초과'
+        else:
+            title = '결제 실패'
+            message = f'{merchant_name}에서 결제 실패'
+
+        # 알림 생성
+        notification = Notification(
+            user_id=user_id,
+            type='payment_failure',
+            title=title,
+            message=message,
+            data=json.dumps({
+                'reason': reason,
+                'balance': balance,
+                'required': required,
+                'shortage': required - balance if reason == 'insufficient_balance' else 0,
+                'merchant_name': merchant_name
+            }, ensure_ascii=False)
+        )
+        db.add(notification)
+        db.commit()
+        db.refresh(notification)
+
+        # 실시간 알림 전송
+        notification_data = {
+            'id': notification.id,
+            'type': notification.type,
+            'title': notification.title,
+            'message': notification.message,
+            'data': json.loads(notification.data),
+            'is_read': notification.is_read,
+            'created_at': notification.created_at.isoformat()
+        }
+        broadcast_notification(user_id, notification_data)
+
+        db.close()
+
+        return jsonify({'status': 'success'}), 200
+
+    except Exception as e:
+        print(f">>> Payment failure notification error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/corporate/check-limit', methods=['POST'])
+@require_admin_auth
+def check_corporate_card_limit():
+    """
+    법인카드 한도 확인 API (관리자 백엔드가 호출)
+
+    Request:
+    {
+        "user_id": "hong_gildong",
+        "card_id": 1,
+        "amount": 50000
+    }
+
+    Response:
+    {
+        "success": true,
+        "sufficient": true/false,
+        "member_limit": 500000,
+        "member_used": 100000,
+        "member_remaining": 400000,
+        "department_limit": 2000000,
+        "department_used": 500000,
+        "card_limit": 10000000,
+        "card_used": 2000000
+    }
+    """
+    data = request.get_json()
+    user_id = data.get('user_id')
+    card_id = data.get('card_id')
+    amount = data.get('amount', 0)
+
+    if not user_id or not card_id:
+        return jsonify({'success': False, 'error': 'user_id and card_id are required'}), 400
+
+    try:
+        db = get_db()
+
+        # 사용자의 법인카드 멤버십 조회
+        membership = db.scalars(
+            select(CorporateCardMember).where(
+                CorporateCardMember.user_id == user_id,
+                CorporateCardMember.corporate_card_id == card_id,
+                CorporateCardMember.status == 'active'
+            )
+        ).first()
+
+        if not membership:
+            return jsonify({
+                'success': False,
+                'error': 'Not a member of this corporate card'
+            }), 404
+
+        # 법인카드 정보 조회
+        corporate_card = db.scalars(
+            select(CorporateCard).where(CorporateCard.id == card_id)
+        ).first()
+
+        if not corporate_card:
+            return jsonify({'success': False, 'error': 'Corporate card not found'}), 404
+
+        # 한도 체크
+        member_remaining = membership.monthly_limit - membership.used_amount
+        card_remaining = corporate_card.monthly_limit - corporate_card.used_amount
+
+        # 부서 한도 체크
+        dept_limit = None
+        dept_used = None
+        dept_remaining = None
+        if membership.department_id:
+            dept = db.scalars(
+                select(Department).where(Department.id == membership.department_id)
+            ).first()
+            if dept:
+                dept_limit = dept.monthly_limit
+                dept_used = dept.used_amount
+                dept_remaining = dept.monthly_limit - dept.used_amount
+
+        # 한도 초과 체크 (개인, 부서, 카드 전체)
+        is_sufficient = True
+        exceeded_type = None
+
+        if amount > member_remaining:
+            is_sufficient = False
+            exceeded_type = 'member'
+        elif dept_remaining is not None and amount > dept_remaining:
+            is_sufficient = False
+            exceeded_type = 'department'
+        elif amount > card_remaining:
+            is_sufficient = False
+            exceeded_type = 'card'
+
+        return jsonify({
+            'success': True,
+            'sufficient': is_sufficient,
+            'exceeded_type': exceeded_type,
+            'member_limit': membership.monthly_limit,
+            'member_used': membership.used_amount,
+            'member_remaining': member_remaining,
+            'department_limit': dept_limit,
+            'department_used': dept_used,
+            'department_remaining': dept_remaining,
+            'card_limit': corporate_card.monthly_limit,
+            'card_used': corporate_card.used_amount,
+            'card_remaining': card_remaining
+        })
+
+    except Exception as e:
+        print(f">>> Corporate limit check error: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        db.close()
+
+
 @app.route('/api/barcode/lookup', methods=['POST'])
 @require_admin_auth
 def lookup_barcode():
@@ -4187,6 +4450,35 @@ def invite_corporate_member(card_id):
         )
         db.add(member)
         db.commit()
+
+        # 기존 사용자인 경우 알림 전송
+        if invited_user:
+            notification = Notification(
+                user_id=invited_user.user_id,
+                type='corporate_card',
+                title='법인카드 등록 완료',
+                message=f'{card.card_name} 법인카드가 등록되었습니다.',
+                data=json.dumps({
+                    'card_id': card_id,
+                    'card_name': card.card_name,
+                    'monthly_limit': monthly_limit
+                }, ensure_ascii=False)
+            )
+            db.add(notification)
+            db.commit()
+            db.refresh(notification)
+
+            # 실시간 알림 전송
+            notification_data = {
+                'id': notification.id,
+                'type': notification.type,
+                'title': notification.title,
+                'message': notification.message,
+                'data': json.loads(notification.data),
+                'is_read': notification.is_read,
+                'created_at': notification.created_at.isoformat()
+            }
+            broadcast_notification(invited_user.user_id, notification_data)
 
         result = {
             'id': member.id,

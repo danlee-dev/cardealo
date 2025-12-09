@@ -273,10 +273,36 @@ def mypage():
                 CorporateCardMember.status == 'active'
             )
         ).all()
-        user_data['is_corporate_user'] = len(corporate_memberships) > 0
+
+        # 소유자(관리자)로서 보유한 법인카드도 확인
+        owned_corporate_cards = db.scalars(
+            select(CorporateCard).where(CorporateCard.owner_user_id == user_id)
+        ).all()
+
+        user_data['is_corporate_user'] = len(corporate_memberships) > 0 or len(owned_corporate_cards) > 0
 
         # 법인카드 정보를 cards 배열에 추가 (is_corporate 플래그로 구분)
         user_data['corporate_cards'] = []
+
+        # 1. 소유자(관리자)로서 보유한 법인카드 추가
+        for corp_card in owned_corporate_cards:
+            user_data['corporate_cards'].append({
+                'cid': f"corp_{corp_card.id}",
+                'card_id': corp_card.id,
+                'card_name': corp_card.card_name,
+                'card_company': corp_card.card_company,
+                'card_benefit': corp_card.benefit_summary,
+                'is_corporate': True,
+                'role': 'admin',
+                'department': None,
+                'monthly_limit': corp_card.monthly_limit,
+                'used_amount': corp_card.used_amount,
+                'remaining': corp_card.monthly_limit - corp_card.used_amount,
+                'card_monthly_limit': corp_card.monthly_limit,
+                'card_used_amount': corp_card.used_amount
+            })
+
+        # 2. 멤버(직원)로서 등록된 법인카드 추가
         for membership in corporate_memberships:
             corp_card = db.scalars(
                 select(CorporateCard).where(CorporateCard.id == membership.corporate_card_id)

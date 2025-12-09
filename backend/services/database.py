@@ -689,6 +689,7 @@ def create_corporate_cards():
                 deleted_count += 1
 
             if deleted_count > 0:
+                db.commit()  # 삭제 후 커밋하여 중복 체크 시 정확하게 반영
                 print(f'[DB] Deleted {deleted_count} existing corporate cards from hong@cardealo.com')
 
         created_count = 0

@@ -10,3 +10,5 @@ class BenefitCalculationResult(BaseModel):
     benefit_text: str
     is_eligible: bool = True
     error_message: Optional[str] = None
+    user_name: Optional[str] = None
+    card_name: Optional[str] = None

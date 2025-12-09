@@ -84,7 +84,9 @@ async def scan_qr(request: QRScanRequest, db: Session = Depends(get_db)):
             discount_type=benefit_result["discount_type"],
             final_amount=transaction.final_amount,
             benefit_text=benefit_result["benefit_text"],
-            is_eligible=True
+            is_eligible=True,
+            user_name=qr_data["user_name"],
+            card_name=qr_data["card_name"]
         )
 
     except json.JSONDecodeError:
@@ -186,7 +188,9 @@ async def scan_barcode(request: BarcodeScanRequest, db: Session = Depends(get_db
             discount_type=benefit_result["discount_type"],
             final_amount=transaction.final_amount,
             benefit_text=benefit_result["benefit_text"],
-            is_eligible=True
+            is_eligible=True,
+            user_name=qr_data["user_name"],
+            card_name=qr_data["card_name"]
         )
 
     except HTTPException:

@@ -388,7 +388,7 @@ export const AdminDepartmentScreen: React.FC<AdminDepartmentScreenProps> = ({ ca
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'transparent',
   },
   animatedContainer: {
     flex: 1,

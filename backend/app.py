@@ -2103,17 +2103,53 @@ def generate_qr():
         if not user:
             return jsonify({'error': 'User not found'}), 404
 
-        card = db.scalars(select(MyCard).where(MyCard.cid == card_id, MyCard.user_id == user_id)).first()
-        if not card:
-            return jsonify({'error': 'Card not found'}), 404
+        # 법인카드인지 개인카드인지 확인
+        is_corporate = isinstance(card_id, str) and card_id.startswith('corp_')
+
+        if is_corporate:
+            # 법인카드 처리
+            try:
+                corporate_card_id = int(card_id.replace('corp_', ''))
+            except ValueError:
+                return jsonify({'error': 'Invalid corporate card ID format'}), 400
+
+            # 법인카드 조회
+            corp_card = db.scalars(
+                select(CorporateCard).where(CorporateCard.id == corporate_card_id)
+            ).first()
+            if not corp_card:
+                return jsonify({'error': 'Corporate card not found'}), 404
+
+            # 사용자가 해당 법인카드의 멤버인지 확인
+            membership = db.scalars(
+                select(CorporateCardMember).where(
+                    CorporateCardMember.corporate_card_id == corporate_card_id,
+                    CorporateCardMember.user_id == user_id,
+                    CorporateCardMember.status == 'active'
+                )
+            ).first()
+            if not membership:
+                return jsonify({'error': 'You are not a member of this corporate card'}), 403
+
+            card_cid = card_id
+            card_name = corp_card.card_name
+        else:
+            # 개인카드 처리
+            card = db.scalars(select(MyCard).where(MyCard.cid == card_id, MyCard.user_id == user_id)).first()
+            if not card:
+                return jsonify({'error': 'Card not found'}), 404
+
+            card_cid = card.cid
+            card_name = card.mycard_name
 
         # QR 데이터 생성
         timestamp = int(datetime.now().timestamp())
         qr_data = {
             "user_id": user_id,
             "user_name": user.user_name,
-            "card_id": card.cid,
-            "card_name": card.mycard_name,
+            "card_id": card_cid,
+            "card_name": card_name,
+            "is_corporate": is_corporate,
             "timestamp": timestamp
         }
 
@@ -2131,7 +2167,7 @@ def generate_qr():
         # QR 스캔 상태 생성
         qr_status = QRScanStatus(
             user_id=user_id,
-            card_id=card.cid,
+            card_id=card_cid,
             timestamp=timestamp,
             status='waiting'
         )
@@ -2152,7 +2188,12 @@ def generate_qr():
         # 바코드 이미지 생성 (Code128 포맷)
         # 바코드 데이터: 짧은 숫자 기반 코드 (12자리) - 스캔 용이성을 위해
         # timestamp 마지막 8자리 + card_id 4자리 (0패딩)
-        barcode_data = f"{str(timestamp)[-8:]}{str(card_id).zfill(4)}"
+        # 법인카드의 경우 corporate_card_id를 사용
+        if is_corporate:
+            barcode_card_id = str(corporate_card_id).zfill(4)
+        else:
+            barcode_card_id = str(card_cid).zfill(4)
+        barcode_data = f"{str(timestamp)[-8:]}{barcode_card_id}"
         code128 = barcode.get('code128', barcode_data, writer=ImageWriter())
         barcode_buffered = BytesIO()
         code128.write(barcode_buffered, options={
@@ -2828,73 +2869,159 @@ def process_payment():
         # 결제 금액 (final_amount 사용 - 할인 적용 후 금액)
         final_amount = qr_status.final_amount or qr_status.payment_amount
 
-        # 잔액 확인
-        user_balance = user.balance or 0
-        if user_balance < final_amount:
-            return jsonify({
-                'error': 'insufficient_balance',
-                'message': '잔액이 부족합니다',
-                'balance': user_balance,
-                'required': final_amount,
-                'shortage': final_amount - user_balance
-            }), 400
+        # 법인카드 여부 확인
+        card_id = qr_status.card_id
+        is_corporate = isinstance(card_id, str) and card_id.startswith('corp_')
+
+        if is_corporate:
+            # 법인카드 한도 체크
+            try:
+                corporate_card_id = int(card_id.replace('corp_', ''))
+            except ValueError:
+                return jsonify({'error': 'Invalid corporate card ID'}), 400
+
+            corp_card = db.scalars(
+                select(CorporateCard).where(CorporateCard.id == corporate_card_id)
+            ).first()
+            if not corp_card:
+                return jsonify({'error': 'Corporate card not found'}), 404
+
+            membership = db.scalars(
+                select(CorporateCardMember).where(
+                    CorporateCardMember.corporate_card_id == corporate_card_id,
+                    CorporateCardMember.user_id == qr_status.user_id,
+                    CorporateCardMember.status == 'active'
+                )
+            ).first()
+            if not membership:
+                return jsonify({'error': 'Not a member of this corporate card'}), 403
+
+            # 개인 한도 체크
+            member_remaining = membership.monthly_limit - (membership.used_amount or 0)
+            if member_remaining < final_amount:
+                return jsonify({
+                    'error': 'insufficient_limit',
+                    'message': '법인카드 개인 한도를 초과했습니다',
+                    'limit': membership.monthly_limit,
+                    'used': membership.used_amount or 0,
+                    'remaining': member_remaining,
+                    'required': final_amount,
+                    'shortage': final_amount - member_remaining
+                }), 400
+
+            # 법인카드 전체 한도 체크
+            card_remaining = corp_card.monthly_limit - (corp_card.used_amount or 0)
+            if card_remaining < final_amount:
+                return jsonify({
+                    'error': 'insufficient_card_limit',
+                    'message': '법인카드 전체 한도를 초과했습니다',
+                    'card_limit': corp_card.monthly_limit,
+                    'card_used': corp_card.used_amount or 0,
+                    'card_remaining': card_remaining,
+                    'required': final_amount
+                }), 400
+        else:
+            # 개인카드: 잔액 확인
+            user_balance = user.balance or 0
+            if user_balance < final_amount:
+                return jsonify({
+                    'error': 'insufficient_balance',
+                    'message': '잔액이 부족합니다',
+                    'balance': user_balance,
+                    'required': final_amount,
+                    'shortage': final_amount - user_balance
+                }), 400
 
         if confirm:
-            # 잔액 차감
-            user.balance = user_balance - final_amount
-
-            # 월간 소비 및 절약 업데이트
             discount_amount = qr_status.discount_amount or 0
-            user.monthly_spending = (user.monthly_spending or 0) + final_amount
-            user.monthly_savings = (user.monthly_savings or 0) + discount_amount
 
-            # 카드 정보 업데이트
-            card = db.scalars(select(MyCard).where(MyCard.cid == qr_status.card_id)).first()
-            if card:
-                today = date.today()
+            if is_corporate:
+                # 법인카드 결제 처리 - 사용자 잔액 차감 안 함
+                # 멤버십과 법인카드 사용금액 업데이트
+                membership.used_amount = (membership.used_amount or 0) + final_amount
+                corp_card.used_amount = (corp_card.used_amount or 0) + final_amount
 
-                # 일자가 바뀌면 daily_count 리셋
-                if card.last_used_date != today:
-                    card.daily_count = 0
+                # 법인카드 결제 내역 저장
+                corp_payment = CorporatePaymentHistory(
+                    corporate_card_id=corporate_card_id,
+                    user_id=qr_status.user_id,
+                    member_id=membership.id,
+                    merchant_name=qr_status.merchant_name,
+                    payment_amount=qr_status.payment_amount or 0,
+                    discount_amount=discount_amount,
+                    final_amount=final_amount,
+                    benefit_text=qr_status.benefit_text,
+                    receipt_image=None
+                )
+                db.add(corp_payment)
 
-                # 월이 바뀌면 모든 카운터 리셋
-                if card.reset_date is None or (today.month != card.reset_date.month or today.year != card.reset_date.year):
-                    card.used_amount = 0
-                    card.monthly_performance = 0
-                    card.monthly_count = 0
-                    card.reset_date = today.replace(day=1)
+                card_name = corp_card.card_name
+            else:
+                # 개인카드 결제 처리 - 사용자 잔액 차감
+                user.balance = user_balance - final_amount
 
-                # 사용 금액 및 실적 업데이트
-                card.used_amount = (card.used_amount or 0) + final_amount
-                card.monthly_performance = (card.monthly_performance or 0) + (qr_status.payment_amount or 0)
-                card.daily_count = (card.daily_count or 0) + 1
-                card.monthly_count = (card.monthly_count or 0) + 1
-                card.last_used_date = today
+                # 월간 소비 및 절약 업데이트
+                user.monthly_spending = (user.monthly_spending or 0) + final_amount
+                user.monthly_savings = (user.monthly_savings or 0) + discount_amount
 
-            # 결제 내역 저장
-            payment = PaymentHistory(
-                transaction_id=transaction_id,
-                user_id=qr_status.user_id,
-                card_id=qr_status.card_id,
-                merchant_name=qr_status.merchant_name,
-                payment_amount=qr_status.payment_amount,
-                discount_amount=discount_amount,
-                final_amount=final_amount,
-                benefit_text=qr_status.benefit_text
-            )
-            db.add(payment)
+                # 카드 정보 업데이트
+                card = db.scalars(select(MyCard).where(MyCard.cid == qr_status.card_id)).first()
+                if card:
+                    today = date.today()
+
+                    # 일자가 바뀌면 daily_count 리셋
+                    if card.last_used_date != today:
+                        card.daily_count = 0
+
+                    # 월이 바뀌면 모든 카운터 리셋
+                    if card.reset_date is None or (today.month != card.reset_date.month or today.year != card.reset_date.year):
+                        card.used_amount = 0
+                        card.monthly_performance = 0
+                        card.monthly_count = 0
+                        card.reset_date = today.replace(day=1)
+
+                    # 사용 금액 및 실적 업데이트
+                    card.used_amount = (card.used_amount or 0) + final_amount
+                    card.monthly_performance = (card.monthly_performance or 0) + (qr_status.payment_amount or 0)
+                    card.daily_count = (card.daily_count or 0) + 1
+                    card.monthly_count = (card.monthly_count or 0) + 1
+                    card.last_used_date = today
+
+                # 결제 내역 저장
+                payment = PaymentHistory(
+                    transaction_id=transaction_id,
+                    user_id=qr_status.user_id,
+                    card_id=qr_status.card_id,
+                    merchant_name=qr_status.merchant_name,
+                    payment_amount=qr_status.payment_amount,
+                    discount_amount=discount_amount,
+                    final_amount=final_amount,
+                    benefit_text=qr_status.benefit_text
+                )
+                db.add(payment)
+
+                card_name = card.mycard_name if card else '카드'
 
             # QR 상태 업데이트
             qr_status.status = 'completed'
 
             # 결제 알림 생성
-            card_name = card.mycard_name if card else '카드'
-            notification = Notification(
-                user_id=qr_status.user_id,
-                type='payment',
-                title='결제 완료',
-                message=f'{qr_status.merchant_name}에서 {final_amount:,}원 결제 완료' + (f' ({discount_amount:,}원 할인)' if discount_amount > 0 else ''),
-                data=json.dumps({
+            if is_corporate:
+                remaining_limit = membership.monthly_limit - membership.used_amount
+                notification_data_dict = {
+                    'transaction_id': transaction_id,
+                    'merchant_name': qr_status.merchant_name,
+                    'payment_amount': qr_status.payment_amount,
+                    'discount_amount': discount_amount,
+                    'final_amount': final_amount,
+                    'card_name': card_name,
+                    'benefit_text': qr_status.benefit_text,
+                    'is_corporate': True,
+                    'remaining_limit': remaining_limit
+                }
+                notification_message = f'{qr_status.merchant_name}에서 {final_amount:,}원 결제 완료 (법인카드)' + (f' ({discount_amount:,}원 할인)' if discount_amount > 0 else '')
+            else:
+                notification_data_dict = {
                     'transaction_id': transaction_id,
                     'merchant_name': qr_status.merchant_name,
                     'payment_amount': qr_status.payment_amount,
@@ -2903,14 +3030,22 @@ def process_payment():
                     'card_name': card_name,
                     'benefit_text': qr_status.benefit_text,
                     'new_balance': user.balance
-                }, ensure_ascii=False)
+                }
+                notification_message = f'{qr_status.merchant_name}에서 {final_amount:,}원 결제 완료' + (f' ({discount_amount:,}원 할인)' if discount_amount > 0 else '')
+
+            notification = Notification(
+                user_id=qr_status.user_id,
+                type='payment',
+                title='결제 완료',
+                message=notification_message,
+                data=json.dumps(notification_data_dict, ensure_ascii=False)
             )
             db.add(notification)
             db.commit()
             db.refresh(notification)
 
             # 실시간 알림 전송
-            notification_data = {
+            notification_broadcast = {
                 'id': notification.id,
                 'type': notification.type,
                 'title': notification.title,
@@ -2919,15 +3054,25 @@ def process_payment():
                 'is_read': notification.is_read,
                 'created_at': notification.created_at.isoformat()
             }
-            broadcast_notification(qr_status.user_id, notification_data)
+            broadcast_notification(qr_status.user_id, notification_broadcast)
 
         db.close()
 
-        return jsonify({
-            'success': True,
-            'message': '결제가 완료되었습니다' if confirm else '결제 가능합니다',
-            'new_balance': user.balance
-        }), 200
+        # 응답 생성
+        if is_corporate:
+            remaining_limit = membership.monthly_limit - membership.used_amount
+            return jsonify({
+                'success': True,
+                'message': '결제가 완료되었습니다' if confirm else '결제 가능합니다',
+                'is_corporate': True,
+                'remaining_limit': remaining_limit
+            }), 200
+        else:
+            return jsonify({
+                'success': True,
+                'message': '결제가 완료되었습니다' if confirm else '결제 가능합니다',
+                'new_balance': user.balance
+            }), 200
 
     except Exception as e:
         print(f"[Error] 결제 처리 실패: {e}")

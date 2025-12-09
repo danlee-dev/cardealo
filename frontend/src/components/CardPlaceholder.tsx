@@ -93,7 +93,7 @@ export const CardPlaceholder: React.FC<CardPlaceholderProps> = ({
               flexShrink: 1,
             }
           ]}
-          numberOfLines={2}
+          numberOfLines={scale < 0.5 ? 1 : 2}
           ellipsizeMode="tail"
         >
           {cardName}

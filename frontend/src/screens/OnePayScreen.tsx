@@ -34,7 +34,7 @@ interface OnePayScreenProps {
     name: string;
     category: string;
   } | null;
-  preSelectedCardId?: number | null;
+  preSelectedCardId?: number | string | null;
 }
 
 export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStore, preSelectedCardId }) => {
@@ -48,7 +48,7 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
   const [isShuffling, setIsShuffling] = useState(false);
   const [shuffleComplete, setShuffleComplete] = useState(!preSelectedCardId);
   const [userCards, setUserCards] = useState<Array<{
-    cid: number;
+    cid: number | string;
     card_name: string;
     card_benefit: string;
     card_pre_month_money: number;
@@ -60,6 +60,9 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
     monthly_count?: number;
     last_used_date?: string | null;
     reset_date?: string | null;
+    is_corporate?: boolean;
+    card_company?: string;
+    department?: string;
   }>>([]);
   const [qrImage, setQrImage] = useState<string | null>(null);
   const [barcodeImage, setBarcodeImage] = useState<string | null>(null);
@@ -97,11 +100,28 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
 
       const data = await response.json();
       console.log('User cards data:', data);
-      if (data.success && data.user.cards) {
-        // Sort by recent registration (cid descending)
-        const sortedCards = [...data.user.cards].sort((a, b) => b.cid - a.cid);
-        console.log('Cards (sorted by recent):', sortedCards);
-        setUserCards(sortedCards);
+      if (data.success && data.user) {
+        const personalCards = data.user.cards || [];
+
+        // Normalize corporate cards to match personal card structure
+        const corporateCards = (data.user.corporate_cards || []).map((corp: any) => ({
+          cid: corp.cid,
+          card_name: corp.card_name,
+          card_benefit: corp.card_benefit || '',
+          card_pre_month_money: 0,
+          card_pre_YN: true,
+          monthly_limit: corp.monthly_limit || 0,
+          used_amount: corp.used_amount || 0,
+          monthly_performance: 0,
+          is_corporate: true,
+          card_company: corp.card_company,
+          department: corp.department,
+        }));
+
+        // Combine personal and corporate cards
+        const allCards = [...personalCards, ...corporateCards];
+        console.log('All cards (personal + corporate):', allCards);
+        setUserCards(allCards);
       }
     } catch (error) {
       console.error('Failed to fetch user cards:', error);
@@ -460,12 +480,13 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
         current: card.monthly_performance || 0,
         required: card.card_pre_month_money || 0,
       },
+      is_corporate: card.is_corporate || false,
     };
   });
 
   // Create repeated cards for infinite scroll effect
   const repeatedCards: Array<{
-    cid: number;
+    cid: number | string;
     name: string;
     image: any;
     discounts: string[];
@@ -473,6 +494,7 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
     performance: { current: number; required: number };
     uniqueKey: string;
     originalIndex: number;
+    is_corporate?: boolean;
   }> = [];
   for (let i = 0; i < ROULETTE_MULTIPLIER; i++) {
     cardDetails.forEach((card, index) => {
@@ -659,7 +681,14 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
                         )}
                       </View>
                       <View style={styles.cardHeaderText}>
-                        <Text style={styles.cardName}>{item.name}</Text>
+                        <View style={styles.cardNameRow}>
+                          <Text style={styles.cardName}>{item.name}</Text>
+                          {item.is_corporate && (
+                            <View style={styles.corporateBadge}>
+                              <Text style={styles.corporateBadgeText}>법인</Text>
+                            </View>
+                          )}
+                        </View>
                         <View style={styles.discountList}>
                           {item.discounts.slice(0, 2).map((discount: string, idx: number) => (
                             <View key={idx} style={styles.discountItemWrapper}>
@@ -1045,12 +1074,28 @@ const styles = StyleSheet.create({
     minWidth: 0,
     overflow: 'hidden',
   },
+  cardNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
   cardName: {
     fontSize: 14,
     fontFamily: FONTS.bold,
     color: '#212121',
-    marginBottom: 6,
     letterSpacing: -0.3,
+  },
+  corporateBadge: {
+    backgroundColor: '#2563EB',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  corporateBadgeText: {
+    fontSize: 10,
+    fontFamily: FONTS.semiBold,
+    color: '#FFFFFF',
   },
   discountList: {
     gap: 4,

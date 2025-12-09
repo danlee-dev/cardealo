@@ -205,7 +205,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     endName: string;
     endPlaceId?: string;
   } | null>(null);
-  const [preSelectedCardIdForOnePay, setPreSelectedCardIdForOnePay] = useState<number | null>(null);
+  const [preSelectedCardIdForOnePay, setPreSelectedCardIdForOnePay] = useState<number | string | null>(null);
   const [isInsideBuilding, setIsInsideBuilding] = useState(false);
   const [filterSort, setFilterSort] = useState<'benefit' | 'distance' | 'recommend'>('recommend');
   const [filterOpenOnly, setFilterOpenOnly] = useState(false);
@@ -222,7 +222,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
   const [forceIndoorMode, setForceIndoorMode] = useState(false);
   const [currentSearchRadius, setCurrentSearchRadius] = useState(720); // Initial radius with 20% buffer
   const [userCards, setUserCards] = useState<Array<{
-    cid: number;
+    cid: number | string;
     card_name: string;
     card_benefit: string;
     card_pre_month_money: number;
@@ -234,6 +234,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
     monthly_count?: number;
     last_used_date?: string | null;
     reset_date?: string | null;
+    is_corporate?: boolean;
+    card_company?: string;
+    department?: string;
   }>>([]);
 
   // AI Course Mode states
@@ -653,9 +656,28 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ onLogout }) => {
       });
 
       const data = await response.json();
-      if (data.success && data.user && data.user.cards) {
-        console.log('[fetchUserCards] Fetched user cards:', data.user.cards);
-        setUserCards(data.user.cards);
+      if (data.success && data.user) {
+        const personalCards = data.user.cards || [];
+
+        // Normalize corporate cards to match personal card structure
+        const corporateCards = (data.user.corporate_cards || []).map((corp: any) => ({
+          cid: corp.cid,
+          card_name: corp.card_name,
+          card_benefit: corp.card_benefit || '',
+          card_pre_month_money: 0,
+          card_pre_YN: true,
+          monthly_limit: corp.monthly_limit || 0,
+          used_amount: corp.used_amount || 0,
+          monthly_performance: 0,
+          is_corporate: true,
+          card_company: corp.card_company,
+          department: corp.department,
+        }));
+
+        // Combine personal and corporate cards
+        const allCards = [...personalCards, ...corporateCards];
+        console.log('[fetchUserCards] Fetched all cards (personal + corporate):', allCards);
+        setUserCards(allCards);
       } else {
         console.error('[fetchUserCards] Failed to fetch user cards, using empty array');
         setUserCards([]);

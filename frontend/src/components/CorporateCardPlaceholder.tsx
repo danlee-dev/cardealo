@@ -76,25 +76,29 @@ export const CorporateCardPlaceholder: React.FC<CorporateCardPlaceholderProps> =
           borderRadius,
           paddingHorizontal,
           paddingTop: paddingVertical,
-          paddingBottom: Math.max(6, 12 * scale),
+          paddingBottom: Math.max(10, 14 * scale),
         }
       ]}>
-        {/* Corporate badge - top right */}
-        <View style={[
-          styles.corporateBadge,
-          {
-            paddingHorizontal: Math.max(4, 8 * scale),
-            paddingVertical: Math.max(2, 4 * scale),
-            borderRadius: Math.max(3, 6 * scale),
-          }
-        ]}>
-          <Text style={[
-            styles.corporateBadgeText,
-            { fontSize: Math.max(6, 10 * scale) }
+        {/* Corporate badge - top right (hide on very small cards) */}
+        {scale >= 0.35 && (
+          <View style={[
+            styles.corporateBadge,
+            {
+              top: Math.max(4, 8 * scale),
+              right: Math.max(4, 8 * scale),
+              paddingHorizontal: Math.max(3, 6 * scale),
+              paddingVertical: Math.max(1, 3 * scale),
+              borderRadius: Math.max(2, 4 * scale),
+            }
           ]}>
-            CORPORATE
-          </Text>
-        </View>
+            <Text style={[
+              styles.corporateBadgeText,
+              { fontSize: Math.max(5, 8 * scale) }
+            ]}>
+              {scale < 0.5 ? 'CORP' : 'CORPORATE'}
+            </Text>
+          </View>
+        )}
 
         {/* Card name - top */}
         <Text
@@ -103,16 +107,17 @@ export const CorporateCardPlaceholder: React.FC<CorporateCardPlaceholderProps> =
             {
               fontSize: Math.max(9, 20 * scale),
               lineHeight: Math.max(11, 24 * scale),
+              paddingRight: scale >= 0.35 ? Math.max(25, 50 * scale) : 0,
             }
           ]}
-          numberOfLines={2}
+          numberOfLines={scale < 0.5 ? 1 : 2}
           ellipsizeMode="tail"
         >
           {cardName}
         </Text>
 
         {/* Company and department info */}
-        <View style={styles.infoRow}>
+        <View style={[styles.infoRow, { maxWidth: '100%' }]}>
           {cardCompany && (
             <Text
               style={[
@@ -120,9 +125,12 @@ export const CorporateCardPlaceholder: React.FC<CorporateCardPlaceholderProps> =
                 {
                   fontSize: Math.max(6, 11 * scale),
                   lineHeight: Math.max(8, 14 * scale),
+                  flexShrink: 1,
+                  maxWidth: scale < 0.5 ? '100%' : '60%',
                 }
               ]}
               numberOfLines={1}
+              ellipsizeMode="tail"
             >
               {cardCompany}
             </Text>
@@ -135,12 +143,18 @@ export const CorporateCardPlaceholder: React.FC<CorporateCardPlaceholderProps> =
                 paddingVertical: Math.max(1, 2 * scale),
                 borderRadius: Math.max(2, 4 * scale),
                 marginLeft: Math.max(4, 8 * scale),
+                flexShrink: 1,
+                maxWidth: '40%',
               }
             ]}>
-              <Text style={[
-                styles.departmentText,
-                { fontSize: Math.max(5, 9 * scale) }
-              ]}>
+              <Text
+                style={[
+                  styles.departmentText,
+                  { fontSize: Math.max(5, 9 * scale) }
+                ]}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+              >
                 {department}
               </Text>
             </View>
@@ -148,7 +162,7 @@ export const CorporateCardPlaceholder: React.FC<CorporateCardPlaceholderProps> =
         </View>
 
         {/* Bottom section - limit info */}
-        <View style={styles.bottomSection}>
+        <View style={[styles.bottomSection, { maxWidth: '100%' }]}>
           {limitDisplay && (
             <Text
               style={[
@@ -156,9 +170,11 @@ export const CorporateCardPlaceholder: React.FC<CorporateCardPlaceholderProps> =
                 {
                   fontSize: Math.max(7, 14 * scale),
                   lineHeight: Math.max(9, 18 * scale),
+                  flexShrink: 1,
                 }
               ]}
               numberOfLines={1}
+              ellipsizeMode="tail"
             >
               {limitDisplay}
             </Text>
@@ -217,7 +233,6 @@ const styles = StyleSheet.create({
     marginTop: 0,
     lineHeight: 22,
     letterSpacing: -0.3,
-    paddingRight: 60,
   },
   infoRow: {
     flexDirection: 'row',

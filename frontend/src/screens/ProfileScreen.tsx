@@ -102,6 +102,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
   const [selectedCardId, setSelectedCardId] = useState<number | null>(null);
   const [corporateRole, setCorporateRole] = useState<'none' | 'admin' | 'employee'>('none');
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
+  const [currentCorporateCardIndex, setCurrentCorporateCardIndex] = useState(0);
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
 
   const [userData, setUserData] = useState<{
@@ -158,19 +159,19 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
   };
 
   const handleViewDepartments = () => {
-    setShowAdminDashboard(false);
+    // Dashboard stays visible underneath while Department screen animates in
     setShowAdminDepartment(true);
   };
 
   const handleViewMembers = () => {
-    setShowAdminDashboard(false);
+    // Dashboard stays visible underneath while Members screen animates in
     setShowAdminMembers(true);
   };
 
   const handleBackToDashboard = () => {
+    // Simply hide the child screens - dashboard is already visible underneath
     setShowAdminDepartment(false);
     setShowAdminMembers(false);
-    setShowAdminDashboard(true);
   };
 
   const handleCloseAdmin = () => {
@@ -330,6 +331,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
     const index = Math.round(scrollPosition / (CARD_SECTION_WIDTH + 16));
     if (index !== currentCardIndex && index >= 0) {
       setCurrentCardIndex(index);
+    }
+  };
+
+  const handleCorporateCardScroll = (event: any) => {
+    const scrollPosition = event.nativeEvent.contentOffset.x;
+    const index = Math.round(scrollPosition / (CARD_SECTION_WIDTH + 16));
+    if (index !== currentCorporateCardIndex && index >= 0) {
+      setCurrentCorporateCardIndex(index);
     }
   };
 
@@ -720,7 +729,22 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
                 decelerationRate="fast"
                 contentContainerStyle={styles.deckReportList}
                 style={styles.deckReportFlatList}
+                onScroll={handleCorporateCardScroll}
+                scrollEventThrottle={16}
               />
+              {corporateCardDetails.length > 1 && (
+                <View style={styles.paginationDots}>
+                  {corporateCardDetails.map((_, index) => (
+                    <View
+                      key={index}
+                      style={[
+                        styles.paginationDot,
+                        currentCorporateCardIndex === index && styles.paginationDotActive,
+                      ]}
+                    />
+                  ))}
+                </View>
+              )}
             </View>
           )}
         </View>
@@ -834,7 +858,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
         </View>
       )}
       {showAdminDashboard && selectedCardId && (
-        <View style={styles.overlay}>
+        <View style={[styles.overlay, { zIndex: 1001, backgroundColor: 'transparent' }]}>
           <AdminDashboardScreen
             cardId={selectedCardId}
             cards={corporateCards}
@@ -845,12 +869,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
         </View>
       )}
       {showAdminDepartment && selectedCardId && (
-        <View style={styles.overlay}>
+        <View style={[styles.overlay, { zIndex: 1002, backgroundColor: 'transparent' }]}>
           <AdminDepartmentScreen cardId={selectedCardId} onBack={handleBackToDashboard} />
         </View>
       )}
       {showAdminMembers && selectedCardId && (
-        <View style={styles.overlay}>
+        <View style={[styles.overlay, { zIndex: 1002, backgroundColor: 'transparent' }]}>
           <AdminMembersScreen
             cardId={selectedCardId}
             departments={corporateCards.find(c => c.id === selectedCardId)?.departments || []}

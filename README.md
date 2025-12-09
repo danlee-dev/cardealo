@@ -56,6 +56,8 @@
 
 AI 기반 코스 추천, OCR 카드 등록, 실시간 위치 기반 혜택 분석을 통해 사용자 맞춤형 카드 혜택 정보를 제공합니다. 기업용 법인카드 관리 및 가맹점 결제 시스템도 지원합니다.
 
+사용자 모바일 앱뿐만 아니라, 결제 테스트를 위한 Test Pay 가맹점 결제 시뮬레이터도 별도로 개발하여 실제 결제 흐름을 검증할 수 있습니다.
+
 ### 핵심 가치
 
 - **실시간 혜택 분석**: 현재 위치의 가맹점에서 최대 혜택을 받을 수 있는 카드 자동 추천
@@ -767,12 +769,16 @@ cardealo/
 ![React](https://img.shields.io/badge/React-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)
 
-### Backend
+### Backend (Mobile)
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-000000?style=for-the-badge&logo=flask&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![Socket.io](https://img.shields.io/badge/Socket.io-010101?style=for-the-badge&logo=socketdotio&logoColor=white)
+
+### Backend (Admin Web)
+
+![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 
 ### Database
 
@@ -783,13 +789,14 @@ cardealo/
 
 ![Railway](https://img.shields.io/badge/Railway-0B0D0E?style=for-the-badge&logo=railway&logoColor=white)
 ![Vercel](https://img.shields.io/badge/Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)
-![Naver Cloud](https://img.shields.io/badge/Naver_Cloud-03C75A?style=for-the-badge&logo=naver&logoColor=white)
+![EAS Build](https://img.shields.io/badge/EAS_Build-000020?style=for-the-badge&logo=expo&logoColor=white)
 
 ### AI & External APIs
 
 ![Google Gemini](https://img.shields.io/badge/Google_Gemini-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white)
 ![Google Maps](https://img.shields.io/badge/Google_Maps-4285F4?style=for-the-badge&logo=googlemaps&logoColor=white)
-![Naver](https://img.shields.io/badge/Naver_Maps-03C75A?style=for-the-badge&logo=naver&logoColor=white)
+![Naver Maps](https://img.shields.io/badge/Naver_Maps-03C75A?style=for-the-badge&logo=naver&logoColor=white)
+![Naver Cloud OCR](https://img.shields.io/badge/Naver_Cloud_OCR-03C75A?style=for-the-badge&logo=naver&logoColor=white)
 ![TMAP](https://img.shields.io/badge/TMAP-EF4123?style=for-the-badge&logo=tmobile&logoColor=white)
 
 ---

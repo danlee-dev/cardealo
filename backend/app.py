@@ -2799,10 +2799,34 @@ def payment_webhook():
             if not is_corporate:
                 user.balance -= final_amount
 
-        # 카드 정보 업데이트 (개인카드만)
+        # 카드 정보 업데이트
         card = None
-        if not is_corporate:
+        corp_card = None
+        if is_corporate:
+            # 법인카드: card_id가 "corp_1" 형식이면 숫자만 추출
+            corp_card_id = card_id
+            if isinstance(card_id, str) and card_id.startswith('corp_'):
+                corp_card_id = int(card_id.replace('corp_', ''))
+            elif isinstance(card_id, str) and card_id.isdigit():
+                corp_card_id = int(card_id)
+
+            corp_card = db.scalars(select(CorporateCard).where(CorporateCard.id == corp_card_id)).first()
+            if corp_card:
+                corp_card.used_amount += final_amount
+                # 멤버십 사용량도 업데이트
+                membership = db.scalars(
+                    select(CorporateCardMember).where(
+                        CorporateCardMember.corporate_card_id == corp_card_id,
+                        CorporateCardMember.user_id == user_id,
+                        CorporateCardMember.status == 'active'
+                    )
+                ).first()
+                if membership:
+                    membership.used_amount += final_amount
+        else:
+            # 개인카드
             card = db.scalars(select(MyCard).where(MyCard.cid == card_id)).first()
+
         if card:
             today = date.today()
 
@@ -2839,7 +2863,12 @@ def payment_webhook():
         db.commit()
 
         # 결제 알림 생성
-        card_name = card.mycard_name if card else '카드'
+        if corp_card:
+            card_name = corp_card.card_name
+        elif card:
+            card_name = card.mycard_name
+        else:
+            card_name = '카드'
         notification = Notification(
             user_id=user_id,
             type='payment',

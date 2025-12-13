@@ -6,6 +6,11 @@ import { Html5Qrcode } from 'html5-qrcode';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+// 바코드인지 확인 (12자리 숫자)
+const isBarcode = (data: string): boolean => {
+  return /^\d{12}$/.test(data);
+};
+
 interface SearchResult {
   place_id: string;
   name: string;
@@ -154,11 +159,22 @@ export default function Home() {
   const calculateBenefit = async () => {
     setLoading(true);
     try {
-      const response = await axios.post(`${API_URL}/api/qr/scan`, {
-        qr_data: qrData,
-        merchant_id: selectedMerchant?.id || 1,
-        payment_amount: parseInt(amount)
-      });
+      let response;
+      if (isBarcode(qrData)) {
+        // 바코드 스캔 API 호출
+        response = await axios.post(`${API_URL}/api/qr/scan-barcode`, {
+          barcode_data: qrData,
+          merchant_id: selectedMerchant?.id || 1,
+          payment_amount: parseInt(amount)
+        });
+      } else {
+        // QR 스캔 API 호출
+        response = await axios.post(`${API_URL}/api/qr/scan`, {
+          qr_data: qrData,
+          merchant_id: selectedMerchant?.id || 1,
+          payment_amount: parseInt(amount)
+        });
+      }
       setBenefit(response.data);
     } catch (err: any) {
       console.error('Failed to calculate benefit:', err);
@@ -256,10 +272,13 @@ export default function Home() {
     document.body.removeChild(link);
   };
 
+  // QR인 경우에만 파싱하여 사용자 정보 표시, 바코드는 benefit에서 가져옴
   let userData = null;
-  try {
-    userData = qrData ? JSON.parse(qrData) : null;
-  } catch (e) {}
+  if (qrData && !isBarcode(qrData)) {
+    try {
+      userData = JSON.parse(qrData);
+    } catch (e) {}
+  }
 
   const totalTransactions = history.merchants.reduce((sum: number, m: any) => sum + m.total_transactions, 0);
   const totalAmount = history.merchants.reduce((sum: number, m: any) => sum + m.total_amount, 0);
@@ -352,18 +371,25 @@ export default function Home() {
                 </div>
               )}
 
-              {viewMode === 'payment' && userData && (
+              {viewMode === 'payment' && (userData || isBarcode(qrData)) && (
                 <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 space-y-6">
                   <div>
                     <div className="text-sm text-gray-500 mb-2">결제 정보</div>
+                    {isBarcode(qrData) && (
+                      <div className="text-xs text-gray-400 mb-2">바코드: {qrData}</div>
+                    )}
                     <div className="space-y-3">
                       <div className="flex justify-between py-2 border-b border-gray-100">
                         <span className="text-gray-600">사용자</span>
-                        <span className="font-medium">{userData.user_name}</span>
+                        <span className="font-medium">
+                          {benefit?.user_name || userData?.user_name || (isBarcode(qrData) ? '금액 입력 후 표시' : '-')}
+                        </span>
                       </div>
                       <div className="flex justify-between py-2 border-b border-gray-100">
                         <span className="text-gray-600">카드</span>
-                        <span className="font-medium text-sm">{userData.card_name}</span>
+                        <span className="font-medium text-sm">
+                          {benefit?.card_name || userData?.card_name || (isBarcode(qrData) ? '금액 입력 후 표시' : '-')}
+                        </span>
                       </div>
                     </div>
                   </div>

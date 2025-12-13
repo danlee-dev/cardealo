@@ -574,13 +574,35 @@ def init_db():
             new_card = Card(card_name=card_name, card_benefit=card_benefit, card_pre_month_money=card_pre_month_money)
             db.add(new_card)
         db.commit()
+        # Helper to convert "null" string to None for integer columns
+        def parse_int(val):
+            if val is None or val == '' or val.lower() == 'null':
+                return None
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return None
+
         for row in card_benefits_data:
             card_name, category, places, discount_type, discount_value, max_discount, pre_month_config, limit_config, places_display, discount_display, limit_display, max_discount_display = row
             if card_name in cards_data:
                 existing_card = db.scalars(select(CardBenefit).where(CardBenefit.card_name == card_name)).first()
                 if existing_card:
                     continue
-                new_card_benefit = CardBenefit(card_name=card_name, category=category, places=places, discount_type=discount_type, discount_value=discount_value, max_discount=max_discount, pre_month_config=pre_month_config, limit_config=limit_config, places_display=places_display, discount_display=discount_display, limit_display=limit_display, max_discount_display=max_discount_display)
+                new_card_benefit = CardBenefit(
+                    card_name=card_name,
+                    category=category,
+                    places=places if places and places.lower() != 'null' else None,
+                    discount_type=discount_type,
+                    discount_value=parse_int(discount_value),
+                    max_discount=parse_int(max_discount),
+                    pre_month_config=pre_month_config if pre_month_config and pre_month_config.lower() != 'null' else None,
+                    limit_config=limit_config if limit_config and limit_config.lower() != 'null' else None,
+                    places_display=places_display,
+                    discount_display=discount_display,
+                    limit_display=limit_display,
+                    max_discount_display=max_discount_display
+                )
                 db.add(new_card_benefit)
         db.commit()
     except Exception as e:

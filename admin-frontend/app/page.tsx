@@ -49,6 +49,8 @@ export default function Home() {
   const [scanner, setScanner] = useState<Html5Qrcode | null>(null);
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [barcodeUserInfo, setBarcodeUserInfo] = useState<{ user_name: string; card_name: string } | null>(null);
+  const benefitTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const benefitRequestIdRef = useRef<number>(0);
 
   // History states
   const [history, setHistory] = useState<any>({ merchants: [] });
@@ -82,8 +84,19 @@ export default function Home() {
 
   useEffect(() => {
     if (qrData && amount && parseInt(amount) > 0) {
-      calculateBenefit();
+      // 디바운스: 500ms 후에 API 호출
+      if (benefitTimeoutRef.current) {
+        clearTimeout(benefitTimeoutRef.current);
+      }
+      benefitTimeoutRef.current = setTimeout(() => {
+        calculateBenefit();
+      }, 500);
     }
+    return () => {
+      if (benefitTimeoutRef.current) {
+        clearTimeout(benefitTimeoutRef.current);
+      }
+    };
   }, [amount]);
 
   useEffect(() => {
@@ -178,6 +191,7 @@ export default function Home() {
   };
 
   const calculateBenefit = async () => {
+    const currentRequestId = ++benefitRequestIdRef.current;
     setLoading(true);
     setBenefitError('');
     try {
@@ -197,13 +211,20 @@ export default function Home() {
           payment_amount: parseInt(amount)
         });
       }
-      setBenefit(response.data);
+      // 최신 요청의 응답만 적용
+      if (currentRequestId === benefitRequestIdRef.current) {
+        setBenefit(response.data);
+      }
     } catch (err: any) {
-      console.error('Failed to calculate benefit:', err);
-      const errorMsg = err.response?.data?.detail || err.message || '혜택 계산 실패';
-      setBenefitError(errorMsg);
+      if (currentRequestId === benefitRequestIdRef.current) {
+        console.error('Failed to calculate benefit:', err);
+        const errorMsg = err.response?.data?.detail || err.message || '혜택 계산 실패';
+        setBenefitError(errorMsg);
+      }
     } finally {
-      setLoading(false);
+      if (currentRequestId === benefitRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 

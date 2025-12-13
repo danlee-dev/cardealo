@@ -69,15 +69,23 @@ async def process_payment(request: PaymentProcessRequest, db: Session = Depends(
 
                 # QR 상태를 failed로 업데이트
                 try:
+                    print(f">>> [Corp] Updating QR status to failed for user: {transaction.user_id}")
+                    print(f">>> [Corp] transaction.qr_data exists: {bool(transaction.qr_data)}")
                     if transaction.qr_data:
                         qr_data = json.loads(transaction.qr_data)
+                        print(f">>> [Corp] Parsed qr_data timestamp: {qr_data.get('timestamp')}")
                         await notify_qr_scan_status({
                             "user_id": transaction.user_id,
                             "timestamp": qr_data.get("timestamp"),
                             "status": "failed"
                         })
+                        print(f">>> [Corp] QR status update to failed SUCCESS")
+                    else:
+                        print(f">>> [Corp] No qr_data found in transaction")
                 except Exception as e:
-                    print(f"Failed to update QR status: {str(e)}")
+                    print(f">>> [Corp] Failed to update QR status: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
 
                 return JSONResponse(
                     status_code=400,
@@ -112,15 +120,23 @@ async def process_payment(request: PaymentProcessRequest, db: Session = Depends(
 
                 # QR 상태를 failed로 업데이트
                 try:
+                    print(f">>> [Personal] Updating QR status to failed for user: {transaction.user_id}")
+                    print(f">>> [Personal] transaction.qr_data exists: {bool(transaction.qr_data)}")
                     if transaction.qr_data:
                         qr_data = json.loads(transaction.qr_data)
+                        print(f">>> [Personal] Parsed qr_data timestamp: {qr_data.get('timestamp')}")
                         await notify_qr_scan_status({
                             "user_id": transaction.user_id,
                             "timestamp": qr_data.get("timestamp"),
                             "status": "failed"
                         })
+                        print(f">>> [Personal] QR status update to failed SUCCESS")
+                    else:
+                        print(f">>> [Personal] No qr_data found in transaction")
                 except Exception as e:
-                    print(f"Failed to update QR status: {str(e)}")
+                    print(f">>> [Personal] Failed to update QR status: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
 
                 # 잔액 부족 에러 응답 반환
                 return JSONResponse(

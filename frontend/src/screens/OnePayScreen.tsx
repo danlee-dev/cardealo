@@ -196,38 +196,43 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
         const token = await AuthStorage.getToken();
         if (!token) return;
 
+        // Always check scan status for failed/cancelled
+        const scanResponse = await fetch(`${API_URL}/api/qr/scan-status?timestamp=${timestamp}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        const scanData = await scanResponse.json();
+
+        // Check for failed/cancelled first (can happen at any time)
+        if (scanData.status === 'failed') {
+          setPaymentStatus('failed');
+          stopPaymentPolling();
+          setTimeout(() => {
+            setPaymentStatus('idle');
+            generateCode();
+          }, 2000);
+          return;
+        } else if (scanData.status === 'cancelled') {
+          setPaymentStatus('cancelled');
+          stopPaymentPolling();
+          setTimeout(() => {
+            setPaymentStatus('idle');
+            generateCode();
+          }, 2000);
+          return;
+        }
+
+        // Update scan checked status
         if (!scanChecked) {
-          const scanResponse = await fetch(`${API_URL}/api/qr/scan-status?timestamp=${timestamp}`, {
-            method: 'GET',
-            headers: {
-              'Authorization': `Bearer ${token}`,
-              'Content-Type': 'application/json',
-            },
-          });
-
-          const scanData = await scanResponse.json();
-
           if (scanData.status === 'scanned' || scanData.status === 'processing') {
             setPaymentStatus('waiting');
             scanChecked = true;
           } else if (scanData.status === 'completed') {
             scanChecked = true;
-          } else if (scanData.status === 'failed') {
-            setPaymentStatus('failed');
-            stopPaymentPolling();
-            setTimeout(() => {
-              setPaymentStatus('idle');
-              generateCode();
-            }, 2000);
-            return;
-          } else if (scanData.status === 'cancelled') {
-            setPaymentStatus('cancelled');
-            stopPaymentPolling();
-            setTimeout(() => {
-              setPaymentStatus('idle');
-              generateCode();
-            }, 2000);
-            return;
           }
         }
 

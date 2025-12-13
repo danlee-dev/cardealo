@@ -192,28 +192,37 @@ export default function Home() {
 
   const calculateBenefit = async () => {
     const currentRequestId = ++benefitRequestIdRef.current;
+    const parsedAmount = parseInt(amount);
+    console.log('>>> calculateBenefit called:', { amount, parsedAmount, requestId: currentRequestId });
+
     setLoading(true);
     setBenefitError('');
     try {
       let response;
       if (isBarcode(qrData)) {
         // 바코드 스캔 API 호출
+        console.log('>>> Sending barcode request with payment_amount:', parsedAmount);
         response = await axios.post(`${API_URL}/api/qr/scan-barcode`, {
           barcode_data: qrData,
           merchant_id: selectedMerchant?.id || 1,
-          payment_amount: parseInt(amount)
+          payment_amount: parsedAmount
         });
       } else {
         // QR 스캔 API 호출
+        console.log('>>> Sending QR request with payment_amount:', parsedAmount);
         response = await axios.post(`${API_URL}/api/qr/scan`, {
           qr_data: qrData,
           merchant_id: selectedMerchant?.id || 1,
-          payment_amount: parseInt(amount)
+          payment_amount: parsedAmount
         });
       }
+      console.log('>>> Response received:', response.data, 'for requestId:', currentRequestId);
       // 최신 요청의 응답만 적용
       if (currentRequestId === benefitRequestIdRef.current) {
+        console.log('>>> Setting benefit (latest request):', response.data);
         setBenefit(response.data);
+      } else {
+        console.log('>>> Ignoring stale response, current:', benefitRequestIdRef.current, 'response:', currentRequestId);
       }
     } catch (err: any) {
       if (currentRequestId === benefitRequestIdRef.current) {

@@ -40,7 +40,7 @@ async def process_payment(request: PaymentProcessRequest, db: Session = Depends(
     try:
         if is_corporate:
             # 법인카드: 한도 확인
-            card_id_str = transaction.card_id or ""
+            card_id_str = str(transaction.card_id) if transaction.card_id else ""
             if card_id_str.startswith("corp_"):
                 corporate_card_id = int(card_id_str.replace("corp_", ""))
             else:

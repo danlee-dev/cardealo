@@ -95,20 +95,22 @@ export default function Home() {
 
   useEffect(() => {
     if (qrData && amount && parseInt(amount) > 0) {
-      // 디바운스: 500ms 후에 API 호출
+      // 디바운스: 1초 후에 API 호출 (모바일 입력 고려)
       if (benefitTimeoutRef.current) {
         clearTimeout(benefitTimeoutRef.current);
       }
+      console.log('>>> Debounce scheduled for amount:', amount);
       benefitTimeoutRef.current = setTimeout(() => {
+        console.log('>>> Debounce fired, calling calculateBenefit');
         calculateBenefit();
-      }, 500);
+      }, 1000);
     }
     return () => {
       if (benefitTimeoutRef.current) {
         clearTimeout(benefitTimeoutRef.current);
       }
     };
-  }, [amount]);
+  }, [amount, qrData]);
 
   useEffect(() => {
     if (viewMode === 'scan' && !scanner) {

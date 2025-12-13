@@ -50,6 +50,7 @@ async def scan_qr(request: QRScanRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=404, detail="Merchant not found")
 
         # 혜택 계산
+        print(f">>> [QR] payment_amount received: {request.payment_amount}, type: {type(request.payment_amount)}")
         benefit_result = await calculate_benefit(
             card_name=qr_data["card_name"],
             merchant_category=merchant.category or "default",
@@ -57,11 +58,15 @@ async def scan_qr(request: QRScanRequest, db: Session = Depends(get_db)):
             payment_amount=request.payment_amount,
             db=db
         )
+        print(f">>> [QR] benefit_result: {benefit_result}")
 
         # Transaction 생성 (pending 상태)
         transaction_id = str(uuid.uuid4())
         is_corporate = qr_data.get("is_corporate", False)
         card_id_str = str(qr_data.get("card_id", "")) if qr_data.get("card_id") else None
+
+        final_amount = request.payment_amount - benefit_result["discount_amount"]
+        print(f">>> [QR] final_amount: {request.payment_amount} - {benefit_result['discount_amount']} = {final_amount}")
 
         transaction = PaymentTransaction(
             transaction_id=transaction_id,
@@ -74,7 +79,7 @@ async def scan_qr(request: QRScanRequest, db: Session = Depends(get_db)):
             payment_amount=request.payment_amount,
             discount_amount=benefit_result["discount_amount"],
             discount_type=benefit_result["discount_type"],
-            final_amount=request.payment_amount - benefit_result["discount_amount"],
+            final_amount=final_amount,
             benefit_text=benefit_result["benefit_text"],
             payment_status="pending",
             payment_method="qr_code",

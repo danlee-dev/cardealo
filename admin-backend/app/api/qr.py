@@ -19,8 +19,22 @@ router = APIRouter()
 async def scan_qr(request: QRScanRequest, db: Session = Depends(get_db)):
     """QR/바코드 스캔 및 혜택 계산"""
     try:
+        # Check if barcode data was sent to QR endpoint (12-digit number)
+        if request.qr_data.isdigit() and len(request.qr_data) == 12:
+            raise HTTPException(
+                status_code=400,
+                detail="Barcode data received. Please use /api/qr/scan-barcode endpoint for barcodes"
+            )
+
         # QR 데이터 파싱
         qr_data = json.loads(request.qr_data)
+
+        # Validate QR data is a dictionary
+        if not isinstance(qr_data, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid QR data format: expected JSON object, got {type(qr_data).__name__}"
+            )
 
         # 서명 검증
         if not verify_qr_signature(request.qr_data, settings.jwt_secret):

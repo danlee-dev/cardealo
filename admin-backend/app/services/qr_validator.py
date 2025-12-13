@@ -8,6 +8,12 @@ def verify_qr_signature(qr_data: str, secret_key: str) -> bool:
     """QR/바코드 데이터의 서명을 검증"""
     try:
         data = json.loads(qr_data)
+
+        # Validate that parsed data is a dictionary (not int, string, etc.)
+        if not isinstance(data, dict):
+            print(f"Signature verification error: QR data is not a JSON object, got {type(data).__name__}: {qr_data[:100]}")
+            return False
+
         signature = data.get('signature')
         if not signature:
             return False

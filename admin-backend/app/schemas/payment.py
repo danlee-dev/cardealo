@@ -15,6 +15,18 @@ class BarcodeScanRequest(BaseModel):
     payment_amount: int
 
 
+class BarcodeLookupRequest(BaseModel):
+    barcode_data: str  # 12자리 숫자
+
+
+class BarcodeLookupResponse(BaseModel):
+    success: bool
+    user_name: Optional[str] = None
+    card_name: Optional[str] = None
+    is_corporate: bool = False
+    error: Optional[str] = None
+
+
 class PaymentProcessRequest(BaseModel):
     transaction_id: str
     confirm: bool = True

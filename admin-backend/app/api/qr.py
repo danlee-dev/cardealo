@@ -6,7 +6,7 @@ import httpx
 from datetime import datetime
 from ..database import get_db
 from ..models import PaymentTransaction, Merchant
-from ..schemas import QRScanRequest, BarcodeScanRequest, BenefitCalculationResult
+from ..schemas import QRScanRequest, BarcodeScanRequest, BarcodeLookupRequest, BarcodeLookupResponse, BenefitCalculationResult
 from ..services.qr_validator import verify_qr_signature, is_qr_expired
 from ..services.benefit_calculator import calculate_benefit
 from ..services.webhook import notify_qr_scan_status
@@ -220,3 +220,56 @@ async def scan_barcode(request: BarcodeScanRequest, db: Session = Depends(get_db
     except Exception as e:
         print(f"Barcode scan error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/lookup-barcode", response_model=BarcodeLookupResponse)
+async def lookup_barcode(request: BarcodeLookupRequest):
+    """바코드로 사용자 정보 조회 (결제 전 미리보기용)"""
+    try:
+        # 바코드 형식 검증 (12자리 숫자)
+        if len(request.barcode_data) != 12 or not request.barcode_data.isdigit():
+            return BarcodeLookupResponse(
+                success=False,
+                error="Invalid barcode format (must be 12 digits)"
+            )
+
+        # user-backend에서 바코드로 QR 데이터 조회
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{settings.user_backend_url}/api/barcode/lookup",
+                json={"barcode_data": request.barcode_data},
+                headers={"Authorization": f"Bearer {settings.admin_secret_key}"},
+                timeout=10.0
+            )
+
+            if response.status_code != 200:
+                return BarcodeLookupResponse(
+                    success=False,
+                    error="Barcode not found or expired"
+                )
+
+            lookup_result = response.json()
+            if not lookup_result.get("success"):
+                return BarcodeLookupResponse(
+                    success=False,
+                    error=lookup_result.get("error", "Barcode lookup failed")
+                )
+
+            qr_data_str = lookup_result["qr_data"]
+
+        # QR 데이터 파싱
+        qr_data = json.loads(qr_data_str)
+
+        return BarcodeLookupResponse(
+            success=True,
+            user_name=qr_data.get("user_name"),
+            card_name=qr_data.get("card_name"),
+            is_corporate=qr_data.get("is_corporate", False)
+        )
+
+    except Exception as e:
+        print(f"Barcode lookup error: {str(e)}")
+        return BarcodeLookupResponse(
+            success=False,
+            error="Barcode lookup failed"
+        )

@@ -45,8 +45,10 @@ export default function Home() {
   const [benefit, setBenefit] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [benefitError, setBenefitError] = useState('');
   const [scanner, setScanner] = useState<Html5Qrcode | null>(null);
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [barcodeUserInfo, setBarcodeUserInfo] = useState<{ user_name: string; card_name: string } | null>(null);
 
   // History states
   const [history, setHistory] = useState<any>({ merchants: [] });
@@ -94,10 +96,29 @@ export default function Home() {
           await qrScanner.start(
             { facingMode: 'environment' },
             { fps: 10, qrbox: { width: 280, height: 280 } },
-            (decodedText) => {
+            async (decodedText) => {
               qrScanner.stop();
               setScanner(null);
               setQrData(decodedText);
+              setBarcodeUserInfo(null);
+
+              // 바코드인 경우 즉시 사용자 정보 조회
+              if (isBarcode(decodedText)) {
+                try {
+                  const response = await axios.post(`${API_URL}/api/qr/lookup-barcode`, {
+                    barcode_data: decodedText
+                  });
+                  if (response.data.success) {
+                    setBarcodeUserInfo({
+                      user_name: response.data.user_name,
+                      card_name: response.data.card_name
+                    });
+                  }
+                } catch (err) {
+                  console.error('Barcode lookup failed:', err);
+                }
+              }
+
               setViewMode('payment');
             },
             () => {}
@@ -158,6 +179,7 @@ export default function Home() {
 
   const calculateBenefit = async () => {
     setLoading(true);
+    setBenefitError('');
     try {
       let response;
       if (isBarcode(qrData)) {
@@ -178,6 +200,8 @@ export default function Home() {
       setBenefit(response.data);
     } catch (err: any) {
       console.error('Failed to calculate benefit:', err);
+      const errorMsg = err.response?.data?.detail || err.message || '혜택 계산 실패';
+      setBenefitError(errorMsg);
     } finally {
       setLoading(false);
     }
@@ -186,6 +210,7 @@ export default function Home() {
   const processPayment = async () => {
     if (!benefit) return;
     setProcessing(true);
+    setBenefitError('');
 
     try {
       await axios.post(`${API_URL}/api/payment/process`, {
@@ -197,8 +222,16 @@ export default function Home() {
         resetPayment();
         loadHistory(); // Reload history after payment
       }, 2500);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Payment failed:', err);
+      const errorData = err.response?.data;
+      if (errorData?.error === 'insufficient_balance') {
+        setBenefitError(`잔액 부족: 현재 ${errorData.balance?.toLocaleString()}원, 필요 ${errorData.required?.toLocaleString()}원`);
+      } else if (errorData?.error === 'insufficient_limit' || errorData?.error === 'card_limit_exceeded') {
+        setBenefitError(`한도 초과: 사용 ${errorData.used?.toLocaleString()}원 / 한도 ${errorData.limit?.toLocaleString()}원`);
+      } else {
+        setBenefitError(errorData?.detail || '결제 처리에 실패했습니다');
+      }
     } finally {
       setProcessing(false);
     }
@@ -209,6 +242,8 @@ export default function Home() {
     setQrData('');
     setAmount('');
     setBenefit(null);
+    setBarcodeUserInfo(null);
+    setBenefitError('');
   };
 
   const loadHistory = async () => {
@@ -382,13 +417,13 @@ export default function Home() {
                       <div className="flex justify-between py-2 border-b border-gray-100">
                         <span className="text-gray-600">사용자</span>
                         <span className="font-medium">
-                          {benefit?.user_name || userData?.user_name || (isBarcode(qrData) ? '금액 입력 후 표시' : '-')}
+                          {benefit?.user_name || userData?.user_name || barcodeUserInfo?.user_name || '-'}
                         </span>
                       </div>
                       <div className="flex justify-between py-2 border-b border-gray-100">
                         <span className="text-gray-600">카드</span>
                         <span className="font-medium text-sm">
-                          {benefit?.card_name || userData?.card_name || (isBarcode(qrData) ? '금액 입력 후 표시' : '-')}
+                          {benefit?.card_name || userData?.card_name || barcodeUserInfo?.card_name || '-'}
                         </span>
                       </div>
                     </div>

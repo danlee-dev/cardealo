@@ -1,5 +1,5 @@
 from .merchant import MerchantCreate, MerchantResponse
-from .payment import QRScanRequest, BarcodeScanRequest, PaymentProcessRequest, PaymentResponse, PaymentHistoryResponse
+from .payment import QRScanRequest, BarcodeScanRequest, BarcodeLookupRequest, BarcodeLookupResponse, PaymentProcessRequest, PaymentResponse, PaymentHistoryResponse
 from .benefit import BenefitCalculationResult
 
 __all__ = [
@@ -7,6 +7,8 @@ __all__ = [
     "MerchantResponse",
     "QRScanRequest",
     "BarcodeScanRequest",
+    "BarcodeLookupRequest",
+    "BarcodeLookupResponse",
     "PaymentProcessRequest",
     "PaymentResponse",
     "PaymentHistoryResponse",

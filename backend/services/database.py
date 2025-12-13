@@ -79,7 +79,7 @@ class Card(Base):
     __tablename__ = 'card'
 
     card_id = Column(Integer, primary_key=True, autoincrement=True)
-    card_name = Column(String)
+    card_name = Column(String, unique=True)  # unique for FK reference from CardBenefit
     card_benefit = Column(String)
     card_pre_month_money = Column(Integer)
     card_benefits = relationship("CardBenefit", back_populates="card")
@@ -532,6 +532,27 @@ def init_db():
                 print('[DB] Added is_corporate column to qr_scan_status table')
     except Exception as e:
         print(f'[DB] Auto-migration check (qr_scan_status.is_corporate): {e}')
+
+    # Auto-migration: Add unique constraint to card.card_name for PostgreSQL FK support
+    try:
+        if 'card' in inspector.get_table_names():
+            # Check if unique constraint exists
+            indexes = inspector.get_indexes('card')
+            unique_on_card_name = any(
+                idx.get('unique') and 'card_name' in idx.get('column_names', [])
+                for idx in indexes
+            )
+            if not unique_on_card_name:
+                from sqlalchemy import text
+                with engine.connect() as conn:
+                    if 'postgresql' in DATABASE_URL:
+                        conn.execute(text('ALTER TABLE card ADD CONSTRAINT card_card_name_key UNIQUE (card_name)'))
+                    else:
+                        conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS idx_card_card_name ON card (card_name)'))
+                    conn.commit()
+                print('[DB] Added unique constraint to card.card_name')
+    except Exception as e:
+        print(f'[DB] Auto-migration check (card.card_name unique): {e}')
 
     with open(cards_path, 'r', encoding='utf-8') as f:
         cards_data = json.load(f)

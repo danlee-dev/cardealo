@@ -51,6 +51,17 @@ export default function Home() {
   const [barcodeUserInfo, setBarcodeUserInfo] = useState<{ user_name: string; card_name: string } | null>(null);
   const benefitTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const benefitRequestIdRef = useRef<number>(0);
+  const amountRef = useRef<string>('');
+  const qrDataRef = useRef<string>('');
+
+  // Sync state to refs (for closure access in setTimeout)
+  useEffect(() => {
+    amountRef.current = amount;
+  }, [amount]);
+
+  useEffect(() => {
+    qrDataRef.current = qrData;
+  }, [qrData]);
 
   // History states
   const [history, setHistory] = useState<any>({ merchants: [] });
@@ -192,18 +203,26 @@ export default function Home() {
 
   const calculateBenefit = async () => {
     const currentRequestId = ++benefitRequestIdRef.current;
-    const parsedAmount = parseInt(amount);
-    console.log('>>> calculateBenefit called:', { amount, parsedAmount, requestId: currentRequestId });
+    // Read from refs to get the latest value (closure fix)
+    const currentAmount = amountRef.current;
+    const currentQrData = qrDataRef.current;
+    const parsedAmount = parseInt(currentAmount);
+    console.log('>>> calculateBenefit called:', { currentAmount, parsedAmount, requestId: currentRequestId });
+
+    if (!parsedAmount || parsedAmount <= 0) {
+      console.log('>>> Skipping API call - invalid amount');
+      return;
+    }
 
     setLoading(true);
     setBenefitError('');
     try {
       let response;
-      if (isBarcode(qrData)) {
+      if (isBarcode(currentQrData)) {
         // 바코드 스캔 API 호출
         console.log('>>> Sending barcode request with payment_amount:', parsedAmount);
         response = await axios.post(`${API_URL}/api/qr/scan-barcode`, {
-          barcode_data: qrData,
+          barcode_data: currentQrData,
           merchant_id: selectedMerchant?.id || 1,
           payment_amount: parsedAmount
         });
@@ -211,7 +230,7 @@ export default function Home() {
         // QR 스캔 API 호출
         console.log('>>> Sending QR request with payment_amount:', parsedAmount);
         response = await axios.post(`${API_URL}/api/qr/scan`, {
-          qr_data: qrData,
+          qr_data: currentQrData,
           merchant_id: selectedMerchant?.id || 1,
           payment_amount: parsedAmount
         });

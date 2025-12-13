@@ -2161,7 +2161,7 @@ def generate_qr():
             if not membership:
                 return jsonify({'error': 'You are not a member of this corporate card'}), 403
 
-            card_cid = card_id
+            card_cid = corporate_card_id  # Use integer ID for database storage
             card_name = corp_card.card_name
         else:
             # 개인카드 처리

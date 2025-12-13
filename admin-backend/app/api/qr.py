@@ -46,13 +46,17 @@ async def scan_qr(request: QRScanRequest, db: Session = Depends(get_db)):
 
         # Transaction 생성 (pending 상태)
         transaction_id = str(uuid.uuid4())
+        is_corporate = qr_data.get("is_corporate", False)
+        card_id_str = str(qr_data.get("card_id", "")) if qr_data.get("card_id") else None
+
         transaction = PaymentTransaction(
             transaction_id=transaction_id,
             merchant_id=request.merchant_id,
             user_id=qr_data["user_id"],
             user_name=qr_data["user_name"],
             card_name=qr_data["card_name"],
-            card_id=qr_data.get("card_id"),
+            card_id=card_id_str,
+            is_corporate=is_corporate,
             payment_amount=request.payment_amount,
             discount_amount=benefit_result["discount_amount"],
             discount_type=benefit_result["discount_type"],
@@ -151,13 +155,17 @@ async def scan_barcode(request: BarcodeScanRequest, db: Session = Depends(get_db
 
         # Transaction 생성 (pending 상태)
         transaction_id = str(uuid.uuid4())
+        is_corporate = qr_data.get("is_corporate", False)
+        card_id_str = str(qr_data.get("card_id", "")) if qr_data.get("card_id") else None
+
         transaction = PaymentTransaction(
             transaction_id=transaction_id,
             merchant_id=request.merchant_id,
             user_id=qr_data["user_id"],
             user_name=qr_data["user_name"],
             card_name=qr_data["card_name"],
-            card_id=qr_data.get("card_id"),
+            card_id=card_id_str,
+            is_corporate=is_corporate,
             payment_amount=request.payment_amount,
             discount_amount=benefit_result["discount_amount"],
             discount_type=benefit_result["discount_type"],

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey
 from sqlalchemy.sql import func
 from ..database import Base
 
@@ -12,7 +12,8 @@ class PaymentTransaction(Base):
     user_id = Column(String(255), nullable=False, index=True)
     user_name = Column(String(255))
     card_name = Column(String(255), nullable=False)
-    card_id = Column(Integer)
+    card_id = Column(String(50))  # String으로 변경: 법인카드 "corp_1" 형식 지원
+    is_corporate = Column(Boolean, default=False)  # 법인카드 여부
     payment_amount = Column(Integer, nullable=False)
     discount_amount = Column(Integer, default=0)
     discount_type = Column(String(50))

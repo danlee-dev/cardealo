@@ -2198,6 +2198,7 @@ def generate_qr():
         qr_status = QRScanStatus(
             user_id=user_id,
             card_id=card_cid,
+            is_corporate=is_corporate,
             timestamp=timestamp,
             status='waiting'
         )
@@ -2615,20 +2616,37 @@ def lookup_barcode():
             db.close()
             return jsonify({'success': False, 'error': 'Barcode not found or expired'}), 404
 
-        # 사용자 및 카드 정보 조회
+        # 사용자 정보 조회
         user = db.scalars(select(User).where(User.user_id == qr_status.user_id)).first()
-        card = db.scalars(select(MyCard).where(MyCard.cid == qr_status.card_id)).first()
-
-        if not user or not card:
+        if not user:
             db.close()
-            return jsonify({'success': False, 'error': 'User or card not found'}), 404
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+
+        # 법인카드/개인카드에 따라 조회
+        is_corporate = qr_status.is_corporate if hasattr(qr_status, 'is_corporate') and qr_status.is_corporate else False
+
+        if is_corporate:
+            # 법인카드 조회
+            corp_card = db.scalars(select(CorporateCard).where(CorporateCard.id == qr_status.card_id)).first()
+            if not corp_card:
+                db.close()
+                return jsonify({'success': False, 'error': 'Corporate card not found'}), 404
+            card_name = corp_card.card_name
+        else:
+            # 개인카드 조회
+            card = db.scalars(select(MyCard).where(MyCard.cid == qr_status.card_id)).first()
+            if not card:
+                db.close()
+                return jsonify({'success': False, 'error': 'Card not found'}), 404
+            card_name = card.mycard_name
 
         # QR 데이터 재생성 (QR과 동일한 형식)
         qr_data = {
             "user_id": qr_status.user_id,
             "user_name": user.user_name,
             "card_id": qr_status.card_id,
-            "card_name": card.mycard_name,
+            "card_name": card_name,
+            "is_corporate": is_corporate,
             "timestamp": qr_status.timestamp
         }
 
@@ -2761,6 +2779,7 @@ def payment_webhook():
         discount_amount = data.get('discount_amount')
         final_amount = data.get('final_amount')
         benefit_text = data.get('benefit_text')
+        is_corporate = data.get('is_corporate', False)
 
         db = get_db()
 
@@ -2770,8 +2789,14 @@ def payment_webhook():
             user.monthly_spending += final_amount
             user.monthly_savings += discount_amount
 
-        # 카드 정보 업데이트
-        card = db.scalars(select(MyCard).where(MyCard.cid == card_id)).first()
+            # 개인카드 결제 시 잔액 차감
+            if not is_corporate:
+                user.balance -= final_amount
+
+        # 카드 정보 업데이트 (개인카드만)
+        card = None
+        if not is_corporate:
+            card = db.scalars(select(MyCard).where(MyCard.cid == card_id)).first()
         if card:
             today = date.today()
 

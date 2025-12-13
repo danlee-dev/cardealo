@@ -200,7 +200,8 @@ class QRScanStatus(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(String, ForeignKey('user.user_id'))
-    card_id = Column(Integer, ForeignKey('mycard.cid'))
+    card_id = Column(Integer)  # 개인카드 cid 또는 법인카드 id
+    is_corporate = Column(Boolean, default=False)  # 법인카드 여부
     timestamp = Column(Integer, nullable=False)  # QR 생성 시간
     status = Column(String, default='waiting')  # waiting, scanned, processing, completed, failed, cancelled
     merchant_name = Column(String)
@@ -209,7 +210,6 @@ class QRScanStatus(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User")
-    card = relationship("MyCard")
 
 
 # ============ 법인카드 관련 모델들 ============
@@ -518,7 +518,20 @@ def init_db():
                 conn.commit()
             print('[DB] Added balance column to user table')
     except Exception as e:
-        print(f'[DB] Auto-migration check: {e}')
+        print(f'[DB] Auto-migration check (user.balance): {e}')
+
+    # Auto-migration: Add is_corporate column to qr_scan_status if not exists
+    try:
+        if 'qr_scan_status' in inspector.get_table_names():
+            qr_columns = [col['name'] for col in inspector.get_columns('qr_scan_status')]
+            if 'is_corporate' not in qr_columns:
+                from sqlalchemy import text
+                with engine.connect() as conn:
+                    conn.execute(text('ALTER TABLE qr_scan_status ADD COLUMN is_corporate BOOLEAN DEFAULT FALSE'))
+                    conn.commit()
+                print('[DB] Added is_corporate column to qr_scan_status table')
+    except Exception as e:
+        print(f'[DB] Auto-migration check (qr_scan_status.is_corporate): {e}')
 
     with open(cards_path, 'r', encoding='utf-8') as f:
         cards_data = json.load(f)

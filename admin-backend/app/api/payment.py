@@ -8,7 +8,7 @@ import json
 from ..database import get_db
 from ..models import PaymentTransaction, Merchant
 from ..schemas import PaymentProcessRequest, PaymentResponse, PaymentHistoryResponse
-from ..services.webhook import notify_user_backend, notify_qr_scan_status, check_user_balance, notify_payment_failure
+from ..services.webhook import notify_user_backend, notify_qr_scan_status, check_user_balance, check_corporate_card_limit, notify_payment_failure
 
 router = APIRouter()
 
@@ -33,52 +33,111 @@ async def process_payment(request: PaymentProcessRequest, db: Session = Depends(
     # 가맹점 정보 조회
     merchant = db.query(Merchant).filter(Merchant.id == transaction.merchant_id).first()
 
-    # 잔액 확인
+    # 법인카드 여부 확인
+    is_corporate = transaction.is_corporate or False
+
+    # 잔액/한도 확인
     try:
-        balance_result = await check_user_balance(
-            user_id=transaction.user_id,
-            amount=transaction.final_amount
-        )
+        if is_corporate:
+            # 법인카드: 한도 확인
+            card_id_str = transaction.card_id or ""
+            if card_id_str.startswith("corp_"):
+                corporate_card_id = int(card_id_str.replace("corp_", ""))
+            else:
+                corporate_card_id = int(card_id_str) if card_id_str.isdigit() else 0
 
-        if not balance_result.get('sufficient', False):
-            # 잔액 부족 - 사용자 앱에 알림 전송
-            try:
-                await notify_payment_failure({
-                    "user_id": transaction.user_id,
-                    "reason": "insufficient_balance",
-                    "balance": balance_result.get('balance', 0),
-                    "required": transaction.final_amount,
-                    "merchant_name": merchant.name if merchant else "Unknown"
-                })
-            except Exception as e:
-                print(f"Failed to notify payment failure: {str(e)}")
-
-            # QR 상태를 failed로 업데이트
-            try:
-                if transaction.qr_data:
-                    qr_data = json.loads(transaction.qr_data)
-                    await notify_qr_scan_status({
-                        "user_id": transaction.user_id,
-                        "timestamp": qr_data.get("timestamp"),
-                        "status": "failed"
-                    })
-            except Exception as e:
-                print(f"Failed to update QR status: {str(e)}")
-
-            # 잔액 부족 에러 응답 반환
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": "insufficient_balance",
-                    "detail": "잔액이 부족합니다",
-                    "balance": balance_result.get('balance', 0),
-                    "required": transaction.final_amount,
-                    "shortage": balance_result.get('shortage', 0)
-                }
+            limit_result = await check_corporate_card_limit(
+                user_id=transaction.user_id,
+                card_id=corporate_card_id,
+                amount=transaction.final_amount
             )
+
+            if not limit_result.get('sufficient', False):
+                # 한도 초과 - 사용자 앱에 알림 전송
+                error_type = limit_result.get('error', 'insufficient_limit')
+                try:
+                    await notify_payment_failure({
+                        "user_id": transaction.user_id,
+                        "reason": error_type,
+                        "limit": limit_result.get('limit', 0),
+                        "used": limit_result.get('used', 0),
+                        "required": transaction.final_amount,
+                        "merchant_name": merchant.name if merchant else "Unknown"
+                    })
+                except Exception as e:
+                    print(f"Failed to notify payment failure: {str(e)}")
+
+                # QR 상태를 failed로 업데이트
+                try:
+                    if transaction.qr_data:
+                        qr_data = json.loads(transaction.qr_data)
+                        await notify_qr_scan_status({
+                            "user_id": transaction.user_id,
+                            "timestamp": qr_data.get("timestamp"),
+                            "status": "failed"
+                        })
+                except Exception as e:
+                    print(f"Failed to update QR status: {str(e)}")
+
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": error_type,
+                        "detail": limit_result.get('message', '한도가 초과되었습니다'),
+                        "limit": limit_result.get('limit', 0),
+                        "used": limit_result.get('used', 0),
+                        "required": transaction.final_amount,
+                        "shortage": limit_result.get('shortage', 0)
+                    }
+                )
+        else:
+            # 개인카드: 잔액 확인
+            balance_result = await check_user_balance(
+                user_id=transaction.user_id,
+                amount=transaction.final_amount
+            )
+
+            if not balance_result.get('sufficient', False):
+                # 잔액 부족 - 사용자 앱에 알림 전송
+                try:
+                    await notify_payment_failure({
+                        "user_id": transaction.user_id,
+                        "reason": "insufficient_balance",
+                        "balance": balance_result.get('balance', 0),
+                        "required": transaction.final_amount,
+                        "merchant_name": merchant.name if merchant else "Unknown"
+                    })
+                except Exception as e:
+                    print(f"Failed to notify payment failure: {str(e)}")
+
+                # QR 상태를 failed로 업데이트
+                try:
+                    if transaction.qr_data:
+                        qr_data = json.loads(transaction.qr_data)
+                        await notify_qr_scan_status({
+                            "user_id": transaction.user_id,
+                            "timestamp": qr_data.get("timestamp"),
+                            "status": "failed"
+                        })
+                except Exception as e:
+                    print(f"Failed to update QR status: {str(e)}")
+
+                # 잔액 부족 에러 응답 반환
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "insufficient_balance",
+                        "detail": "잔액이 부족합니다",
+                        "balance": balance_result.get('balance', 0),
+                        "required": transaction.final_amount,
+                        "shortage": balance_result.get('shortage', 0)
+                    }
+                )
     except Exception as e:
-        print(f"Balance check failed: {str(e)}")
-        # 잔액 확인 실패 시에도 결제 진행 (fallback)
+        print(f"Balance/Limit check failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # 잔액/한도 확인 실패 시에도 결제 진행 (fallback)
 
     # 결제 완료 처리
     transaction.payment_status = "completed"
@@ -91,6 +150,7 @@ async def process_payment(request: PaymentProcessRequest, db: Session = Depends(
             "transaction_id": transaction.transaction_id,
             "user_id": transaction.user_id,
             "card_id": transaction.card_id,
+            "is_corporate": is_corporate,
             "merchant_name": merchant.name if merchant else "Unknown",
             "payment_amount": transaction.payment_amount,
             "discount_amount": transaction.discount_amount,

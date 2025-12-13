@@ -2709,13 +2709,19 @@ def update_qr_scan_status():
         if status not in ['waiting', 'scanned', 'processing', 'completed', 'failed', 'cancelled']:
             return jsonify({'error': 'Invalid status'}), 400
 
+        # timestamp를 int로 변환
+        try:
+            timestamp_int = int(timestamp)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'invalid timestamp format'}), 400
+
         db = get_db()
 
         # QR 스캔 상태 조회
         qr_status = db.scalars(
             select(QRScanStatus).where(
                 QRScanStatus.user_id == user_id,
-                QRScanStatus.timestamp == timestamp
+                QRScanStatus.timestamp == timestamp_int
             )
         ).first()
 

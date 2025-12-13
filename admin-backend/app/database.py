@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from .config import settings
@@ -25,3 +25,33 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def auto_migrate_columns():
+    """Auto-migrate missing columns to existing tables"""
+    inspector = inspect(engine)
+
+    # payment_transactions 테이블 컬럼 추가
+    if 'payment_transactions' in inspector.get_table_names():
+        existing_columns = [col['name'] for col in inspector.get_columns('payment_transactions')]
+
+        with engine.connect() as conn:
+            # is_corporate 컬럼 추가
+            if 'is_corporate' not in existing_columns:
+                print(">>> Adding 'is_corporate' column to payment_transactions")
+                if is_sqlite:
+                    conn.execute(text("ALTER TABLE payment_transactions ADD COLUMN is_corporate BOOLEAN DEFAULT FALSE"))
+                else:
+                    conn.execute(text("ALTER TABLE payment_transactions ADD COLUMN is_corporate BOOLEAN DEFAULT FALSE"))
+                conn.commit()
+                print(">>> Added 'is_corporate' column successfully")
+
+            # card_id 컬럼 추가 (없는 경우)
+            if 'card_id' not in existing_columns:
+                print(">>> Adding 'card_id' column to payment_transactions")
+                if is_sqlite:
+                    conn.execute(text("ALTER TABLE payment_transactions ADD COLUMN card_id VARCHAR(50)"))
+                else:
+                    conn.execute(text("ALTER TABLE payment_transactions ADD COLUMN card_id VARCHAR(50)"))
+                conn.commit()
+                print(">>> Added 'card_id' column successfully")

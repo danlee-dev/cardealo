@@ -6,10 +6,13 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .api import merchants, qr, payment, benefits
-from .database import engine, Base
+from .database import engine, Base, auto_migrate_columns
 
 # Create database tables
-Base.metadata.create_all(bind=engine)
+Base.metadata.create_all(bind=engine, checkfirst=True)
+
+# Auto-migrate missing columns
+auto_migrate_columns()
 
 app = FastAPI(
     title="Cardealo Admin API",

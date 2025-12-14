@@ -29,7 +29,18 @@ from io import BytesIO
 import base64
 import hmac
 import hashlib
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
+
+# 한국 시간대 (KST = UTC+9)
+KST = timezone(timedelta(hours=9))
+
+def get_kst_now():
+    """현재 한국 시간 반환"""
+    return datetime.now(KST)
+
+def timestamp_to_kst(ts):
+    """Unix timestamp를 한국 시간 datetime으로 변환"""
+    return datetime.fromtimestamp(ts, tz=KST)
 
 load_dotenv()
 
@@ -2304,9 +2315,9 @@ def get_qr_scan_status():
             db.close()
             return jsonify({'error': 'QR not found'}), 404
 
-        # 타임아웃 체크 (60초)
+        # 타임아웃 체크 (60초) - KST 기준
         if qr_status.status in ['waiting', 'scanned'] and \
-           (datetime.utcnow() - qr_status.created_at).seconds > 60:
+           (get_kst_now() - qr_status.created_at).seconds > 60:
             qr_status.status = 'failed'
             db.commit()
 
@@ -2760,7 +2771,7 @@ def update_qr_scan_status():
         if merchant_name:
             qr_status.merchant_name = merchant_name
         if status == 'scanned' and not qr_status.scanned_at:
-            qr_status.scanned_at = datetime.utcnow()
+            qr_status.scanned_at = get_kst_now()
 
         db.commit()
 
@@ -3328,15 +3339,16 @@ def get_recent_payment():
         db = get_db()
 
         # QR 생성 시간 이후의 결제만 조회 (after_timestamp 파라미터)
-        # payment_date는 UTC로 저장되므로 utcfromtimestamp 사용
+        # 모든 시간은 KST로 통일
         after_timestamp = request.args.get('after_timestamp', type=int)
         if after_timestamp:
-            after_datetime = datetime.utcfromtimestamp(after_timestamp)
+            # Unix timestamp를 KST datetime으로 변환 (naive)
+            after_datetime = timestamp_to_kst(after_timestamp).replace(tzinfo=None)
         else:
-            # fallback: 최근 5분 이내 (UTC 기준)
-            after_datetime = datetime.utcnow() - timedelta(minutes=5)
+            # fallback: 최근 5분 이내 (KST 기준)
+            after_datetime = get_kst_now() - timedelta(minutes=5)
 
-        print(f">>> [Payment Recent] user={user_id}, after_ts={after_timestamp}, after_dt={after_datetime}")
+        print(f">>> [Payment Recent] user={user_id}, after_ts={after_timestamp}, after_dt={after_datetime} (KST)")
 
         recent_payment = db.scalars(
             select(PaymentHistory)

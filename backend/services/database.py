@@ -2,7 +2,14 @@ import os
 from sqlalchemy import create_engine, Column, String, Integer, Boolean, ForeignKey, select, delete, DateTime, Text, Date
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship, Session
 from sqlalchemy_utils import PasswordType
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
+
+# 한국 시간대 (KST = UTC+9)
+KST = timezone(timedelta(hours=9))
+
+def get_kst_now():
+    """현재 한국 시간 반환 (naive datetime)"""
+    return datetime.now(KST).replace(tzinfo=None)
 
 import json
 import csv
@@ -190,7 +197,7 @@ class PaymentHistory(Base):
     discount_amount = Column(Integer)
     final_amount = Column(Integer)
     benefit_text = Column(Text)
-    payment_date = Column(DateTime, default=datetime.utcnow)
+    payment_date = Column(DateTime, default=get_kst_now)
 
     user = relationship("User")
 
@@ -207,8 +214,8 @@ class QRScanStatus(Base):
     status = Column(String, default='waiting')  # waiting, scanned, processing, completed, failed, cancelled
     merchant_name = Column(String)
     scanned_at = Column(DateTime)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=get_kst_now)
+    updated_at = Column(DateTime, default=get_kst_now, onupdate=get_kst_now)
 
     user = relationship("User")
 
@@ -308,7 +315,7 @@ class CorporatePaymentHistory(Base):
     benefit_text = Column(Text)
     receipt_image = Column(Text)  # 영수증 이미지 (base64 또는 URL)
     receipt_ocr_data = Column(Text)  # OCR 추출 데이터 (JSON)
-    payment_date = Column(DateTime, default=datetime.utcnow)
+    payment_date = Column(DateTime, default=get_kst_now)
     synced_at = Column(DateTime)  # 동기화 시간
 
     corporate_card = relationship("CorporateCard", back_populates="payments")

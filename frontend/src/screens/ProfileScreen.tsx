@@ -465,15 +465,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
             <View style={styles.progressHeader}>
               <Text style={styles.progressLabel}>실적</Text>
               <Text style={styles.progressValue}>
-                {item.performance.current.toLocaleString()}원 /{' '}
-                {item.performance.required.toLocaleString()}원
+                {item.performance.required > 0
+                  ? `${(item.performance.current || 0).toLocaleString()}원 / ${item.performance.required.toLocaleString()}원`
+                  : '기준 없음'}
               </Text>
             </View>
-            <View style={styles.progressBarContainer}>
-              <View
-                style={[styles.progressBar, styles.progressBarPerformance, { width: `${Math.min(performancePercent, 100)}%` }]}
-              />
-            </View>
+            {item.performance.required > 0 && (
+              <View style={styles.progressBarContainer}>
+                <View
+                  style={[styles.progressBar, styles.progressBarPerformance, { width: `${Math.min(performancePercent, 100)}%` }]}
+                />
+              </View>
+            )}
           </View>
 
         </View>
@@ -865,6 +868,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ onBack, onLogout }
             onClose={handleCloseAdmin}
             onViewDepartments={handleViewDepartments}
             onViewMembers={handleViewMembers}
+            onCardChange={(newCardId) => setSelectedCardId(newCardId)}
           />
         </View>
       )}

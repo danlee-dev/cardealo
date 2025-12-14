@@ -259,14 +259,10 @@ export const ReceiptScanScreen: React.FC<ReceiptScanScreenProps> = ({ onBack, on
       } else {
         // 법인카드 멤버가 아니거나 한도 초과 등
         if (data.error?.includes('법인카드 멤버가 아닙니다')) {
-          // 개인 영수증으로 저장 (현재는 알림만)
           Alert.alert(
-            '저장 완료',
-            '영수증 정보가 저장되었습니다.',
-            [{ text: '확인', onPress: () => {
-              onSaved?.();
-              handleBack();
-            }}]
+            '저장 불가',
+            '법인카드 멤버로 등록되어 있지 않습니다.\n관리자에게 초대를 요청해주세요.',
+            [{ text: '확인', onPress: handleBack }]
           );
         } else {
           Alert.alert('저장 실패', data.error || '저장에 실패했습니다.');

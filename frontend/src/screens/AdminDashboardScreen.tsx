@@ -63,6 +63,7 @@ interface AdminDashboardScreenProps {
   onClose: () => void;
   onViewDepartments: () => void;
   onViewMembers: () => void;
+  onCardChange?: (cardId: number) => void;
 }
 
 export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
@@ -70,7 +71,8 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
   cards,
   onClose,
   onViewDepartments,
-  onViewMembers
+  onViewMembers,
+  onCardChange
 }) => {
   const insets = useSafeAreaInsets();
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
@@ -187,7 +189,10 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
                       styles.cardTab,
                       selectedCardId === card.id && styles.cardTabActive
                     ]}
-                    onPress={() => setSelectedCardId(card.id)}
+                    onPress={() => {
+                      setSelectedCardId(card.id);
+                      onCardChange?.(card.id);
+                    }}
                     activeOpacity={0.7}
                   >
                     <Text style={[

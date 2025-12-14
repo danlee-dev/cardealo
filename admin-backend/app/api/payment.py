@@ -179,15 +179,23 @@ async def process_payment(request: PaymentProcessRequest, db: Session = Depends(
 
     # QR 스캔 상태를 'completed'로 업데이트
     try:
+        print(f">>> [Completed] Updating QR status for user: {transaction.user_id}")
+        print(f">>> [Completed] transaction.qr_data exists: {bool(transaction.qr_data)}")
         if transaction.qr_data:
             qr_data = json.loads(transaction.qr_data)
-            await notify_qr_scan_status({
+            print(f">>> [Completed] Parsed qr_data timestamp: {qr_data.get('timestamp')}")
+            result = await notify_qr_scan_status({
                 "user_id": transaction.user_id,
                 "timestamp": qr_data.get("timestamp"),
                 "status": "completed"
             })
+            print(f">>> [Completed] QR status update result: {result}")
+        else:
+            print(f">>> [Completed] No qr_data found in transaction")
     except Exception as e:
-        print(f"QR status update failed: {str(e)}")
+        print(f">>> [Completed] QR status update failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
         # QR 상태 업데이트 실패해도 결제는 완료됨
 
     return PaymentResponse(

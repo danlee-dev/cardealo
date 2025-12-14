@@ -35,12 +35,12 @@ from datetime import datetime, date, timedelta, timezone
 KST = timezone(timedelta(hours=9))
 
 def get_kst_now():
-    """현재 한국 시간 반환"""
-    return datetime.now(KST)
+    """현재 한국 시간 반환 (naive datetime)"""
+    return datetime.now(KST).replace(tzinfo=None)
 
 def timestamp_to_kst(ts):
-    """Unix timestamp를 한국 시간 datetime으로 변환"""
-    return datetime.fromtimestamp(ts, tz=KST)
+    """Unix timestamp를 한국 시간 datetime으로 변환 (naive)"""
+    return datetime.fromtimestamp(ts, tz=KST).replace(tzinfo=None)
 
 load_dotenv()
 

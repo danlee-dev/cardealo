@@ -767,12 +767,18 @@ def create_corporate_cards():
 
         created_count = 0
         for card_data in corporate_cards_data:
-            # 이미 존재하는지 확인
-            existing_card = db.scalars(
+            # 기존 카드가 있으면 삭제 (중복 방지)
+            existing_cards = db.scalars(
                 select(CorporateCard).where(CorporateCard.card_name == card_data['card_name'])
-            ).first()
-            if existing_card:
-                continue
+            ).all()
+            for existing_card in existing_cards:
+                db.execute(delete(CorporatePaymentHistory).where(CorporatePaymentHistory.corporate_card_id == existing_card.id))
+                db.execute(delete(CorporateCardMember).where(CorporateCardMember.corporate_card_id == existing_card.id))
+                db.execute(delete(Department).where(Department.corporate_card_id == existing_card.id))
+                db.delete(existing_card)
+            if existing_cards:
+                db.commit()
+                print(f'[DB] Deleted {len(existing_cards)} duplicate cards with name: {card_data["card_name"]}')
 
             # 소유자 찾기
             owner = db.scalars(

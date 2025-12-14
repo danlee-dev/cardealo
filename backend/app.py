@@ -2320,6 +2320,8 @@ def get_qr_scan_status():
         if qr_status.scanned_at:
             response['scanned_at'] = qr_status.scanned_at.isoformat()
 
+        print(f">>> [QR Status] user {user_id}, timestamp {timestamp_int}: status={qr_status.status}")
+
         db.close()
 
         return jsonify(response), 200
@@ -2749,6 +2751,7 @@ def update_qr_scan_status():
             return jsonify({'error': 'QR not found'}), 404
 
         # 상태 업데이트
+        print(f">>> [QR Update] Updating status for user {user_id}, timestamp {timestamp_int}: {qr_status.status} -> {status}")
         qr_status.status = status
         if merchant_name:
             qr_status.merchant_name = merchant_name

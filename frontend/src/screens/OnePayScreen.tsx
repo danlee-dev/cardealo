@@ -75,6 +75,7 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
     benefit_text: string;
   } | null>(null);
   const [qrTimestamp, setQrTimestamp] = useState<number | null>(null);
+  const shownTransactionIds = useRef<Set<string>>(new Set()); // 이미 표시한 결제 ID 추적
   const slideAnim = useRef(new Animated.Value(SCREEN_WIDTH)).current;
   const carouselRef = useRef<FlatList>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -247,7 +248,11 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
           });
 
           const data = await response.json();
-          if (data.new_payment) {
+          // 새 결제가 있고, 아직 표시하지 않은 transaction인 경우에만 표시
+          if (data.new_payment && data.transaction_id && !shownTransactionIds.current.has(data.transaction_id)) {
+            // 이 transaction_id를 표시했다고 기록
+            shownTransactionIds.current.add(data.transaction_id);
+
             setPaymentResult({
               merchant_name: data.merchant_name,
               final_amount: data.final_amount,

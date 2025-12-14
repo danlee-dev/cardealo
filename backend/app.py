@@ -2320,7 +2320,7 @@ def get_qr_scan_status():
         if qr_status.scanned_at:
             response['scanned_at'] = qr_status.scanned_at.isoformat()
 
-        print(f">>> [QR Status] user {user_id}, timestamp {timestamp_int}: status={qr_status.status}")
+        print(f">>> [QR Status] id={qr_status.id}, user={user_id}, ts={timestamp_int}, status={qr_status.status}")
 
         db.close()
 
@@ -2738,20 +2738,24 @@ def update_qr_scan_status():
 
         db = get_db()
 
-        # QR 스캔 상태 조회
+        # QR 스캔 상태 조회 (GET 엔드포인트와 동일하게 order_by 사용)
         qr_status = db.scalars(
             select(QRScanStatus).where(
                 QRScanStatus.user_id == user_id,
                 QRScanStatus.timestamp == timestamp_int
-            )
+            ).order_by(QRScanStatus.created_at.desc())
         ).first()
 
         if not qr_status:
             db.close()
+            print(f">>> [QR Update] NOT FOUND - user {user_id}, timestamp {timestamp_int}")
             return jsonify({'error': 'QR not found'}), 404
 
         # 상태 업데이트
-        print(f">>> [QR Update] Updating status for user {user_id}, timestamp {timestamp_int}: {qr_status.status} -> {status}")
+        old_status = qr_status.status
+        record_id = qr_status.id
+        print(f">>> [QR Update] BEFORE - id={record_id}, user={user_id}, ts={timestamp_int}, status={old_status}")
+
         qr_status.status = status
         if merchant_name:
             qr_status.merchant_name = merchant_name
@@ -2759,6 +2763,11 @@ def update_qr_scan_status():
             qr_status.scanned_at = datetime.utcnow()
 
         db.commit()
+
+        # 커밋 후 확인
+        db.refresh(qr_status)
+        print(f">>> [QR Update] AFTER COMMIT - id={record_id}, status={qr_status.status} (expected: {status})")
+
         db.close()
 
         return jsonify({'success': True}), 200

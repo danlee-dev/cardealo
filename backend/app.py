@@ -29,7 +29,7 @@ from io import BytesIO
 import base64
 import hmac
 import hashlib
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 load_dotenv()
 
@@ -3328,12 +3328,15 @@ def get_recent_payment():
         db = get_db()
 
         # QR 생성 시간 이후의 결제만 조회 (after_timestamp 파라미터)
+        # payment_date는 UTC로 저장되므로 utcfromtimestamp 사용
         after_timestamp = request.args.get('after_timestamp', type=int)
         if after_timestamp:
-            after_datetime = datetime.fromtimestamp(after_timestamp)
+            after_datetime = datetime.utcfromtimestamp(after_timestamp)
         else:
-            # fallback: 최근 5분 이내
-            after_datetime = datetime.fromtimestamp(datetime.now().timestamp() - 300)
+            # fallback: 최근 5분 이내 (UTC 기준)
+            after_datetime = datetime.utcnow() - timedelta(minutes=5)
+
+        print(f">>> [Payment Recent] user={user_id}, after_ts={after_timestamp}, after_dt={after_datetime}")
 
         recent_payment = db.scalars(
             select(PaymentHistory)
@@ -3346,6 +3349,7 @@ def get_recent_payment():
         ).first()
 
         if recent_payment:
+            print(f">>> [Payment Recent] FOUND - tx={recent_payment.transaction_id}, payment_date={recent_payment.payment_date}")
             return jsonify({
                 'new_payment': True,
                 'transaction_id': recent_payment.transaction_id,
@@ -3356,6 +3360,8 @@ def get_recent_payment():
                 'benefit_text': recent_payment.benefit_text,
                 'payment_date': recent_payment.payment_date.isoformat()
             }), 200
+        else:
+            print(f">>> [Payment Recent] NOT FOUND")
 
         db.close()
 

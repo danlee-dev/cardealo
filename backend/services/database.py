@@ -555,6 +555,22 @@ def init_db():
     except Exception as e:
         print(f'[DB] Auto-migration check (card.card_name unique): {e}')
 
+    # Auto-migration: Add corporate_card_id and is_corporate columns to payment_history
+    try:
+        if 'payment_history' in inspector.get_table_names():
+            ph_columns = [col['name'] for col in inspector.get_columns('payment_history')]
+            from sqlalchemy import text
+            with engine.connect() as conn:
+                if 'corporate_card_id' not in ph_columns:
+                    conn.execute(text('ALTER TABLE payment_history ADD COLUMN corporate_card_id INTEGER'))
+                    print('[DB] Added corporate_card_id column to payment_history table')
+                if 'is_corporate' not in ph_columns:
+                    conn.execute(text('ALTER TABLE payment_history ADD COLUMN is_corporate BOOLEAN DEFAULT FALSE'))
+                    print('[DB] Added is_corporate column to payment_history table')
+                conn.commit()
+    except Exception as e:
+        print(f'[DB] Auto-migration check (payment_history columns): {e}')
+
     with open(cards_path, 'r', encoding='utf-8') as f:
         cards_data = json.load(f)
     card_benefits_data = csv.reader(open(card_benefits_path, 'r', encoding='utf-8'))

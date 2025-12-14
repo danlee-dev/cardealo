@@ -182,7 +182,9 @@ class PaymentHistory(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     transaction_id = Column(String(36), unique=True, nullable=False)
     user_id = Column(String, ForeignKey('user.user_id'))
-    card_id = Column(Integer, ForeignKey('mycard.cid'))
+    card_id = Column(Integer, nullable=True)  # 개인카드 cid (법인카드인 경우 null)
+    corporate_card_id = Column(Integer, nullable=True)  # 법인카드 id (개인카드인 경우 null)
+    is_corporate = Column(Boolean, default=False)  # 법인카드 결제 여부
     merchant_name = Column(String)
     payment_amount = Column(Integer)
     discount_amount = Column(Integer)
@@ -191,7 +193,6 @@ class PaymentHistory(Base):
     payment_date = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
-    card = relationship("MyCard")
 
 
 class QRScanStatus(Base):

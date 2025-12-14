@@ -2225,6 +2225,8 @@ def generate_qr():
         else:
             barcode_card_id = str(card_cid).zfill(4)
         barcode_data = f"{str(timestamp)[-8:]}{barcode_card_id}"
+        print(f">>> [QR Generate] user_id: {user_id}, card_cid: {card_cid}, is_corporate: {is_corporate}")
+        print(f">>> [QR Generate] barcode_card_id: {barcode_card_id}, barcode_data: {barcode_data}, length: {len(barcode_data)}")
         code128 = barcode.get('code128', barcode_data, writer=ImageWriter())
         barcode_buffered = BytesIO()
         code128.write(barcode_buffered, options={
@@ -2594,25 +2596,42 @@ def lookup_barcode():
         data = request.get_json()
         barcode_data = data.get('barcode_data', '')
 
+        print(f">>> [Barcode Lookup] Received barcode: {barcode_data}, length: {len(barcode_data)}")
+
         # 바코드 파싱 (12자리: timestamp 마지막 8자리 + card_id 4자리)
         if len(barcode_data) != 12 or not barcode_data.isdigit():
+            print(f">>> [Barcode Lookup] Invalid format - length: {len(barcode_data)}, isdigit: {barcode_data.isdigit()}")
             return jsonify({'success': False, 'error': 'Invalid barcode format'}), 400
 
         timestamp_suffix = barcode_data[:8]  # 처음 8자리 = timestamp 마지막 8자리
         card_id = int(barcode_data[8:])  # 마지막 4자리 = card_id
 
+        print(f">>> [Barcode Lookup] Parsed - timestamp_suffix: {timestamp_suffix}, card_id: {card_id}")
+
         db = get_db()
 
         # QRScanStatus에서 매칭되는 레코드 찾기
+        # waiting 또는 failed 상태 모두 허용 (failed 후 바코드로 재시도 가능)
         qr_status = db.scalars(
             select(QRScanStatus).where(
                 cast(QRScanStatus.timestamp, String).like(f'%{timestamp_suffix}'),
                 QRScanStatus.card_id == card_id,
-                QRScanStatus.status == 'waiting'  # 대기 중인 QR만
+                QRScanStatus.status.in_(['waiting', 'failed', 'scanned'])  # 대기/실패/스캔됨 상태
             ).order_by(QRScanStatus.created_at.desc())
         ).first()
 
+        print(f">>> [Barcode Lookup] QRScanStatus found: {qr_status is not None}")
+        if qr_status:
+            print(f">>> [Barcode Lookup] QRScanStatus - user_id: {qr_status.user_id}, card_id: {qr_status.card_id}, timestamp: {qr_status.timestamp}")
+
         if not qr_status:
+            # 디버그: 모든 waiting 상태의 QRScanStatus 조회
+            all_waiting = db.scalars(
+                select(QRScanStatus).where(QRScanStatus.status == 'waiting').order_by(QRScanStatus.created_at.desc()).limit(5)
+            ).all()
+            print(f">>> [Barcode Lookup] Recent waiting QRScanStatus records:")
+            for qs in all_waiting:
+                print(f">>>   - user_id: {qs.user_id}, card_id: {qs.card_id}, timestamp: {qs.timestamp}, is_corporate: {qs.is_corporate}")
             db.close()
             return jsonify({'success': False, 'error': 'Barcode not found or expired'}), 404
 
@@ -2849,16 +2868,40 @@ def payment_webhook():
             card.last_used_date = today
 
         # 결제 내역 저장
-        payment = PaymentHistory(
-            transaction_id=transaction_id,
-            user_id=user_id,
-            card_id=card_id,
-            merchant_name=merchant_name,
-            payment_amount=payment_amount,
-            discount_amount=discount_amount,
-            final_amount=final_amount,
-            benefit_text=benefit_text
-        )
+        if is_corporate:
+            # 법인카드 결제: corporate_card_id 사용
+            corp_card_id_for_history = card_id
+            if isinstance(card_id, str) and card_id.startswith('corp_'):
+                corp_card_id_for_history = int(card_id.replace('corp_', ''))
+            elif isinstance(card_id, str) and card_id.isdigit():
+                corp_card_id_for_history = int(card_id)
+
+            payment = PaymentHistory(
+                transaction_id=transaction_id,
+                user_id=user_id,
+                card_id=None,
+                corporate_card_id=corp_card_id_for_history,
+                is_corporate=True,
+                merchant_name=merchant_name,
+                payment_amount=payment_amount,
+                discount_amount=discount_amount,
+                final_amount=final_amount,
+                benefit_text=benefit_text
+            )
+        else:
+            # 개인카드 결제: card_id 사용
+            payment = PaymentHistory(
+                transaction_id=transaction_id,
+                user_id=user_id,
+                card_id=card_id,
+                corporate_card_id=None,
+                is_corporate=False,
+                merchant_name=merchant_name,
+                payment_amount=payment_amount,
+                discount_amount=discount_amount,
+                final_amount=final_amount,
+                benefit_text=benefit_text
+            )
         db.add(payment)
         db.commit()
 

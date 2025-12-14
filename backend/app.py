@@ -3296,6 +3296,9 @@ def get_recent_payment():
     """
     최근 결제 내역 조회 (결제 완료 알림용)
 
+    Query Params:
+    - after_timestamp: QR 생성 시간 (이 시간 이후의 결제만 반환)
+
     Response:
     {
         "new_payment": true,
@@ -3312,16 +3315,25 @@ def get_recent_payment():
         user_id = jwt_service.verify_token(request.headers['Authorization'].split(' ')[1]).get('user_id')
         db = get_db()
 
-        # 최근 5분 이내 결제 내역 조회
-        five_minutes_ago = datetime.now().timestamp() - 300
+        # QR 생성 시간 이후의 결제만 조회 (after_timestamp 파라미터)
+        after_timestamp = request.args.get('after_timestamp', type=int)
+        if after_timestamp:
+            after_datetime = datetime.fromtimestamp(after_timestamp)
+        else:
+            # fallback: 최근 5분 이내
+            after_datetime = datetime.fromtimestamp(datetime.now().timestamp() - 300)
+
         recent_payment = db.scalars(
             select(PaymentHistory)
-            .where(PaymentHistory.user_id == user_id)
+            .where(
+                PaymentHistory.user_id == user_id,
+                PaymentHistory.payment_date > after_datetime
+            )
             .order_by(PaymentHistory.payment_date.desc())
             .limit(1)
         ).first()
 
-        if recent_payment and recent_payment.payment_date.timestamp() > five_minutes_ago:
+        if recent_payment:
             return jsonify({
                 'new_payment': True,
                 'transaction_id': recent_payment.transaction_id,

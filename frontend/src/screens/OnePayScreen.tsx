@@ -237,7 +237,8 @@ export const OnePayScreen: React.FC<OnePayScreenProps> = ({ onBack, selectedStor
         }
 
         if (scanChecked) {
-          const response = await fetch(`${API_URL}/api/payment/recent`, {
+          // QR 생성 시간 이후의 결제만 조회
+          const response = await fetch(`${API_URL}/api/payment/recent?after_timestamp=${timestamp}`, {
             method: 'GET',
             headers: {
               'Authorization': `Bearer ${token}`,

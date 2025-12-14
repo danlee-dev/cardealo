@@ -2899,6 +2899,7 @@ def payment_webhook():
             elif isinstance(card_id, str) and card_id.isdigit():
                 corp_card_id_for_history = int(card_id)
 
+            # PaymentHistory에 저장 (사용자용)
             payment = PaymentHistory(
                 transaction_id=transaction_id,
                 user_id=user_id,
@@ -2911,6 +2912,30 @@ def payment_webhook():
                 final_amount=final_amount,
                 benefit_text=benefit_text
             )
+            db.add(payment)
+
+            # CorporatePaymentHistory에도 저장 (관리자 대시보드용)
+            # 멤버십 정보 조회
+            membership = db.scalars(
+                select(CorporateCardMember).where(
+                    CorporateCardMember.corporate_card_id == corp_card_id_for_history,
+                    CorporateCardMember.user_id == user_id,
+                    CorporateCardMember.status == 'active'
+                )
+            ).first()
+
+            corp_payment = CorporatePaymentHistory(
+                transaction_id=transaction_id,
+                corporate_card_id=corp_card_id_for_history,
+                member_id=membership.id if membership else None,
+                user_id=user_id,
+                merchant_name=merchant_name,
+                payment_amount=payment_amount,
+                discount_amount=discount_amount,
+                final_amount=final_amount,
+                benefit_text=benefit_text
+            )
+            db.add(corp_payment)
         else:
             # 개인카드 결제: card_id 사용
             payment = PaymentHistory(
@@ -2925,7 +2950,7 @@ def payment_webhook():
                 final_amount=final_amount,
                 benefit_text=benefit_text
             )
-        db.add(payment)
+            db.add(payment)
         db.commit()
 
         # 결제 알림 생성
